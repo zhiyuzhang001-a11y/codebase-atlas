@@ -121,7 +121,26 @@ class CodebaseMemoryImpactProvider:
         )
         return tuple(node for node in self._nodes_from_search(payload) if node.name == symbol)
 
-    def _search_identity(self, node_id: str) -> Node:
+    def definitions(self, symbol: str) -> tuple[Node, ...]:
+        """Return every exact-name definition with its stable qualified identity."""
+        return self._search_name(symbol)
+
+    def callers(self, symbol: str) -> tuple[ImpactHit, ...]:
+        return self.impact(symbol, direction="upstream", max_depth=1)
+
+    def callees(self, symbol: str) -> tuple[ImpactHit, ...]:
+        return self.impact(symbol, direction="downstream", max_depth=1)
+
+    def related_tests(self, symbol: str) -> tuple[ImpactHit, ...]:
+        return tuple(
+            hit
+            for hit in self.impact(symbol, direction="upstream", max_depth=1)
+            if "tests" in Path(hit.node.location.path).parts
+            or ".test." in Path(hit.node.location.path).name
+            or Path(hit.node.location.path).name.startswith("test_")
+        )
+
+    def _search_identity(self, node_id: str) -> Node | None:
         cached = self._node_cache.get(node_id)
         if cached is not None:
             return cached
@@ -137,6 +156,10 @@ class CodebaseMemoryImpactProvider:
             "10",
         )
         matches = [node for node in self._nodes_from_search(payload) if node.id == node_id]
+        if not matches:
+            # Traces can contain external/library pseudo-nodes that have no
+            # repository source location. They are not product results.
+            return None
         if len(matches) != 1:
             raise RuntimeError(f"expected one exact node for {node_id}, found {len(matches)}")
         return matches[0]
@@ -200,6 +223,8 @@ class CodebaseMemoryImpactProvider:
                 for row in self._trace_rows(payload, section):
                     neighbor_id = row["id"]
                     neighbor = self._search_identity(neighbor_id)
+                    if neighbor is None:
+                        continue
                     graph.add_node(neighbor)
                     confidence = row.get("confidence")
                     edge_confidence = float(confidence) if isinstance(confidence, (int, float)) else 1.0

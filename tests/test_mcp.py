@@ -25,7 +25,10 @@ class McpTests(unittest.TestCase):
         )
         self.assertEqual(initialized["result"]["protocolVersion"], PROTOCOL_VERSION)
         listed = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        self.assertEqual([tool["name"] for tool in listed["result"]["tools"]], ["related_tests", "impact"])
+        self.assertEqual(
+            [tool["name"] for tool in listed["result"]["tools"]],
+            ["definition", "references", "callers", "callees", "related_tests", "impact"],
+        )
         self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in listed["result"]["tools"]))
 
     def test_calls_tool_with_structured_and_text_content(self) -> None:

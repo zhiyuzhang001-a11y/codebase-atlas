@@ -21,6 +21,10 @@ def _structured(response: QueryResponse) -> dict[str, Any]:
         "nodes": [asdict(node) for node in response.nodes],
         "edges": [asdict(edge) for edge in response.edges],
         "depths": response.depths,
+        "paths": {
+            node_id: [asdict(edge) for edge in path]
+            for node_id, path in response.paths.items()
+        },
     }
 
 
@@ -34,6 +38,26 @@ def _tool_result(response: QueryResponse) -> dict[str, Any]:
 
 
 TOOLS = [
+    *[
+        {
+            "name": name,
+            "title": title,
+            "description": description,
+            "inputSchema": {
+                "type": "object",
+                "properties": {"symbol": {"type": "string"}},
+                "required": ["symbol"],
+                "additionalProperties": False,
+            },
+            "annotations": {"readOnlyHint": True, "destructiveHint": False},
+        }
+        for name, title, description in (
+            ("definition", "Find definitions", "Return exact-name symbol definitions."),
+            ("references", "Find references", "Return exact semantic reference occurrences."),
+            ("callers", "Find callers", "Return direct callers by stable identity."),
+            ("callees", "Find callees", "Return direct callees by stable identity."),
+        )
+    ],
     {
         "name": "related_tests",
         "title": "Find exact related tests",
@@ -113,7 +137,9 @@ class McpServer:
             symbol = arguments.get("symbol")
             if not isinstance(symbol, str) or not symbol:
                 raise ValueError("symbol must be a non-empty string")
-            if name == "related_tests":
+            if name in {"definition", "references", "callers", "callees"}:
+                request = QueryRequest(name, symbol)
+            elif name == "related_tests":
                 target_path = arguments.get("target_path", "")
                 if not isinstance(target_path, str):
                     raise ValueError("target_path must be a string")

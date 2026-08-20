@@ -10,7 +10,7 @@ The initial product phase follows the `BUILD_PROVIDER_GAPS` decision from the si
 - provider-neutral result and graph contracts;
 - exact TS/JS Vitest/Jest callback mapping;
 - explicit-depth impact traversal over stable identities;
-- later CLI, JSON API, and read-only MCP over the same service.
+- one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
 
 UI, automatic source edits, cloud sync, and token-saving claims are out of scope.
 
@@ -20,4 +20,8 @@ UI, automatic source edits, cloud sync, and token-saving claims are out of scope
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-The product CLI currently exposes exact `related-tests` and identity-safe `impact` queries. A read-only stdio MCP server uses the same `AtlasService` and owns the Codebase Memory daemon lifecycle, stopping only a daemon it started itself. Run `codebase-atlas mcp --help` for the isolated runtime arguments.
+The product service supports `definition`, `references`, `callers`, `callees`,
+`related_tests`, and `impact`. Use `codebase-atlas query --help` for one query,
+`query-batch --help` for a reusable JSON-lines session, or `mcp --help` for the
+read-only stdio MCP server. All three interfaces share `AtlasService` and stop
+only provider processes they started themselves.
