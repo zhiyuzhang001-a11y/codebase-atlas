@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import unittest
+
+from codebase_atlas.providers import TypeScriptTestProvider
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@unittest.skipUnless(os.environ.get("ATLAS_NODE"), "ATLAS_NODE is required for TypeScript provider tests")
+class TypeScriptTestProviderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.provider = TypeScriptTestProvider(
+            Path(os.environ["ATLAS_NODE"]), ROOT / "scripts/ts_test_analyzer.mjs"
+        )
+
+    def test_matches_exact_callbacks_and_rejects_same_name_decoy(self) -> None:
+        expected = json.loads(
+            (ROOT / "cases/ts-test-provider.v1.json").read_text(encoding="utf-8")
+        )
+        results = self.provider.related_tests(
+            ROOT / "fixtures/ts-tests",
+            "parseSize",
+            target_path="src/size.ts",
+        )
+        actual = [
+            {
+                "path": node.location.path,
+                "symbol": node.name,
+                "start_line": node.location.start_line,
+            }
+            for node, _edge in results
+        ]
+        self.assertEqual(actual, expected["expected"])
+        self.assertTrue(all(edge.resolution == "exact" for _node, edge in results))
+
+    def test_requires_disambiguation_for_same_name_declarations(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "expected one declaration"):
+            self.provider.related_tests(ROOT / "fixtures/ts-tests", "parseSize")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "frozen_before_provider_output": true,
+  "target": "fixtures/ts-tests/src/size.ts#parseSize",
+  "expected": [
+    {
+      "path": "tests/size.test.ts",
+      "symbol": "parses a number",
+      "start_line": 4
+    },
+    {
+      "path": "tests/size.test.ts",
+      "symbol": "handles whitespace",
+      "start_line": 8
+    }
+  ],
+  "negative_expectations": [
+    "tests/size.test.ts:12",
+    "tests/decoy.test.ts:3"
+  ]
+}
