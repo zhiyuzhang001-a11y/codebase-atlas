@@ -21,7 +21,7 @@ def emit(value: dict[str, Any]) -> None:
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 
-def definitions(tool: FindSymbolTool, query: str) -> list[dict[str, Any]]:
+def definitions(tool: FindSymbolTool, query: str, target_path: str = "") -> list[dict[str, Any]]:
     rows = json.loads(tool.apply(name_path_pattern=query))
     if not isinstance(rows, list):
         raise ValueError("Serena find_symbol returned a non-list result")
@@ -32,11 +32,12 @@ def definitions(tool: FindSymbolTool, query: str) -> list[dict[str, Any]]:
         and isinstance(row.get("name_path"), str)
         and row["name_path"].split("/")[-1] == query
         and isinstance(row.get("relative_path"), str)
+        and (not target_path or row["relative_path"] == target_path)
     ]
 
 
-def query(agent: SerenaAgent, query_type: str, symbol: str) -> list[dict[str, Any]]:
-    matches = definitions(agent.get_tool(FindSymbolTool), symbol)
+def query(agent: SerenaAgent, query_type: str, symbol: str, target_path: str = "") -> list[dict[str, Any]]:
+    matches = definitions(agent.get_tool(FindSymbolTool), symbol, target_path)
     if query_type == "definition":
         return [
             {
@@ -80,6 +81,8 @@ def query(agent: SerenaAgent, query_type: str, symbol: str) -> list[dict[str, An
                     "symbol": symbol,
                     "start_line": reference.line + 1,
                     "end_line": reference.line + 1,
+                    "start_column": reference.character + 1,
+                    "end_column": reference.character + len(symbol) + 1,
                     "provider_id": match["name_path"],
                     "provenance": {
                         "provider": "serena",
@@ -133,7 +136,10 @@ def main() -> int:
                 break
             query_started = perf_counter()
             try:
-                results = query(agent, request["query_type"], request["query"])
+                results = query(
+                    agent, request["query_type"], request["query"],
+                    str(request.get("target_path", "")),
+                )
                 emit(
                     {
                         "status": "ok",

@@ -24,19 +24,24 @@ class FakeLifecycle:
 
 
 class FakeImpactProvider:
-    def definitions(self, symbol):
+    def definitions(self, symbol, *, target_path=""):
         return (Node("target", "function", symbol, SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH),)
 
-    def callers(self, symbol):
-        return self.impact(symbol, direction="upstream", max_depth=1)
+    def callers(self, symbol, *, target_path=""):
+        return self.impact(symbol, direction="upstream", max_depth=1, target_path=target_path)
 
-    def callees(self, symbol):
-        return self.impact(symbol, direction="downstream", max_depth=1)
+    def callees(self, symbol, *, target_path=""):
+        return self.impact(symbol, direction="downstream", max_depth=1, target_path=target_path)
 
-    def related_tests(self, symbol):
-        return self.impact(symbol, direction="upstream", max_depth=1)
+    def related_tests(self, symbol, *, target_path=""):
+        return self.impact(
+            symbol,
+            direction="upstream",
+            max_depth=1,
+            target_path=target_path,
+        )
 
-    def impact(self, _symbol, *, direction, max_depth):
+    def impact(self, _symbol, *, direction, max_depth, target_path=""):
         target = Node("target", "function", "target", SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH)
         caller = Node("caller", "function", "caller", SourceRange("src/x.py", 2, 2), "fake", 1.0, HASH)
         edge = Edge("caller", "target", "calls", "fake", 1.0, HASH)
@@ -44,7 +49,17 @@ class FakeImpactProvider:
 
 
 class FakeSemanticProvider:
-    def query(self, query_type, symbol):
+    def __init__(self):
+        self.starts = 0
+        self.closes = 0
+
+    def start(self):
+        self.starts += 1
+
+    def close(self):
+        self.closes += 1
+
+    def query(self, query_type, symbol, *, target_path=""):
         return (Node("reference", query_type, symbol, SourceRange("src/x.py", 3, 3), "semantic", 1.0, HASH),)
 
 
@@ -96,6 +111,29 @@ class ServiceTests(unittest.TestCase):
             second = service.query(QueryRequest("impact", "target", {"depth": 2}))
         self.assertEqual(first.nodes, second.nodes)
         self.assertEqual((lifecycle.starts, lifecycle.closes), (1, 1))
+
+    def test_starts_only_provider_required_by_query(self) -> None:
+        lifecycle = FakeLifecycle()
+        semantic = FakeSemanticProvider()
+        structural = FakeImpactProvider()
+        service = AtlasService(
+            structural_provider=structural,
+            impact_provider=structural,
+            semantic_provider=semantic,
+            lifecycle=lifecycle,
+        )
+        with service:
+            service.query(QueryRequest("definition", "target"))
+            self.assertEqual((lifecycle.starts, semantic.starts), (1, 0))
+        self.assertEqual((lifecycle.closes, semantic.closes), (1, 0))
+
+        lifecycle = FakeLifecycle()
+        semantic = FakeSemanticProvider()
+        service = AtlasService(semantic_provider=semantic, lifecycle=lifecycle)
+        with service:
+            service.query(QueryRequest("references", "target"))
+            self.assertEqual((lifecycle.starts, semantic.starts), (0, 1))
+        self.assertEqual((lifecycle.closes, semantic.closes), (0, 1))
 
     def test_requires_started_service(self) -> None:
         service = AtlasService(impact_provider=FakeImpactProvider())

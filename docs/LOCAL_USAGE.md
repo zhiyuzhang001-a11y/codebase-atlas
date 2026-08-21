@@ -58,6 +58,17 @@ its paths are portable for the intended users.
 For TypeScript repositories, `--node-bin-dir` must contain
 `typescript-language-server` when it is not beside the configured Node executable.
 
+Large TypeScript monorepos often have no root `tsconfig.json`. Select the intended
+subproject explicitly during initialization:
+
+```bash
+codebase-atlas init --language typescript --tsconfig packages/app/tsconfig.json \
+  --serena-python /path/to/serena-venv/bin/python
+codebase-atlas index
+```
+
+The selected config defines the compiler boundary used by exact test analysis.
+
 ## Query
 
 After initialization and indexing, commands use the configuration automatically:
@@ -69,6 +80,17 @@ codebase-atlas query callers render_user
 codebase-atlas query callees render_user
 codebase-atlas query related_tests render_user
 codebase-atlas query impact render_user --direction upstream --depth 2
+```
+
+When a monorepo contains several declarations with the same name, identify the
+intended declaration by repository-relative path. This option is available for
+all six query types and through the MCP tool schemas:
+
+```bash
+codebase-atlas query references isUriComponents \
+  --target-path src/vs/base/common/uri.ts
+codebase-atlas query related_tests isUriComponents \
+  --target-path src/vs/base/common/uri.ts
 ```
 
 Use `--config /path/to/config.toml` when running outside the repository. The

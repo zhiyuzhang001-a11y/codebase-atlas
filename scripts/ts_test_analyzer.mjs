@@ -90,8 +90,10 @@ function callbackCallsTarget(callback, checker, targetSymbols) {
   return matched;
 }
 
-function loadProgram(repository) {
-  const configPath = ts.findConfigFile(repository, fs.existsSync, 'tsconfig.json');
+function loadProgram(repository, selectedConfig = '', targetPath = '') {
+  const configPath = selectedConfig
+    ? path.resolve(repository, selectedConfig)
+    : ts.findConfigFile(repository, fs.existsSync, 'tsconfig.json');
   if (!configPath) throw new Error(`tsconfig.json not found under ${repository}`);
   const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
   if (loaded.error) {
@@ -101,13 +103,26 @@ function loadProgram(repository) {
   // Production tsconfigs commonly exclude *.spec.ts even though those files are
   // exactly the evidence Atlas must inspect. Add test roots without changing the
   // repository configuration.
+  const projectRoot = path.dirname(configPath);
   const testFiles = ts.sys.readDirectory(
-    repository,
+    projectRoot,
     ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'],
     ['**/node_modules/**', '**/dist/**', '**/build/**', '**/coverage/**'],
     ['**/test/**', '**/tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*'],
   );
-  const rootNames = [...new Set([...config.fileNames, ...testFiles])];
+  let productionRoots = config.fileNames;
+  if (targetPath) {
+    const targetFile = path.resolve(repository, targetPath);
+    const configuredFiles = new Set(config.fileNames.map((filename) => path.resolve(filename)));
+    if (!configuredFiles.has(targetFile)) {
+      throw new Error(`${targetPath} is outside the selected TypeScript project ${configPath}`);
+    }
+    // Imports are loaded transitively, so a scoped query only needs its intended
+    // declaration plus the selected project's tests as roots. This prevents an
+    // unrelated monorepo package from consuming the entire compiler heap.
+    productionRoots = [targetFile];
+  }
+  const rootNames = [...new Set([...productionRoots, ...testFiles])];
   return ts.createProgram({ rootNames, options: config.options });
 }
 
@@ -120,7 +135,7 @@ function main() {
     throw new Error('--repo must be a directory and --symbol is required');
   }
 
-  const program = loadProgram(repository);
+  const program = loadProgram(repository, args.tsconfig ?? '', targetPath);
   const checker = program.getTypeChecker();
   const targetSymbols = new Set();
   const targetDeclarations = [];

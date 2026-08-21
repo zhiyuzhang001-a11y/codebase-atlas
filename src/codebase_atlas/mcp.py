@@ -45,7 +45,13 @@ TOOLS = [
             "description": description,
             "inputSchema": {
                 "type": "object",
-                "properties": {"symbol": {"type": "string"}},
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "target_path": {
+                        "type": "string",
+                        "description": "Repository-relative path of the intended declaration.",
+                    },
+                },
                 "required": ["symbol"],
                 "additionalProperties": False,
             },
@@ -83,6 +89,10 @@ TOOLS = [
                 "symbol": {"type": "string"},
                 "direction": {"type": "string", "enum": ["upstream", "downstream"]},
                 "depth": {"type": "integer", "minimum": 1, "maximum": 10},
+                "target_path": {
+                    "type": "string",
+                    "description": "Repository-relative path of the intended declaration.",
+                },
             },
             "required": ["symbol"],
             "additionalProperties": False,
@@ -137,12 +147,12 @@ class McpServer:
             symbol = arguments.get("symbol")
             if not isinstance(symbol, str) or not symbol:
                 raise ValueError("symbol must be a non-empty string")
+            target_path = arguments.get("target_path", "")
+            if not isinstance(target_path, str):
+                raise ValueError("target_path must be a string")
             if name in {"definition", "references", "callers", "callees"}:
-                request = QueryRequest(name, symbol)
+                request = QueryRequest(name, symbol, {"target_path": target_path})
             elif name == "related_tests":
-                target_path = arguments.get("target_path", "")
-                if not isinstance(target_path, str):
-                    raise ValueError("target_path must be a string")
                 request = QueryRequest(
                     "related_tests",
                     symbol,
@@ -155,6 +165,7 @@ class McpServer:
                     {
                         "direction": arguments.get("direction", "upstream"),
                         "depth": arguments.get("depth", 1),
+                        "target_path": target_path,
                     },
                 )
             else:

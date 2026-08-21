@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     initialize.add_argument("--cbm-binary", type=Path)
     initialize.add_argument("--serena-python", type=Path)
     initialize.add_argument("--node-bin-dir", type=Path)
+    initialize.add_argument("--tsconfig", type=Path)
     initialize.add_argument("--data-dir", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     related.add_argument("--symbol", required=True)
     related.add_argument("--target-path", default="")
     related.add_argument("--node", type=Path, required=True)
+    related.add_argument("--tsconfig", type=Path)
     related.add_argument(
         "--analyzer",
         type=Path,
@@ -55,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     impact.add_argument("--binary", type=Path, required=True)
     impact.add_argument("--cache-dir", type=Path, required=True)
     impact.add_argument("--project", required=True)
+    impact.add_argument("--target-path", default="")
     mcp = commands.add_parser("mcp", help="run the read-only MCP server over stdio")
     mcp.add_argument("--config", type=Path)
     mcp.add_argument("--repo", type=Path)
@@ -69,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--metadata-root", type=Path)
     mcp.add_argument("--language", choices=("python", "typescript"))
     mcp.add_argument("--node-bin-dir", type=Path)
+    mcp.add_argument("--tsconfig", type=Path)
     query = commands.add_parser("query", help="run one query through the shared product service")
     query.add_argument("query_type", choices=("definition", "references", "callers", "callees", "related_tests", "impact"))
     query.add_argument("symbol")
@@ -85,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--metadata-root", type=Path)
     query.add_argument("--language", choices=("python", "typescript"))
     query.add_argument("--node-bin-dir", type=Path)
+    query.add_argument("--tsconfig", type=Path)
     query.add_argument("--target-path", default="")
     query.add_argument("--direction", choices=("upstream", "downstream"), default="upstream")
     query.add_argument("--depth", type=int, default=1)
@@ -115,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo, language=args.language, node=args.node,
             cbm_binary=args.cbm_binary, serena_python=args.serena_python,
             node_bin_dir=args.node_bin_dir,
+            tsconfig=args.tsconfig,
             data_dir=args.data_dir,
         )
         config.write(config_path)
@@ -132,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "indexed", "project": project, "config": str(args.config)}, indent=2))
         return 0
     if args.command == "related-tests":
-        provider = TypeScriptTestProvider(args.node, args.analyzer)
+        provider = TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig)
         results = provider.related_tests(
             args.repo,
             args.symbol,
@@ -160,7 +166,12 @@ def main(argv: list[str] | None = None) -> int:
             args.cache_dir,
             args.project,
         )
-        hits = provider.impact(args.symbol, direction=args.direction, max_depth=args.depth)
+        hits = provider.impact(
+            args.symbol,
+            direction=args.direction,
+            max_depth=args.depth,
+            target_path=args.target_path,
+        )
         print(
             json.dumps(
                 {
@@ -201,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
                 language=args.language,
                 node_bin_dir=args.node_bin_dir,
             ),
-            test_provider=TypeScriptTestProvider(args.node, args.analyzer),
+            test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
             impact_provider=structural,
             lifecycle=lifecycle,
         )
@@ -262,6 +273,7 @@ def _apply_project_config(args) -> None:
         args.metadata_root = config.metadata_root
         args.language = config.language
         args.node_bin_dir = config.node_bin_dir
+        args.tsconfig = config.tsconfig
     required = {
         "repo": args.repo, "node": args.node, "binary": args.binary,
         "cache_dir": args.cache_dir, "project": args.project,

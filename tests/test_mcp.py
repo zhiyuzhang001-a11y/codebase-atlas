@@ -10,14 +10,19 @@ from codebase_atlas.service import QueryResponse
 
 
 class FakeService:
+    def __init__(self):
+        self.last_request = None
+
     def query(self, request):
+        self.last_request = request
         node = Node("n", "test", request.symbol, SourceRange("tests/x.ts", 1, 1), "fake", 1.0, "d" * 64)
         return QueryResponse(request.query_type, (node,), ())
 
 
 class McpTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.server = McpServer(FakeService())
+        self.service = FakeService()
+        self.server = McpServer(self.service)
 
     def test_initializes_and_lists_read_only_tools(self) -> None:
         initialized = self.server.handle(
@@ -42,6 +47,27 @@ class McpTests(unittest.TestCase):
         )
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(response["result"]["structuredContent"]["nodes"][0]["name"], "target")
+
+    def test_forwards_target_path_for_ambiguous_symbols(self) -> None:
+        response = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "impact",
+                    "arguments": {
+                        "symbol": "render",
+                        "target_path": "packages/ui/src/render.ts",
+                    },
+                },
+            }
+        )
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(
+            self.service.last_request.parameters["target_path"],
+            "packages/ui/src/render.ts",
+        )
 
     def test_stdio_emits_one_json_message_per_line(self) -> None:
         source = StringIO(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n")

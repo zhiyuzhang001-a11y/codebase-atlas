@@ -13,11 +13,14 @@ class ConfigTests(unittest.TestCase):
             root = Path(raw)
             repo = root / "repo"
             repo.mkdir()
+            (repo / "packages/app").mkdir(parents=True)
+            (repo / "packages/app/tsconfig.json").touch()
             for name in ("node", "cbm", "serena-python"):
                 (root / name).touch()
             config = AtlasConfig(
-                repo, "python", root / "node", root / "cbm",
+                repo, "typescript", root / "node", root / "cbm",
                 root / "serena-python", root / "data", "project-v1", root,
+                Path("packages/app/tsconfig.json"),
             )
             path = repo / ".codebase-atlas.toml"
             config.write(path)

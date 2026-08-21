@@ -28,14 +28,17 @@ def normalize_serena_rows(rows: Any, *, query_type: str, symbol: str) -> tuple[N
         path = row["path"]
         start = row["start_line"]
         end = row.get("end_line", start)
+        start_column = row.get("start_column")
+        end_column = row.get("end_column")
         provider_id = str(row.get("provider_id", symbol))
-        node_id = f"serena:{query_type}:{provider_id}:{path}:{start}"
+        occurrence = f":{start_column}" if start_column is not None else ""
+        node_id = f"serena:{query_type}:{provider_id}:{path}:{start}{occurrence}"
         nodes.append(
             Node(
                 id=node_id,
                 kind="reference" if query_type == "references" else "definition",
                 name=symbol,
-                location=SourceRange(path, start, end),
+                location=SourceRange(path, start, end, start_column, end_column),
                 provider="serena-semantic",
                 confidence=1.0,
                 evidence_hash=_hash(row),
@@ -130,12 +133,14 @@ class SerenaSemanticProvider:
             raise RuntimeError(f"Serena runner did not become ready: {response}")
         self.startup_ms = float(response.get("startup_ms", 0.0))
 
-    def query(self, query_type: str, symbol: str) -> tuple[Node, ...]:
+    def query(self, query_type: str, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
         if query_type not in {"definition", "references"}:
             raise ValueError(f"unsupported Serena query: {query_type}")
         if self._process is None or self._process.stdin is None:
             raise RuntimeError("Serena provider must be started before query")
-        self._process.stdin.write(json.dumps({"query_type": query_type, "query": symbol}) + "\n")
+        self._process.stdin.write(json.dumps({
+            "query_type": query_type, "query": symbol, "target_path": target_path,
+        }) + "\n")
         self._process.stdin.flush()
         response = self._read()
         if response.get("status") != "ok":

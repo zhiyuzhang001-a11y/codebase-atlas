@@ -114,7 +114,7 @@ class CodebaseMemoryImpactProvider:
                 nodes.append(node)
         return tuple(nodes)
 
-    def _search_name(self, symbol: str) -> tuple[Node, ...]:
+    def _search_name(self, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
         payload = self._run(
             "search_graph",
             "--project",
@@ -126,22 +126,30 @@ class CodebaseMemoryImpactProvider:
             "--limit",
             "100",
         )
-        return tuple(node for node in self._nodes_from_search(payload) if node.name == symbol)
+        return tuple(
+            node for node in self._nodes_from_search(payload)
+            if node.name == symbol and (not target_path or node.location.path == target_path)
+        )
 
-    def definitions(self, symbol: str) -> tuple[Node, ...]:
+    def definitions(self, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
         """Return every exact-name definition with its stable qualified identity."""
-        return self._search_name(symbol)
+        return self._search_name(symbol, target_path=target_path)
 
-    def callers(self, symbol: str) -> tuple[ImpactHit, ...]:
-        return self.impact(symbol, direction="upstream", max_depth=1)
+    def callers(self, symbol: str, *, target_path: str = "") -> tuple[ImpactHit, ...]:
+        return self.impact(symbol, direction="upstream", max_depth=1, target_path=target_path)
 
-    def callees(self, symbol: str) -> tuple[ImpactHit, ...]:
-        return self.impact(symbol, direction="downstream", max_depth=1)
+    def callees(self, symbol: str, *, target_path: str = "") -> tuple[ImpactHit, ...]:
+        return self.impact(symbol, direction="downstream", max_depth=1, target_path=target_path)
 
-    def related_tests(self, symbol: str) -> tuple[ImpactHit, ...]:
+    def related_tests(self, symbol: str, *, target_path: str = "") -> tuple[ImpactHit, ...]:
         return tuple(
             hit
-            for hit in self.impact(symbol, direction="upstream", max_depth=1)
+            for hit in self.impact(
+                symbol,
+                direction="upstream",
+                max_depth=1,
+                target_path=target_path,
+            )
             if "tests" in Path(hit.node.location.path).parts
             or ".test." in Path(hit.node.location.path).name
             or Path(hit.node.location.path).name.startswith("test_")
@@ -191,10 +199,10 @@ class CodebaseMemoryImpactProvider:
                     rows.append(row)
         return tuple(rows)
 
-    def impact(self, symbol: str, *, direction: str, max_depth: int) -> tuple[ImpactHit, ...]:
+    def impact(self, symbol: str, *, direction: str, max_depth: int, target_path: str = "") -> tuple[ImpactHit, ...]:
         if direction not in {"upstream", "downstream"}:
             raise ValueError(f"unsupported direction: {direction}")
-        seeds = self._search_name(symbol)
+        seeds = self._search_name(symbol, target_path=target_path)
         if not seeds:
             return ()
         graph = EvidenceGraph(seeds)

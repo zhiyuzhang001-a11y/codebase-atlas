@@ -42,6 +42,22 @@ class TypeScriptTestProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "expected one declaration"):
             self.provider.related_tests(ROOT / "fixtures/ts-tests", "parseSize")
 
+    def test_selected_production_tsconfig_still_includes_test_evidence(self) -> None:
+        provider = TypeScriptTestProvider(
+            Path(os.environ["ATLAS_NODE"]),
+            ROOT / "scripts/ts_test_analyzer.mjs",
+            Path("tsconfig.production.json"),
+        )
+        results = provider.related_tests(
+            ROOT / "fixtures/ts-tests",
+            "parseSize",
+            target_path="src/size.ts",
+        )
+        self.assertEqual([node.name for node, _edge in results], [
+            "parses a number",
+            "handles whitespace",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

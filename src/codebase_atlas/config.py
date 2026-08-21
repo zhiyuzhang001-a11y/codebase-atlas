@@ -43,6 +43,7 @@ class AtlasConfig:
     data_dir: Path
     project: str = ""
     node_bin_dir: Path | None = None
+    tsconfig: Path | None = None
 
     def __post_init__(self) -> None:
         for name in ("repository", "data_dir"):
@@ -53,6 +54,8 @@ class AtlasConfig:
             object.__setattr__(self, name, getattr(self, name).absolute())
         if self.node_bin_dir is not None:
             object.__setattr__(self, "node_bin_dir", self.node_bin_dir.absolute())
+        if self.tsconfig is not None:
+            object.__setattr__(self, "tsconfig", self.tsconfig)
 
     @property
     def cache_dir(self) -> Path:
@@ -84,10 +87,13 @@ class AtlasConfig:
         cbm_binary: Path | None = None,
         serena_python: Path | None = None,
         node_bin_dir: Path | None = None,
+        tsconfig: Path | None = None,
         data_dir: Path | None = None,
     ) -> "AtlasConfig":
         repo = repository.resolve()
-        selected_language = language or ("typescript" if (repo / "tsconfig.json").is_file() else "python")
+        selected_language = language or (
+            "typescript" if tsconfig is not None or (repo / "tsconfig.json").is_file() else "python"
+        )
         discovered_node = node or _which("node", "ATLAS_NODE")
         discovered_cbm = cbm_binary or _which("codebase-memory-mcp", "ATLAS_CBM_BINARY")
         discovered_serena = serena_python or (
@@ -107,6 +113,7 @@ class AtlasConfig:
             repo, selected_language, discovered_node, discovered_cbm,
             discovered_serena, (data_dir or default_data_dir(repo)).resolve(),
             node_bin_dir=node_bin_dir or discovered_node.parent,
+            tsconfig=tsconfig,
         )
 
     @classmethod
@@ -115,11 +122,13 @@ class AtlasConfig:
         runtime = value["runtime"]
         project = value["project"]
         node_bin = runtime.get("node_bin_dir", "")
+        tsconfig = project.get("tsconfig", "")
         return cls(
             Path(project["repository"]), project["language"],
             Path(runtime["node"]), Path(runtime["cbm_binary"]),
             Path(runtime["serena_python"]), Path(project["data_dir"]),
             project.get("cbm_project", ""), Path(node_bin) if node_bin else None,
+            Path(tsconfig) if tsconfig else None,
         )
 
     def with_project(self, project: str) -> "AtlasConfig":
@@ -134,7 +143,8 @@ class AtlasConfig:
             f'repository = "{quote(self.repository)}"\n'
             f'language = "{self.language}"\n'
             f'data_dir = "{quote(self.data_dir)}"\n'
-            f'cbm_project = "{quote(self.project)}"\n\n[runtime]\n'
+            f'cbm_project = "{quote(self.project)}"\n'
+            f'tsconfig = "{quote(self.tsconfig) if self.tsconfig else ""}"\n\n[runtime]\n'
             f'node = "{quote(self.node)}"\n'
             f'node_bin_dir = "{node_bin}"\n'
             f'cbm_binary = "{quote(self.cbm_binary)}"\n'
@@ -155,4 +165,7 @@ def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
         ("serena_runner", config.serena_runner.is_file(), str(config.serena_runner)),
         ("indexed_project", bool(config.project), config.project or "run codebase-atlas index"),
     ]
+    if config.language == "typescript":
+        selected = config.repository / (config.tsconfig or Path("tsconfig.json"))
+        checks.append(("tsconfig", selected.is_file(), str(selected)))
     return [{"name": name, "ok": ok, "detail": detail} for name, ok, detail in checks]

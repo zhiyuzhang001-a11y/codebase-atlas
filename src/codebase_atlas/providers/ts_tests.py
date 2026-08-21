@@ -13,9 +13,10 @@ from ..contracts import Edge, Node, SourceRange
 class TypeScriptTestProvider:
     name = "atlas-ts-tests"
 
-    def __init__(self, node: Path, analyzer: Path) -> None:
+    def __init__(self, node: Path, analyzer: Path, tsconfig: Path | None = None) -> None:
         self.node = node.resolve()
         self.analyzer = analyzer.resolve()
+        self.tsconfig = tsconfig
 
     @staticmethod
     def _node(payload: dict[str, Any]) -> Node:
@@ -44,6 +45,8 @@ class TypeScriptTestProvider:
         ]
         if target_path:
             command.extend(("--target-path", target_path))
+        if self.tsconfig is not None:
+            command.extend(("--tsconfig", str(self.tsconfig)))
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "TypeScript test analyzer failed")

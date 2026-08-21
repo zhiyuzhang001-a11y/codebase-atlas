@@ -14,6 +14,8 @@ class SerenaNormalizationTests(unittest.TestCase):
                     "symbol": "VALUE",
                     "start_line": 7,
                     "end_line": 7,
+                    "start_column": 9,
+                    "end_column": 14,
                     "provider_id": "VALUE",
                     "provenance": {"operation": "find_referencing_symbols"},
                 }
@@ -23,6 +25,8 @@ class SerenaNormalizationTests(unittest.TestCase):
         )
         self.assertEqual((nodes[0].location.path, nodes[0].location.start_line), ("src/x.py", 7))
         self.assertEqual(nodes[0].kind, "reference")
+        self.assertEqual((nodes[0].location.start_column, nodes[0].location.end_column), (9, 14))
+        self.assertTrue(nodes[0].id.endswith(":7:9"))
         self.assertEqual(nodes[0].attributes["operation"], "find_referencing_symbols")
 
 

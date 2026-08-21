@@ -64,30 +64,39 @@ class AtlasService:
         self.impact_provider = impact_provider
         self.lifecycle = lifecycle
         self.started = False
+        self._structural_started = False
+        self._semantic_started = False
 
     def start(self) -> None:
         if self.started:
             return
+        self.started = True
+
+    def _ensure_structural(self) -> None:
+        if self._structural_started:
+            return
         if self.lifecycle is not None:
             self.lifecycle.start()
+        self._structural_started = True
+
+    def _ensure_semantic(self) -> None:
+        if self._semantic_started:
+            return
         if self.semantic_provider is not None and hasattr(self.semantic_provider, "start"):
-            try:
-                self.semantic_provider.start()
-            except Exception:
-                if self.lifecycle is not None:
-                    self.lifecycle.close()
-                raise
-        self.started = True
+            self.semantic_provider.start()
+        self._semantic_started = True
 
     def close(self) -> None:
         if not self.started:
             return
         try:
-            if self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
+            if self._semantic_started and self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
                 self.semantic_provider.close()
         finally:
-            if self.lifecycle is not None:
+            if self._structural_started and self.lifecycle is not None:
                 self.lifecycle.close()
+        self._semantic_started = False
+        self._structural_started = False
         self.started = False
 
     def query(self, request: QueryRequest) -> QueryResponse:
@@ -96,29 +105,44 @@ class AtlasService:
         if request.query_type == "definition":
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
+            self._ensure_structural()
             return QueryResponse(
                 request.query_type,
-                tuple(self.structural_provider.definitions(request.symbol)),
+                tuple(self.structural_provider.definitions(
+                    request.symbol,
+                    target_path=str(request.parameters.get("target_path", "")),
+                )),
                 (),
             )
         if request.query_type == "references":
             if self.semantic_provider is None:
                 raise RuntimeError("semantic reference provider is not configured")
+            self._ensure_semantic()
             return QueryResponse(
                 request.query_type,
-                tuple(self.semantic_provider.query("references", request.symbol)),
+                tuple(self.semantic_provider.query(
+                    "references", request.symbol,
+                    target_path=str(request.parameters.get("target_path", "")),
+                )),
                 (),
             )
         if request.query_type in {"callers", "callees"}:
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
+            self._ensure_structural()
             method = getattr(self.structural_provider, request.query_type)
-            return self._impact_response(request.query_type, tuple(method(request.symbol)))
+            return self._impact_response(
+                request.query_type,
+                tuple(method(
+                    request.symbol,
+                    target_path=str(request.parameters.get("target_path", "")),
+                )),
+            )
         if request.query_type == "related_tests":
             repository = request.parameters.get("repository", self.repository)
             if repository is None:
                 raise RuntimeError("repository is required for related-tests")
-            if self.test_provider is not None and (repository / "tsconfig.json").is_file():
+            if self._has_ts_project(repository):
                 results = self.test_provider.related_tests(
                     repository,
                     request.symbol,
@@ -131,23 +155,28 @@ class AtlasService:
                 )
             if self.structural_provider is None:
                 raise RuntimeError("related-tests provider is not configured")
+            self._ensure_structural()
             return self._impact_response(
                 request.query_type,
-                tuple(self.structural_provider.related_tests(request.symbol)),
+                tuple(self.structural_provider.related_tests(
+                    request.symbol,
+                    target_path=str(request.parameters.get("target_path", "")),
+                )),
             )
         if self.impact_provider is None:
             raise RuntimeError("impact provider is not configured")
+        self._ensure_structural()
         hits: tuple[ImpactHit, ...] = self.impact_provider.impact(
             request.symbol,
             direction=str(request.parameters.get("direction", "upstream")),
             max_depth=int(request.parameters.get("depth", 1)),
+            target_path=str(request.parameters.get("target_path", "")),
         )
         hits_list = list(hits)
         repository = request.parameters.get("repository", self.repository)
         if (
             repository is not None
-            and self.test_provider is not None
-            and (repository / "tsconfig.json").is_file()
+            and self._has_ts_project(repository)
             and request.parameters.get("direction", "upstream") == "upstream"
         ):
             test_results = self.test_provider.related_tests(
@@ -161,6 +190,12 @@ class AtlasService:
                     hits_list.append(ImpactHit(node, 1, (edge,)))
                     existing_ids.add(node.id)
         return self._impact_response(request.query_type, tuple(hits_list))
+
+    def _has_ts_project(self, repository: Path) -> bool:
+        if self.test_provider is None:
+            return False
+        selected = getattr(self.test_provider, "tsconfig", None)
+        return bool(selected and (repository / selected).is_file()) or (repository / "tsconfig.json").is_file()
 
     @staticmethod
     def _impact_response(query_type: str, hits: tuple[ImpactHit, ...]) -> QueryResponse:
