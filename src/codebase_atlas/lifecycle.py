@@ -129,13 +129,14 @@ class CodebaseMemoryDaemon:
             return False
         self.lock.acquire(timeout_seconds=timeout_seconds)
         try:
-            status = self._run("status")
-            output = f"{status.stdout}\n{status.stderr}".lower()
-            if "not running" not in output:
+            started = self._run("start")
+            output = f"{started.stdout}\n{started.stderr}".lower()
+            if "already active" in output or "already running" in output:
                 self.owned = False
                 self.active = True
                 return False
-            self._run("start")
+            if "started" not in output:
+                raise RuntimeError("daemon start did not report ownership state")
             self.owned = True
             self.active = True
             return True

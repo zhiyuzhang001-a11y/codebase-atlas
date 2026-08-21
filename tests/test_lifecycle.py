@@ -21,8 +21,8 @@ class FakeRunner:
         if action == "status":
             message = "daemon: running" if self.running else "daemon: not running"
         elif action == "start":
+            message = "daemon: already active" if self.running else "daemon: started"
             self.running = True
-            message = "daemon: started"
         else:
             self.running = False
             message = "daemon: stopping"
@@ -43,7 +43,7 @@ class LifecycleTests(unittest.TestCase):
             )
             daemon.start()
             daemon.close()
-            self.assertEqual(runner.actions, ["status", "start", "stop"])
+            self.assertEqual(runner.actions, ["start", "stop"])
 
     def test_does_not_stop_preexisting_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -54,7 +54,7 @@ class LifecycleTests(unittest.TestCase):
             )
             daemon.start()
             daemon.close()
-            self.assertEqual(runner.actions, ["status"])
+            self.assertEqual(runner.actions, ["start"])
 
     def test_serializes_two_lifecycles_across_one_global_lock(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -83,7 +83,7 @@ class LifecycleTests(unittest.TestCase):
             thread.join(timeout=1.0)
             self.assertTrue(acquired.is_set())
             second.close()
-            self.assertEqual(second_runner.actions, ["status", "start", "stop"])
+            self.assertEqual(second_runner.actions, ["start", "stop"])
 
     def test_reports_global_lock_wait_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

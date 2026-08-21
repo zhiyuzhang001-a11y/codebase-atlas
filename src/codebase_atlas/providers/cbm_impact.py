@@ -261,29 +261,44 @@ class CodebaseMemoryImpactProvider:
     def _search_identity(
         self, node_id: str, *, timeout_seconds: float | None = None
     ) -> Node | None:
-        cached = self._node_cache.get(node_id)
-        if cached is not None:
-            return cached
+        return self._search_identities(
+            (node_id,), timeout_seconds=timeout_seconds
+        ).get(node_id)
+
+    def _search_identities(
+        self, node_ids: tuple[str, ...], *, timeout_seconds: float | None = None
+    ) -> dict[str, Node]:
+        requested = tuple(dict.fromkeys(node_ids))
+        matches = {
+            node_id: self._node_cache[node_id]
+            for node_id in requested
+            if node_id in self._node_cache
+        }
+        missing = tuple(node_id for node_id in requested if node_id not in matches)
+        if not missing:
+            return matches
         payload = self._run(
             "search_graph",
             "--project",
             self.project,
             "--qn-pattern",
-            f"^{re.escape(node_id)}$",
+            "^(" + "|".join(re.escape(node_id).replace(r"\-", "-") for node_id in missing) + ")$",
             "--format",
             "json",
             "--limit",
-            "10",
+            str(len(missing)),
             timeout_seconds=timeout_seconds,
         )
-        matches = [node for node in self._nodes_from_search(payload) if node.id == node_id]
-        if not matches:
-            # Traces can contain external/library pseudo-nodes that have no
-            # repository source location. They are not product results.
-            return None
-        if len(matches) != 1:
-            raise RuntimeError(f"expected one exact node for {node_id}, found {len(matches)}")
-        return matches[0]
+        requested_set = set(missing)
+        for node in self._nodes_from_search(payload):
+            if node.id not in requested_set:
+                continue
+            if node.id in matches:
+                raise RuntimeError(f"expected one exact node for {node.id}, found multiple")
+            matches[node.id] = node
+        # Traces can contain external/library pseudo-nodes that have no
+        # repository source location. They intentionally remain absent.
+        return matches
 
     @staticmethod
     def _trace_rows(payload: dict[str, Any], section: str) -> tuple[dict[str, Any], ...]:
@@ -395,16 +410,24 @@ class CodebaseMemoryImpactProvider:
                 rows = self._trace_rows(payload, section)
                 if len(rows) >= 100:
                     reasons.append("provider_result_limit")
-                for row in rows:
+                exact_rows = tuple(row for row in rows if row.get("strategy") == "lsp")
+                remaining_node_slots = max_nodes - (len(discovered) - len(seeds))
+                remaining_edge_slots = max_edges - len(edge_ids)
+                selected_rows: list[dict[str, Any]] = []
+                pending_nodes: set[str] = set()
+                pending_edges: set[tuple[str, str, str]] = set()
+                for row in exact_rows:
                     # CBM can include low-confidence name-based guesses beside
                     # LSP-resolved edges. The default Atlas graph contract is
                     # exact-only, so guesses must not consume result budgets or
                     # enter paths labeled as exact.
-                    if row.get("strategy") != "lsp":
-                        continue
                     neighbor_id = row["id"]
                     examined_neighbor_ids.add(neighbor_id)
-                    if neighbor_id not in discovered and len(discovered) - len(seeds) >= max_nodes:
+                    if (
+                        neighbor_id not in discovered
+                        and neighbor_id not in pending_nodes
+                        and len(pending_nodes) >= remaining_node_slots
+                    ):
                         reasons.append("node_budget_exceeded")
                         stop = True
                         break
@@ -414,20 +437,38 @@ class CodebaseMemoryImpactProvider:
                         "calls",
                     )
                     examined_edge_ids.add(edge_id)
-                    if edge_id not in edge_ids and len(edge_ids) >= max_edges:
+                    if (
+                        edge_id not in edge_ids
+                        and edge_id not in pending_edges
+                        and len(pending_edges) >= remaining_edge_slots
+                    ):
                         reasons.append("edge_budget_exceeded")
                         stop = True
                         break
-                    try:
-                        neighbor = self._search_identity(
-                            neighbor_id, timeout_seconds=remaining()
-                        )
-                    except TimeoutError:
-                        reasons.append("time_budget_exceeded")
-                        stop = True
-                        break
+                    selected_rows.append(row)
+                    if neighbor_id not in discovered:
+                        pending_nodes.add(neighbor_id)
+                    if edge_id not in edge_ids:
+                        pending_edges.add(edge_id)
+                try:
+                    resolved = self._search_identities(
+                        tuple(row["id"] for row in selected_rows),
+                        timeout_seconds=remaining(),
+                    )
+                except TimeoutError:
+                    reasons.append("time_budget_exceeded")
+                    stop = True
+                    resolved = {}
+                for row in selected_rows:
+                    neighbor_id = row["id"]
+                    neighbor = resolved.get(neighbor_id)
                     if neighbor is None:
                         continue
+                    edge_id = (
+                        neighbor_id if direction == "upstream" else current_id,
+                        current_id if direction == "upstream" else neighbor_id,
+                        "calls",
+                    )
                     graph.add_node(neighbor)
                     discovered.add(neighbor_id)
                     confidence = row.get("confidence")

@@ -22,6 +22,7 @@ class WideProvider(CodebaseMemoryImpactProvider):
     def __init__(self, cache_dir: Path = Path("/tmp/cache")) -> None:
         super().__init__(Path("/tmp/cbm"), Path("/tmp/repo"), cache_dir, "p")
         self.trace_calls = 0
+        self.identity_batches: list[tuple[str, ...]] = []
         self.nodes = {
             "pkg.target": node("pkg.target", 1),
             "pkg.a": node("pkg.a", 2),
@@ -36,6 +37,10 @@ class WideProvider(CodebaseMemoryImpactProvider):
 
     def _search_identity(self, node_id, *, timeout_seconds=None):
         return self.nodes[node_id]
+
+    def _search_identities(self, node_ids, *, timeout_seconds=None):
+        self.identity_batches.append(tuple(node_ids))
+        return {node_id: self.nodes[node_id] for node_id in node_ids}
 
     def _run(self, tool, *args, timeout_seconds=None):
         if tool != "trace_path":
@@ -116,7 +121,8 @@ class CodebaseMemoryBudgetTests(unittest.TestCase):
         self.assertIn("--qn-pattern", provider.arguments)
 
     def test_stops_before_resolving_node_beyond_budget(self) -> None:
-        traversal = WideProvider().impact(
+        provider = WideProvider()
+        traversal = provider.impact(
             "target", direction="upstream", max_depth=1,
             max_nodes=2, max_edges=10, timeout_ms=1000,
         )
@@ -125,6 +131,7 @@ class CodebaseMemoryBudgetTests(unittest.TestCase):
         self.assertEqual(traversal.reasons, ("node_budget_exceeded",))
         self.assertEqual(traversal.examined_nodes, 3)
         self.assertEqual(traversal.examined_edges, 2)
+        self.assertEqual(provider.identity_batches, [("pkg.a", "pkg.b")])
 
     def test_returns_explicit_partial_contract_on_timeout(self) -> None:
         traversal = TimeoutProvider().impact(
