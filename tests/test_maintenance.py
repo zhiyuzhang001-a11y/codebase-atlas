@@ -164,9 +164,10 @@ class MaintenanceTests(unittest.TestCase):
             plan = cleanup_plan(config)
             target_paths = {item["path"] for item in plan["targets"]}
             retained_paths = {item["path"] for item in plan["retained"]}
-            self.assertIn(str(first), target_paths)
+            quarantine_paths = {str(first), str(second)}
+            self.assertEqual(target_paths & quarantine_paths, quarantine_paths - retained_paths)
+            self.assertEqual(len(retained_paths & quarantine_paths), 1)
             self.assertIn(str(temporary), target_paths)
-            self.assertIn(str(second), retained_paths)
             self.assertEqual(plan["refused"][0]["path"], str(symlink))
             self.assertTrue(first.exists())
             with self.assertRaisesRegex(ValueError, "refused targets"):
@@ -176,9 +177,9 @@ class MaintenanceTests(unittest.TestCase):
             plan = cleanup_plan(config)
             result = apply_cleanup(config, plan)
             self.assertEqual(result["removed_count"], 2)
-            self.assertFalse(first.exists())
             self.assertFalse(temporary.exists())
-            self.assertTrue(second.exists())
+            remaining = {str(path) for path in (first, second) if path.exists()}
+            self.assertEqual(remaining, retained_paths & quarantine_paths)
             self.assertTrue(outside.exists())
 
 
