@@ -10,6 +10,8 @@
 Atlas does not edit global MCP/editor configuration. Provider caches are stored
 under `~/.local/share/codebase-atlas/` by default and user source files remain
 unchanged.
+The wheel includes the pinned TypeScript 5.9.3 runtime used by the exact test
+analyzer; it does not depend on a target repository's `node_modules` for that API.
 
 ## Install
 
@@ -45,12 +47,16 @@ Otherwise provide the runtime locations once:
 codebase-atlas init \
   --node /path/to/node \
   --cbm-binary /path/to/codebase-memory-mcp \
-  --serena-python /path/to/serena-venv/bin/python
+  --serena-python /path/to/serena-venv/bin/python \
+  --node-bin-dir /path/containing/typescript-language-server
 ```
 
 This creates `.codebase-atlas.toml`. It contains paths only; indexes and logs go
 to the Atlas data directory. Add this configuration to version control only when
 its paths are portable for the intended users.
+
+For TypeScript repositories, `--node-bin-dir` must contain
+`typescript-language-server` when it is not beside the configured Node executable.
 
 ## Query
 

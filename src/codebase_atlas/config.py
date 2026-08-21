@@ -83,6 +83,7 @@ class AtlasConfig:
         node: Path | None = None,
         cbm_binary: Path | None = None,
         serena_python: Path | None = None,
+        node_bin_dir: Path | None = None,
         data_dir: Path | None = None,
     ) -> "AtlasConfig":
         repo = repository.resolve()
@@ -105,7 +106,7 @@ class AtlasConfig:
         return cls(
             repo, selected_language, discovered_node, discovered_cbm,
             discovered_serena, (data_dir or default_data_dir(repo)).resolve(),
-            node_bin_dir=discovered_node.parent,
+            node_bin_dir=node_bin_dir or discovered_node.parent,
         )
 
     @classmethod
@@ -149,6 +150,7 @@ def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
         ("node", config.node.is_file(), str(config.node)),
         ("codebase_memory", config.cbm_binary.is_file(), str(config.cbm_binary)),
         ("serena_python", config.serena_python.is_file(), str(config.serena_python)),
+        ("node_bin_dir", bool(config.node_bin_dir and config.node_bin_dir.is_dir()), str(config.node_bin_dir or "")),
         ("ts_analyzer", config.analyzer.is_file(), str(config.analyzer)),
         ("serena_runner", config.serena_runner.is_file(), str(config.serena_runner)),
         ("indexed_project", bool(config.project), config.project or "run codebase-atlas index"),

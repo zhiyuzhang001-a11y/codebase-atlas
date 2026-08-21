@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     initialize.add_argument("--node", type=Path)
     initialize.add_argument("--cbm-binary", type=Path)
     initialize.add_argument("--serena-python", type=Path)
+    initialize.add_argument("--node-bin-dir", type=Path)
     initialize.add_argument("--data-dir", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
@@ -113,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         config = AtlasConfig.discover(
             args.repo, language=args.language, node=args.node,
             cbm_binary=args.cbm_binary, serena_python=args.serena_python,
+            node_bin_dir=args.node_bin_dir,
             data_dir=args.data_dir,
         )
         config.write(config_path)
