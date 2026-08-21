@@ -98,7 +98,17 @@ function loadProgram(repository) {
     throw new Error(ts.flattenDiagnosticMessageText(loaded.error.messageText, '\n'));
   }
   const config = ts.parseJsonConfigFileContent(loaded.config, ts.sys, path.dirname(configPath));
-  return ts.createProgram({ rootNames: config.fileNames, options: config.options });
+  // Production tsconfigs commonly exclude *.spec.ts even though those files are
+  // exactly the evidence Atlas must inspect. Add test roots without changing the
+  // repository configuration.
+  const testFiles = ts.sys.readDirectory(
+    repository,
+    ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'],
+    ['**/node_modules/**', '**/dist/**', '**/build/**', '**/coverage/**'],
+    ['**/test/**', '**/tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*'],
+  );
+  const rootNames = [...new Set([...config.fileNames, ...testFiles])];
+  return ts.createProgram({ rootNames, options: config.options });
 }
 
 function main() {
