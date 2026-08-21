@@ -3,9 +3,11 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from codebase_atlas.contracts import Edge, Node, SourceRange
 from codebase_atlas.graph import ImpactHit, ImpactTraversal
+from codebase_atlas.providers.python_references import PythonExactReferenceProvider
 from codebase_atlas.service import AtlasService, QueryRequest
 
 
@@ -104,6 +106,224 @@ class FakeTestProvider:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_python_exact_scan_timeout_preserves_semantic_callers(self) -> None:
+        class EmptyStructural(FakeImpactProvider):
+            project = "p"
+
+            def definitions(self, symbol, *, target_path="", target_owner=""):
+                return (Node(
+                    "p.target.target", "function", symbol,
+                    SourceRange(target_path, 1, 2), "structural", 1.0, HASH,
+                ),)
+
+            def callers(self, *args, **kwargs):
+                return ImpactTraversal(())
+
+        class ExactSemantic(FakeSemanticProvider):
+            def query(self, *args, **kwargs):
+                return (Node(
+                    "ref", "reference", "target",
+                    SourceRange("target.py", 5, 5), "semantic", 1.0, HASH,
+                ),)
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text(
+                "def target():\n    pass\n\ndef caller():\n    target()\n"
+            )
+            structural = EmptyStructural()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=ExactSemantic(),
+                impact_provider=structural,
+            )
+            with patch.object(
+                service,
+                "_python_exact_references",
+                side_effect=TimeoutError,
+            ):
+                with service:
+                    response = service.query(QueryRequest(
+                        "callers", "target", {"target_path": "target.py"}
+                    ))
+        self.assertEqual([node.name for node in response.nodes], ["caller"])
+        self.assertTrue(response.truncated)
+        self.assertIn("time_budget_exceeded", response.truncation["reasons"])
+
+    def test_reuses_successful_python_caller_supplement_within_session(self) -> None:
+        class EmptyStructural(FakeImpactProvider):
+            project = "p"
+
+            def definitions(self, symbol, *, target_path="", target_owner=""):
+                return (Node(
+                    "p.target.target", "function", symbol,
+                    SourceRange(target_path, 1, 2), "structural", 1.0, HASH,
+                ),)
+
+            def callers(self, *args, **kwargs):
+                return ImpactTraversal(())
+
+        class CountingSemantic(FakeSemanticProvider):
+            queries = 0
+
+            def query(self, *args, **kwargs):
+                self.queries += 1
+                return (Node(
+                    "ref", "reference", "target",
+                    SourceRange("target.py", 5, 5), "semantic", 1.0, HASH,
+                ),)
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text(
+                "def target():\n    pass\n\ndef caller():\n    target()\n"
+            )
+            structural = EmptyStructural()
+            semantic = CountingSemantic()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=semantic,
+                impact_provider=structural,
+            )
+            with service:
+                request = QueryRequest(
+                    "callers", "target", {"target_path": "target.py"}
+                )
+                first = service.query(request)
+                second = service.query(request)
+        self.assertEqual(semantic.queries, 1)
+        self.assertEqual(first.nodes, second.nodes)
+
+    def test_reuses_successful_python_reference_scan_within_service_session(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            source = repository / "target.py"
+            source.write_text("def target():\n    pass\n")
+            service = AtlasService(
+                repository=repository,
+                semantic_provider=FakeSemanticProvider(),
+            )
+            with patch.object(
+                PythonExactReferenceProvider,
+                "references",
+                autospec=True,
+                return_value=(),
+            ) as references:
+                with service:
+                    request = QueryRequest(
+                        "references", "target", {"target_path": "target.py"}
+                    )
+                    service.query(request)
+                    service.query(request)
+        self.assertEqual(references.call_count, 1)
+
+    def test_python_reexport_references_work_without_semantic_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            package = repository / "pkg"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                "from .helpers import target as target\n"
+            )
+            (package / "helpers.py").write_text("def target():\n    pass\n")
+            (repository / "consumer.py").write_text(
+                "import pkg\n\ndef caller():\n    pkg.target()\n"
+            )
+            service = AtlasService(repository=repository)
+            with service:
+                response = service.query(QueryRequest(
+                    "references", "target", {"target_path": "pkg/helpers.py"}
+                ))
+        self.assertEqual(
+            [(node.location.path, node.location.start_line) for node in response.nodes],
+            [("consumer.py", 4)],
+        )
+        self.assertEqual(response.nodes[0].provider, "atlas-python-references")
+
+    def test_python_related_tests_adds_only_exact_test_callers(self) -> None:
+        class EmptyStructural(FakeImpactProvider):
+            project = "p"
+
+            def definitions(self, symbol, *, target_path="", target_owner=""):
+                return (Node(
+                    "p.pkg.helpers.target", "function", symbol,
+                    SourceRange(target_path, 1, 2), "structural", 1.0, HASH,
+                ),)
+
+            def related_tests(self, *args, **kwargs):
+                return ImpactTraversal(())
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            package = repository / "pkg"
+            tests = repository / "tests"
+            package.mkdir()
+            tests.mkdir()
+            (package / "__init__.py").write_text(
+                "from .helpers import target as target\n"
+            )
+            (package / "helpers.py").write_text("def target():\n    pass\n")
+            (repository / "consumer.py").write_text(
+                "import pkg\n\ndef production():\n    pkg.target()\n"
+            )
+            (tests / "test_helpers.py").write_text(
+                "import pkg\n\ndef test_target():\n    pkg.target()\n"
+            )
+            structural = EmptyStructural()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                impact_provider=structural,
+            )
+            with service:
+                response = service.query(QueryRequest(
+                    "related_tests", "target", {"target_path": "pkg/helpers.py"}
+                ))
+        self.assertEqual([node.name for node in response.nodes], ["test_target"])
+
+    def test_python_upstream_impact_adds_exact_reexport_caller(self) -> None:
+        class EmptyStructural(FakeImpactProvider):
+            project = "p"
+
+            def definitions(self, symbol, *, target_path="", target_owner=""):
+                return (Node(
+                    "p.pkg.helpers.target", "function", symbol,
+                    SourceRange(target_path, 1, 2), "structural", 1.0, HASH,
+                ),)
+
+            def impact(self, *args, **kwargs):
+                return ImpactTraversal(())
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            package = repository / "pkg"
+            package.mkdir()
+            (package / "__init__.py").write_text(
+                "from .helpers import target as target\n"
+            )
+            (package / "helpers.py").write_text("def target():\n    pass\n")
+            (repository / "consumer.py").write_text(
+                "import pkg\n\ndef caller():\n    pkg.target()\n"
+            )
+            structural = EmptyStructural()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                impact_provider=structural,
+            )
+            with service:
+                response = service.query(QueryRequest(
+                    "impact", "target", {
+                        "target_path": "pkg/helpers.py",
+                        "direction": "upstream",
+                        "depth": 1,
+                    }
+                ))
+        self.assertEqual([node.name for node in response.nodes], ["caller"])
+        self.assertEqual(response.edges[0].resolution, "exact")
+
     def test_falls_back_from_empty_python_callers_to_exact_semantic_ast_identity(self) -> None:
         class EmptyStructural(FakeImpactProvider):
             project = "p"

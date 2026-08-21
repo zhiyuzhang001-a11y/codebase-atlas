@@ -2,14 +2,14 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.12.2**, adding an Apache-2.0 public distribution boundary to
-the independently validated 0.12.1 product.
+Current release: **0.13.0**, closing the seven independently observed Python and
+TypeScript query-completeness gaps from the 0.12 line.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
-exact TS/JS test mapping, identity-safe impact traversal, exact Python caller
-supplementation, provenance policy, query budgets, index freshness, and product
-interfaces.
+exact TS/JS relation and test mapping, identity-safe impact traversal, exact
+Python import/re-export reference and caller supplementation, provenance policy,
+query budgets, index freshness, and product interfaces.
 
 ## Current scope
 
@@ -27,10 +27,9 @@ interfaces.
 
 UI, automatic source edits, and cloud sync remain out of scope.
 
-Known limits include non-exhaustive Python direct-test discovery, unsupported
-TypeScript expression-assigned caller shapes, indirect test-helper gaps, and
-bounded broad TypeScript queries. See [`SUPPORT.md`](SUPPORT.md) for the precise
-support boundary.
+Recall remains non-exhaustive for dynamic/runtime-only relationships. Broad
+TypeScript queries and very large semantic queries can still reach explicit
+budgets. See [`SUPPORT.md`](SUPPORT.md) for the precise support boundary.
 
 ## Project policies
 

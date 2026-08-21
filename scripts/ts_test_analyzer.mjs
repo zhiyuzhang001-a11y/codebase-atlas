@@ -76,6 +76,15 @@ function testApiName(expression) {
   return undefined;
 }
 
+function suiteApiName(expression) {
+  if (ts.isIdentifier(expression)) {
+    return expression.text === 'describe' ? expression.text : undefined;
+  }
+  if (ts.isPropertyAccessExpression(expression)) return suiteApiName(expression.expression);
+  if (ts.isCallExpression(expression)) return suiteApiName(expression.expression);
+  return undefined;
+}
+
 function callbackArgument(call) {
   return [...call.arguments]
     .reverse()
@@ -112,6 +121,126 @@ function callbackCallsTarget(callback, checker, targetSymbols, targetDeclaration
   }
   visit(callback.body);
   return matched;
+}
+
+function symbolMatchesTarget(symbol, targetSymbols, targetDeclarationKeys) {
+  return Boolean(symbol && (
+    targetSymbols.has(symbol) || symbol.declarations?.some(
+      declaration => targetDeclarationKeys.has(declarationKey(declaration)),
+    )
+  ));
+}
+
+function callableDeclaration(node) {
+  for (let current = node; current; current = current.parent) {
+    if (
+      ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current) ||
+      ts.isGetAccessorDeclaration(current) || ts.isSetAccessorDeclaration(current)
+    ) {
+      return current;
+    }
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      if (ts.isVariableDeclaration(current.parent)) return current.parent;
+      if (ts.isPropertyDeclaration(current.parent) || ts.isPropertyAssignment(current.parent)) {
+        return current.parent;
+      }
+      return current;
+    }
+  }
+  return undefined;
+}
+
+function callableName(node) {
+  const name = node?.name;
+  if (name && (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))) {
+    return name.text;
+  }
+  return '<anonymous>';
+}
+
+function exactDeclarationNode(repository, declaration, provider) {
+  const sourceFile = declaration.getSourceFile();
+  const relativePath = normalizedRelativePath(repository, sourceFile.fileName);
+  const start = sourceFile.getLineAndCharacterOfPosition(declaration.getStart(sourceFile));
+  const end = sourceFile.getLineAndCharacterOfPosition(declaration.end);
+  const name = callableName(declaration);
+  const evidence = declaration.getText(sourceFile);
+  return {
+    id: `ts:callable:${relativePath}:${start.line + 1}:${sha256(name).slice(0, 12)}`,
+    kind: ts.isMethodDeclaration(declaration) ? 'method' : 'function',
+    name,
+    location: {
+      path: relativePath,
+      start_line: start.line + 1,
+      end_line: end.line + 1,
+      start_column: start.character + 1,
+      end_column: end.character + 1,
+    },
+    provider,
+    confidence: 1.0,
+    evidence_hash: sha256(evidence),
+    attributes: { strategy: 'typescript_compiler_symbol_identity' },
+  };
+}
+
+function directTargetCall(node, checker, targetSymbols, targetDeclarationKeys) {
+  if (!ts.isCallExpression(node)) return false;
+  const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(node.expression));
+  return symbolMatchesTarget(symbol, targetSymbols, targetDeclarationKeys);
+}
+
+function reachableTargetEvidence(root, checker, targetSymbols, targetDeclarationKeys) {
+  const visitedDeclarations = new Set();
+  let evidence;
+  function visit(node) {
+    if (evidence) return;
+    if (directTargetCall(node, checker, targetSymbols, targetDeclarationKeys)) {
+      evidence = node;
+      return;
+    }
+    if (ts.isCallExpression(node)) {
+      const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(node.expression));
+      for (const declaration of symbol?.declarations ?? []) {
+        const key = declarationKey(declaration);
+        if (visitedDeclarations.has(key)) continue;
+        visitedDeclarations.add(key);
+        const callable = callableDeclaration(declaration);
+        if (callable) visit(callable);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(root.body ?? root);
+  return evidence;
+}
+
+function fileDiverseOrder(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.node.location.path;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const paths = [...groups.keys()].sort((left, right) => left.localeCompare(right));
+  const ordered = [];
+  for (let index = 0; ; index += 1) {
+    let added = false;
+    for (const filePath of paths) {
+      const item = groups.get(filePath)[index];
+      if (item) {
+        ordered.push(item);
+        added = true;
+      }
+    }
+    if (!added) return ordered;
+  }
+}
+
+function hasEnclosingSuite(call) {
+  for (let parent = call.parent; parent; parent = parent.parent) {
+    if (ts.isCallExpression(parent) && suiteApiName(parent.expression)) return true;
+  }
+  return false;
 }
 
 function loadProgram(repository, selectedConfig = '', targetPath = '') {
@@ -157,7 +286,7 @@ function main() {
   const targetPath = args['target-path'] ?? '';
   const targetOwner = args['target-owner'] ?? '';
   const queryType = args['query-type'] ?? 'related_tests';
-  if (queryType !== 'related_tests' && queryType !== 'references') {
+  if (!['related_tests', 'references', 'callers', 'callees'].includes(queryType)) {
     throw new Error(`unsupported query type: ${queryType}`);
   }
   if (!query || !fs.statSync(repository).isDirectory()) {
@@ -185,10 +314,15 @@ function main() {
       }
       if (name?.text === query && (!targetOwner || owner === targetOwner)) {
         const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(name));
-        if (symbol && !targetSymbols.has(symbol)) {
-          targetSymbols.add(symbol);
+        if (symbol) {
           targetDeclarationKeys.add(declarationKey(node));
-          targetDeclarations.push({ sourceFile, node, symbol });
+          const existing = targetDeclarations.findIndex(item => item.symbol === symbol);
+          if (existing < 0) {
+            targetSymbols.add(symbol);
+            targetDeclarations.push({ sourceFile, node, symbol });
+          } else if (!targetDeclarations[existing].node.body && node.body) {
+            targetDeclarations[existing] = { sourceFile, node, symbol };
+          }
         }
       }
       ts.forEachChild(node, findDeclarations);
@@ -254,6 +388,83 @@ function main() {
     return;
   }
 
+  if (queryType === 'callers') {
+    const seen = new Set();
+    for (const sourceFile of program.getSourceFiles()) {
+      if (sourceFile.isDeclarationFile || sourceFile.fileName.includes(`${path.sep}node_modules${path.sep}`)) continue;
+      function findCallers(node) {
+        if (directTargetCall(node, checker, targetSymbols, targetDeclarationKeys)) {
+          const declaration = callableDeclaration(node.parent);
+          if (declaration && declaration !== target.node) {
+            const caller = exactDeclarationNode(repository, declaration, 'atlas-ts-relations');
+            if (!seen.has(caller.id)) {
+              seen.add(caller.id);
+              results.push({
+                node: caller,
+                edge: {
+                  source_id: caller.id,
+                  target_id: targetId,
+                  relation: 'calls',
+                  provider: 'atlas-ts-relations',
+                  confidence: 1.0,
+                  evidence_hash: sha256(node.getText(sourceFile)),
+                  resolution: 'exact',
+                  attributes: { strategy: 'typescript_compiler_symbol_identity' },
+                },
+              });
+            }
+          }
+        }
+        ts.forEachChild(node, findCallers);
+      }
+      findCallers(sourceFile);
+    }
+    results.sort((left, right) =>
+      left.node.location.path.localeCompare(right.node.location.path) ||
+      left.node.location.start_line - right.node.location.start_line,
+    );
+    process.stdout.write(`${JSON.stringify({ schema_version: 1, query_type: queryType, target_id: targetId, results }, null, 2)}\n`);
+    return;
+  }
+
+  if (queryType === 'callees') {
+    const seen = new Set();
+    function findCallees(node) {
+      if (ts.isCallExpression(node)) {
+        const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(node.expression));
+        for (const declaration of symbol?.declarations ?? []) {
+          const callable = callableDeclaration(declaration);
+          if (!callable || callable === target.node) continue;
+          const callee = exactDeclarationNode(repository, callable, 'atlas-ts-relations');
+          if (seen.has(callee.id)) continue;
+          seen.add(callee.id);
+          results.push({
+            node: callee,
+            edge: {
+              source_id: targetId,
+              target_id: callee.id,
+              relation: 'calls',
+              provider: 'atlas-ts-relations',
+              confidence: 1.0,
+              evidence_hash: sha256(node.getText(target.sourceFile)),
+              resolution: 'exact',
+              attributes: { strategy: 'typescript_compiler_symbol_identity' },
+            },
+          });
+          break;
+        }
+      }
+      ts.forEachChild(node, findCallees);
+    }
+    findCallees(target.node);
+    results.sort((left, right) =>
+      left.node.location.path.localeCompare(right.node.location.path) ||
+      left.node.location.start_line - right.node.location.start_line,
+    );
+    process.stdout.write(`${JSON.stringify({ schema_version: 1, query_type: queryType, target_id: targetId, results }, null, 2)}\n`);
+    return;
+  }
+
   for (const sourceFile of program.getSourceFiles()) {
     if (sourceFile.isDeclarationFile || sourceFile.fileName.includes(`${path.sep}node_modules${path.sep}`)) continue;
     const relativePath = normalizedRelativePath(repository, sourceFile.fileName);
@@ -300,6 +511,62 @@ function main() {
           });
         }
       }
+      if (
+        ts.isCallExpression(node) && suiteApiName(node.expression) &&
+        !hasEnclosingSuite(node)
+      ) {
+        const callback = callbackArgument(node);
+        const targetCall = callback && reachableTargetEvidence(
+          callback, checker, targetSymbols, targetDeclarationKeys,
+        );
+        const targetCallIsExternalEvidence = targetCall && (
+          targetCall.getSourceFile() !== sourceFile ||
+          targetCall.getStart(sourceFile) < callback.getStart(sourceFile) ||
+          targetCall.end > callback.end
+        );
+        if (targetCall && targetCallIsExternalEvidence) {
+          const suiteStart = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+          const suiteEnd = sourceFile.getLineAndCharacterOfPosition(node.end);
+          const evidenceFile = targetCall.getSourceFile();
+          const evidenceStart = evidenceFile === sourceFile
+            ? sourceFile.getLineAndCharacterOfPosition(targetCall.getStart(sourceFile))
+            : suiteStart;
+          const title = testTitle(node, suiteStart.line + 1);
+          const nodeId = `ts:test-suite:${relativePath}:${suiteStart.line + 1}:${sha256(title).slice(0, 12)}`;
+          const evidenceHash = sha256(targetCall.getText(evidenceFile));
+          results.push({
+            node: {
+              id: nodeId,
+              kind: 'test_suite',
+              name: title,
+              location: {
+                path: relativePath,
+                start_line: Math.min(suiteStart.line, evidenceStart.line) + 1,
+                end_line: suiteEnd.line + 1,
+                start_column: 1,
+                end_column: suiteEnd.character + 1,
+              },
+              provider: 'atlas-ts-tests',
+              confidence: 1.0,
+              evidence_hash: evidenceHash,
+              attributes: {
+                framework_api: suiteApiName(node.expression),
+                strategy: 'enclosing_suite_via_resolved_helper_call',
+              },
+            },
+            edge: {
+              source_id: nodeId,
+              target_id: targetId,
+              relation: 'calls',
+              provider: 'atlas-ts-tests',
+              confidence: 1.0,
+              evidence_hash: evidenceHash,
+              resolution: 'exact',
+              attributes: { direction: 'downstream', depth: 1 },
+            },
+          });
+        }
+      }
       ts.forEachChild(node, findTests);
     }
     findTests(sourceFile);
@@ -309,7 +576,8 @@ function main() {
     left.node.location.path.localeCompare(right.node.location.path) ||
     left.node.location.start_line - right.node.location.start_line,
   );
-  process.stdout.write(`${JSON.stringify({ schema_version: 1, query_type: queryType, target_id: targetId, results }, null, 2)}\n`);
+  const orderedResults = fileDiverseOrder(results);
+  process.stdout.write(`${JSON.stringify({ schema_version: 1, query_type: queryType, target_id: targetId, results: orderedResults }, null, 2)}\n`);
 }
 
 try {

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from .contracts import Edge, Node
 from .graph import ImpactHit, ImpactTraversal
 from .providers.python_callers import PythonExactCallerProvider
+from .providers.python_references import PythonExactReferenceProvider
 
 if TYPE_CHECKING:
     from .lifecycle import CodebaseMemoryDaemon
@@ -93,6 +94,12 @@ class AtlasService:
         self.started = False
         self._structural_started = False
         self._semantic_started = False
+        self._python_reference_cache: dict[
+            tuple[Path, str, str], tuple[Node, ...]
+        ] = {}
+        self._python_caller_cache: dict[
+            tuple[Path, str, str, str, str], ImpactTraversal
+        ] = {}
 
     def start(self) -> None:
         if self.started:
@@ -132,6 +139,8 @@ class AtlasService:
                 self.lifecycle.close()
         self._semantic_started = False
         self._structural_started = False
+        self._python_reference_cache.clear()
+        self._python_caller_cache.clear()
         self.started = False
 
     def query(self, request: QueryRequest) -> QueryResponse:
@@ -158,6 +167,24 @@ class AtlasService:
         if request.query_type == "references":
             repository = request.parameters.get("repository", self.repository)
             nodes_list: list[Node] = []
+            target_path = str(request.parameters.get("target_path", ""))
+            if repository is not None and Path(target_path).suffix == ".py":
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if remaining_timeout is None:
+                    return self._partial_time_response(
+                        request.query_type, (), (), limits, started
+                    )
+                try:
+                    nodes_list.extend(self._python_exact_references(
+                        Path(repository),
+                        request.symbol,
+                        target_path=target_path,
+                        timeout_ms=remaining_timeout,
+                    ))
+                except TimeoutError:
+                    return self._partial_time_response(
+                        request.query_type, tuple(nodes_list), (), limits, started
+                    )
             if (
                 repository is not None
                 and self._has_ts_project(repository)
@@ -250,6 +277,15 @@ class AtlasService:
                 traversal = self._exact_python_caller_supplement(
                     request, traversal, limits, started
                 )
+            repository = request.parameters.get("repository", self.repository)
+            if (
+                repository is not None
+                and self._has_ts_project(Path(repository))
+                and hasattr(self.test_provider, request.query_type)
+            ):
+                traversal = self._exact_ts_relation_supplement(
+                    request, traversal, limits, started, Path(repository)
+                )
             return self._impact_response(
                 request.query_type,
                 traversal,
@@ -293,16 +329,20 @@ class AtlasService:
                     limits,
                     started,
                 )
-            return self._impact_response(
-                request.query_type,
-                self.structural_provider.related_tests(
+            traversal = self.structural_provider.related_tests(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                     target_owner=str(request.parameters.get("target_owner", "")),
                     max_nodes=limits["max_nodes"],
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
-                ),
+                )
+            traversal = self._exact_python_caller_supplement(
+                request, traversal, limits, started, only_tests=True
+            )
+            return self._impact_response(
+                request.query_type,
+                traversal,
                 limits,
                 started,
             )
@@ -328,6 +368,13 @@ class AtlasService:
             max_edges=limits["max_edges"],
             timeout_ms=remaining_timeout,
         )
+        if (
+            request.parameters.get("direction", "upstream") == "upstream"
+            and Path(str(request.parameters.get("target_path", ""))).suffix == ".py"
+        ):
+            traversal = self._exact_python_caller_supplement(
+                request, traversal, limits, started
+            )
         hits_list = list(traversal)
         repository = request.parameters.get("repository", self.repository)
         extra_reasons: list[str] = []
@@ -382,45 +429,106 @@ class AtlasService:
         structural: ImpactTraversal,
         limits: dict[str, int],
         started: float,
+        *,
+        only_tests: bool = False,
     ) -> ImpactTraversal:
         target_path = str(request.parameters.get("target_path", ""))
+        repository = request.parameters.get("repository", self.repository)
         if (
-            self.repository is None
+            repository is None
             or Path(target_path).suffix != ".py"
-            or self.semantic_provider is None
             or self.structural_provider is None
         ):
             return structural
+        repository = Path(repository).resolve()
 
         structural_hits = tuple(structural)
         structural_reasons = tuple(getattr(structural, "reasons", ()))
+        project = str(getattr(self.structural_provider, "project", ""))
+        if not project:
+            return structural
+        cache_key = (
+            repository,
+            project,
+            request.symbol,
+            target_path,
+            str(request.parameters.get("target_owner", "")),
+        )
 
-        def timed_out() -> ImpactTraversal:
+        def merge_semantic(
+            semantic: ImpactTraversal, *, semantic_timed_out: bool = False
+        ) -> ImpactTraversal:
+            merged = list(structural_hits)
+            seen_ids = {hit.node.id for hit in merged}
+            for hit in semantic:
+                if only_tests and not self._is_python_test_node(hit.node):
+                    continue
+                if hit.node.id not in seen_ids:
+                    merged.append(hit)
+                    seen_ids.add(hit.node.id)
             return ImpactTraversal(
-                structural_hits,
-                True,
-                tuple(dict.fromkeys((*structural_reasons, "time_budget_exceeded"))),
-                max(getattr(structural, "examined_nodes", 0), len(structural_hits)),
-                max(getattr(structural, "examined_edges", 0), len(structural_hits)),
+                tuple(merged),
+                bool(getattr(structural, "truncated", False)) or semantic_timed_out,
+                tuple(dict.fromkeys((
+                    *structural_reasons,
+                    *(("time_budget_exceeded",) if semantic_timed_out else ()),
+                ))),
+                max(getattr(structural, "examined_nodes", 0), len(merged)),
+                max(getattr(structural, "examined_edges", 0), len(merged)),
             )
 
-        remaining_timeout = self._remaining_timeout(limits, started)
-        if remaining_timeout is None or not self._ensure_semantic(remaining_timeout):
-            return timed_out()
+        cached_callers = self._python_caller_cache.get(cache_key)
+        if cached_callers is not None:
+            return merge_semantic(cached_callers)
+
+        references: list[Node] = []
+        semantic_timed_out = False
+        if self.semantic_provider is not None:
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None or not self._ensure_semantic(remaining_timeout):
+                semantic_timed_out = True
+            else:
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if remaining_timeout is None:
+                    semantic_timed_out = True
+                else:
+                    try:
+                        semantic_references = tuple(self.semantic_provider.query(
+                            "references",
+                            request.symbol,
+                            target_path=target_path,
+                            target_owner=str(request.parameters.get("target_owner", "")),
+                            timeout_ms=remaining_timeout,
+                        ))
+                    except TimeoutError:
+                        self._semantic_started = False
+                        semantic_timed_out = True
+                    else:
+                        references.extend(semantic_references)
+        exact_timed_out = False
         remaining_timeout = self._remaining_timeout(limits, started)
         if remaining_timeout is None:
-            return timed_out()
-        try:
-            references = tuple(self.semantic_provider.query(
-                "references",
-                request.symbol,
-                target_path=target_path,
-                target_owner=str(request.parameters.get("target_owner", "")),
-                timeout_ms=remaining_timeout,
-            ))
-        except TimeoutError:
-            self._semantic_started = False
-            return timed_out()
+            exact_timed_out = True
+        else:
+            try:
+                exact_references = self._python_exact_references(
+                    repository,
+                    request.symbol,
+                    target_path=target_path,
+                    timeout_ms=remaining_timeout,
+                )
+            except TimeoutError:
+                exact_timed_out = True
+            else:
+                seen_locations = {
+                    (node.location.path, node.location.start_line, node.location.start_column)
+                    for node in references
+                }
+                references.extend(
+                    node for node in exact_references
+                    if (node.location.path, node.location.start_line, node.location.start_column)
+                    not in seen_locations
+                )
         seeds = tuple(self.structural_provider.definitions(
             request.symbol,
             target_path=target_path,
@@ -428,24 +536,86 @@ class AtlasService:
         ))
         if len(seeds) != 1:
             return structural
-        project = str(getattr(self.structural_provider, "project", ""))
-        if not project:
-            return structural
-        semantic = PythonExactCallerProvider(self.repository, project).callers(
-            seeds[0], references
+        semantic = PythonExactCallerProvider(repository, project).callers(
+            seeds[0], tuple(references)
         )
-        merged = list(structural_hits)
-        seen_ids = {hit.node.id for hit in merged}
-        for hit in semantic:
-            if hit.node.id not in seen_ids:
-                merged.append(hit)
-                seen_ids.add(hit.node.id)
+        supplement_timed_out = semantic_timed_out or exact_timed_out
+        if not supplement_timed_out:
+            self._python_caller_cache[cache_key] = semantic
+        return merge_semantic(semantic, semantic_timed_out=supplement_timed_out)
+
+    @staticmethod
+    def _is_python_test_node(node: Node) -> bool:
+        path = Path(node.location.path)
+        return (
+            node.name.startswith("test")
+            and (path.name.startswith("test_") or "tests" in path.parts)
+        )
+
+    def _python_exact_references(
+        self,
+        repository: Path,
+        symbol: str,
+        *,
+        target_path: str,
+        timeout_ms: int,
+    ) -> tuple[Node, ...]:
+        key = (repository.resolve(), symbol, target_path)
+        cached = self._python_reference_cache.get(key)
+        if cached is not None:
+            return cached
+        results = PythonExactReferenceProvider(key[0]).references(
+            symbol,
+            target_path=target_path,
+            timeout_ms=timeout_ms,
+        )
+        self._python_reference_cache[key] = results
+        return results
+
+    def _exact_ts_relation_supplement(
+        self,
+        request: QueryRequest,
+        structural: ImpactTraversal,
+        limits: dict[str, int],
+        started: float,
+        repository: Path,
+    ) -> ImpactTraversal:
+        hits = list(structural)
+        reasons = tuple(getattr(structural, "reasons", ()))
+        remaining_timeout = self._remaining_timeout(limits, started)
+        timed_out = remaining_timeout is None
+        results: tuple[tuple[Node, Edge], ...] = ()
+        if not timed_out:
+            try:
+                results = getattr(self.test_provider, request.query_type)(
+                    repository,
+                    request.symbol,
+                    target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
+                    timeout_ms=remaining_timeout,
+                )
+            except TimeoutError:
+                timed_out = True
+        seen_ids = {hit.node.id for hit in hits}
+        seen_identities = {
+            (hit.node.name, hit.node.location.path, hit.node.location.start_line)
+            for hit in hits
+        }
+        for node, edge in results:
+            identity = (node.name, node.location.path, node.location.start_line)
+            if node.id not in seen_ids and identity not in seen_identities:
+                hits.append(ImpactHit(node, 1, (edge,)))
+                seen_ids.add(node.id)
+                seen_identities.add(identity)
         return ImpactTraversal(
-            tuple(merged),
-            bool(getattr(structural, "truncated", False)),
-            structural_reasons,
-            max(getattr(structural, "examined_nodes", 0), len(merged)),
-            max(getattr(structural, "examined_edges", 0), len(merged)),
+            tuple(hits),
+            bool(getattr(structural, "truncated", False)) or timed_out,
+            tuple(dict.fromkeys((
+                *reasons,
+                *(("time_budget_exceeded",) if timed_out else ()),
+            ))),
+            max(getattr(structural, "examined_nodes", 0), len(hits)),
+            max(getattr(structural, "examined_edges", 0), len(hits)),
         )
 
     def _has_ts_project(self, repository: Path) -> bool:

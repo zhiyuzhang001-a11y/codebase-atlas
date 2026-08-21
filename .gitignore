@@ -5,4 +5,5 @@ dist/
 build/
 *.egg-info/
 .atlas/
+.agent-token-manager/
 node_modules/

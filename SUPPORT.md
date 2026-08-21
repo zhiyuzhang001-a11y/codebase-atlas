@@ -17,8 +17,10 @@ check verifies discoverable capabilities, not every Provider/repository version.
 
 ## Known limits
 
-- Recall is not exhaustive. Python direct-test discovery, TypeScript
-  expression-assigned callers, and indirect test helpers can be unsupported.
+- Recall is not exhaustive. Atlas covers explicit Python import/re-export
+  bindings, resolved TypeScript expression-assigned callers/direct callees, and
+  resolved external-helper test suites; dynamic imports, runtime dispatch, and
+  deeper framework-specific indirection can still be unsupported.
 - Broad TypeScript references/related-tests/impact can reach explicit node or
   time budgets. Truncated results are partial evidence, not completeness.
 - Large semantic references can use the full timeout; time-truncated results are

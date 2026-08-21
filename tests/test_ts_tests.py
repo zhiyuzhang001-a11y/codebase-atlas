@@ -81,6 +81,40 @@ class TypeScriptTestProviderTests(unittest.TestCase):
             [("tests/members.test.ts", 4)],
         )
 
+    def test_returns_expression_assigned_arrow_caller_by_symbol_identity(self) -> None:
+        results = self.provider.callers(
+            ROOT / "fixtures/ts-tests",
+            "target",
+            target_path="src/relations.ts",
+        )
+        self.assertEqual([node.name for node, _edge in results], ["arrowCaller"])
+        self.assertTrue(all(edge.resolution == "exact" for _node, edge in results))
+
+    def test_returns_resolved_direct_callees(self) -> None:
+        results = self.provider.callees(
+            ROOT / "fixtures/ts-tests",
+            "root",
+            target_path="src/relations.ts",
+        )
+        self.assertEqual([node.name for node, _edge in results], ["first", "second"])
+
+    def test_callees_prefer_overload_implementation_body(self) -> None:
+        results = self.provider.callees(
+            ROOT / "fixtures/ts-tests",
+            "overloaded",
+            target_path="src/relations.ts",
+        )
+        self.assertIn("first", [node.name for node, _edge in results])
+
+    def test_returns_outer_suite_via_resolved_external_helper(self) -> None:
+        results = self.provider.related_tests(
+            ROOT / "fixtures/ts-tests",
+            "root",
+            target_path="src/relations.ts",
+        )
+        self.assertEqual([node.name for node, _edge in results], ["root helper suite"])
+        self.assertEqual(results[0][0].location.start_line, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

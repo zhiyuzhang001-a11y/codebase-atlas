@@ -32,6 +32,7 @@ STANDARD_FILES = {
 }
 FORBIDDEN_TRACKED_PARTS = {
     ".atlas",
+    ".agent-token-manager",
     ".evaluation-data",
     ".evaluation-tools",
     "node_modules",

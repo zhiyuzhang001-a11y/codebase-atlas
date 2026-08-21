@@ -17,8 +17,8 @@ Codebase Atlas releases from its public GitHub repository under Apache License
 
 ```bash
 python scripts/verify_release.py
-git tag -a v0.12.2 -m "Codebase Atlas 0.12.2"
-git push origin main v0.12.2
+git tag -a v0.13.0 -m "Codebase Atlas 0.13.0"
+git push origin main v0.13.0
 ```
 
 The tag workflow rebuilds the wheel, rejects version/tag or packaged-asset

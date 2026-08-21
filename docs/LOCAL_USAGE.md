@@ -239,10 +239,12 @@ cannot safely resume a partial traversal, so `continuation` is `null` and
 `resumable` is `false` rather than implying that omitted results can be recovered.
 
 Within a long-lived JSON-lines or MCP session, Atlas caches exact definitions and
-completed graph traversals. Repeating the same query and budget avoids duplicate
-CBM trace/identity work. The cache is cleared automatically when the configured
-CBM index database's modification fingerprint changes; time-truncated traversals
-are never cached.
+completed graph traversals, plus successful Python exact-reference and caller
+supplements. Repeating the same query and budget avoids duplicate CBM,
+semantic-reference, and AST work. Python supplement caches live only for the
+read-only service session and are cleared on close; time-truncated supplements
+and traversals are never cached. Graph caches also clear when the configured CBM
+index database's modification fingerprint changes.
 
 Atlas serializes CBM use across local Atlas processes because the upstream Provider
 supports only one global daemon at a time, even when repositories use different

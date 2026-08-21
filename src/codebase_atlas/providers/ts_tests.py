@@ -112,3 +112,59 @@ class TypeScriptTestProvider:
         ):
             raise ValueError("invalid TypeScript reference analyzer result")
         return tuple(self._node(item) for item in payload["results"])
+
+    def _relations(
+        self,
+        query_type: str,
+        repository: Path,
+        symbol: str,
+        *,
+        target_path: str = "",
+        target_owner: str = "",
+        timeout_ms: int | None = None,
+    ) -> tuple[tuple[Node, Edge], ...]:
+        command = [
+            str(self.node), str(self.analyzer),
+            "--repo", str(repository.resolve()),
+            "--symbol", symbol,
+            "--query-type", query_type,
+        ]
+        if target_path:
+            command.extend(("--target-path", target_path))
+        if target_owner:
+            command.extend(("--target-owner", target_owner))
+        if self.tsconfig is not None:
+            command.extend(("--tsconfig", str(self.tsconfig)))
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_ms / 1000.0 if timeout_ms is not None else None,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"TypeScript {query_type} analysis exceeded the query time budget"
+            ) from exc
+        if completed.returncode != 0:
+            raise RuntimeError(
+                completed.stderr.strip() or f"TypeScript {query_type} analyzer failed"
+            )
+        payload = json.loads(completed.stdout)
+        if (
+            payload.get("schema_version") != 1
+            or payload.get("query_type") != query_type
+            or not isinstance(payload.get("results"), list)
+        ):
+            raise ValueError(f"invalid TypeScript {query_type} analyzer result")
+        return tuple(
+            (self._node(item["node"]), self._edge(item["edge"]))
+            for item in payload["results"]
+        )
+
+    def callers(self, repository: Path, symbol: str, **kwargs) -> tuple[tuple[Node, Edge], ...]:
+        return self._relations("callers", repository, symbol, **kwargs)
+
+    def callees(self, repository: Path, symbol: str, **kwargs) -> tuple[tuple[Node, Edge], ...]:
+        return self._relations("callees", repository, symbol, **kwargs)
