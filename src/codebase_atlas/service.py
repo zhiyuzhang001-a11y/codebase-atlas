@@ -5,10 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .contracts import Edge, Node
 from .graph import ImpactHit, ImpactTraversal
+from .providers.python_callers import PythonExactCallerProvider
+
+if TYPE_CHECKING:
+    from .lifecycle import CodebaseMemoryDaemon
+    from .providers.cbm_impact import CodebaseMemoryImpactProvider
+    from .providers.serena import SerenaSemanticProvider
+    from .providers.ts_tests import TypeScriptTestProvider
 
 
 DEFAULT_MAX_NODES = 100
@@ -71,11 +78,11 @@ class AtlasService:
         self,
         *,
         repository: Path | None = None,
-        structural_provider=None,
-        semantic_provider=None,
-        test_provider=None,
-        impact_provider=None,
-        lifecycle=None,
+        structural_provider: CodebaseMemoryImpactProvider | None = None,
+        semantic_provider: SerenaSemanticProvider | None = None,
+        test_provider: TypeScriptTestProvider | None = None,
+        impact_provider: CodebaseMemoryImpactProvider | None = None,
+        lifecycle: CodebaseMemoryDaemon | None = None,
     ) -> None:
         self.repository = repository.resolve() if repository is not None else None
         self.structural_provider = structural_provider or impact_provider
@@ -231,16 +238,21 @@ class AtlasService:
                     limits,
                     started,
                 )
-            return self._impact_response(
-                request.query_type,
-                method(
+            traversal = method(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                     target_owner=str(request.parameters.get("target_owner", "")),
                     max_nodes=limits["max_nodes"],
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
-                ),
+                )
+            if request.query_type == "callers" and not tuple(traversal):
+                traversal = self._exact_python_caller_fallback(
+                    request, traversal, limits, started
+                )
+            return self._impact_response(
+                request.query_type,
+                traversal,
                 limits,
                 started,
             )
@@ -363,6 +375,52 @@ class AtlasService:
         else:
             traversal = tuple(hits_list)
         return self._impact_response(request.query_type, traversal, limits, started)
+
+    def _exact_python_caller_fallback(
+        self,
+        request: QueryRequest,
+        structural: ImpactTraversal,
+        limits: dict[str, int],
+        started: float,
+    ) -> ImpactTraversal:
+        target_path = str(request.parameters.get("target_path", ""))
+        if (
+            self.repository is None
+            or Path(target_path).suffix != ".py"
+            or self.semantic_provider is None
+            or self.structural_provider is None
+        ):
+            return structural
+        remaining_timeout = self._remaining_timeout(limits, started)
+        if remaining_timeout is None or not self._ensure_semantic(remaining_timeout):
+            return ImpactTraversal((), True, ("time_budget_exceeded",))
+        remaining_timeout = self._remaining_timeout(limits, started)
+        if remaining_timeout is None:
+            return ImpactTraversal((), True, ("time_budget_exceeded",))
+        try:
+            references = tuple(self.semantic_provider.query(
+                "references",
+                request.symbol,
+                target_path=target_path,
+                target_owner=str(request.parameters.get("target_owner", "")),
+                timeout_ms=remaining_timeout,
+            ))
+        except TimeoutError:
+            self._semantic_started = False
+            return ImpactTraversal((), True, ("time_budget_exceeded",))
+        seeds = tuple(self.structural_provider.definitions(
+            request.symbol,
+            target_path=target_path,
+            target_owner=str(request.parameters.get("target_owner", "")),
+        ))
+        if len(seeds) != 1:
+            return structural
+        project = str(getattr(self.structural_provider, "project", ""))
+        if not project:
+            return structural
+        return PythonExactCallerProvider(self.repository, project).callers(
+            seeds[0], references
+        )
 
     def _has_ts_project(self, repository: Path) -> bool:
         if self.test_provider is None:
