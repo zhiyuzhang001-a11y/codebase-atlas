@@ -20,16 +20,15 @@ that must not be inferred or automated.
 - [x] Select Apache License 2.0, add it to source and package metadata, retain
   third-party notices, and include all license material in the wheel.
 - [x] Approve changing the GitHub repository from private to public.
-- [ ] Enable and verify an appropriate private vulnerability-reporting channel,
+- [x] Enable and verify an appropriate private vulnerability-reporting channel,
   then update `SECURITY.md` with the exact contact route.
 - [x] Confirm Apache-2.0 contribution terms and use the private reporting channel
   for sensitive code-of-conduct enforcement reports.
-- [ ] Run `python scripts/check_publication_readiness.py --mode public`, the full
+- [x] Run `python scripts/check_publication_readiness.py --mode public`, the full
   test suite, wheel verification, lifecycle acceptance, and GitHub CI on the
   final public candidate.
-- [ ] Test all repository, documentation, issue, security, changelog, and release
+- [x] Test all repository, documentation, issue, security, changelog, and release
   links from a signed-out browser after visibility changes.
 
-Public visibility must not be enabled while any owner-decision item is open.
-Passing this checklist does not imply exhaustive query recall or remove the
-documented limits in `SUPPORT.md`.
+All public launch gates passed for 0.12.2. Passing this checklist does not imply
+exhaustive query recall or remove the documented limits in `SUPPORT.md`.
