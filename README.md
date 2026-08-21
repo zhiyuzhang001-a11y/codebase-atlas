@@ -2,8 +2,8 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.14.0**, improving large-repository TypeScript references and
-bounded Python session performance without weakening the 0.13 correctness gate.
+Current release: **0.15.0**, reducing Python cold relationship latency through
+query-owned Provider scheduling without weakening the 0.14 correctness gate.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

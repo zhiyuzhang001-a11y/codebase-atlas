@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 import tempfile
+from threading import Event, current_thread
 from unittest.mock import patch
 
 from codebase_atlas.contracts import Edge, Node, SourceRange
@@ -195,6 +196,159 @@ class ServiceTests(unittest.TestCase):
                 second = service.query(request)
         self.assertEqual(semantic.queries, 1)
         self.assertEqual(first.nodes, second.nodes)
+
+    def test_python_caller_overlaps_structural_and_semantic_startup(self) -> None:
+        structural_entered = Event()
+        semantic_entered = Event()
+
+        class CoordinatedLifecycle(FakeLifecycle):
+            overlapped = False
+
+            def start(self, *, timeout_seconds=None):
+                super().start(timeout_seconds=timeout_seconds)
+                structural_entered.set()
+                self.overlapped = semantic_entered.wait(1.0)
+                if not self.overlapped:
+                    raise RuntimeError("semantic startup did not overlap")
+
+        class EmptyStructural(FakeImpactProvider):
+            project = "p"
+
+            def callers(self, *args, **kwargs):
+                return ImpactTraversal(())
+
+        class CoordinatedSemantic(FakeSemanticProvider):
+            worker_name = ""
+
+            def start(self, *, timeout_seconds=None):
+                super().start(timeout_seconds=timeout_seconds)
+                self.worker_name = current_thread().name
+                semantic_entered.set()
+                if not structural_entered.wait(1.0):
+                    raise RuntimeError("structural startup did not overlap")
+
+            def query(self, *args, **kwargs):
+                return ()
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text("def target():\n    pass\n")
+            lifecycle = CoordinatedLifecycle()
+            semantic = CoordinatedSemantic()
+            structural = EmptyStructural()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=semantic,
+                impact_provider=structural,
+                lifecycle=lifecycle,
+            )
+            with service:
+                service.query(QueryRequest(
+                    "callers", "target", {"target_path": "target.py"}
+                ))
+        self.assertTrue(lifecycle.overlapped)
+        self.assertTrue(semantic.worker_name.startswith("atlas-python-evidence"))
+
+    def test_parallel_semantic_timeout_preserves_structural_python_caller(self) -> None:
+        class StructuralCaller(FakeImpactProvider):
+            project = "p"
+
+        class TimeoutSemantic(FakeSemanticProvider):
+            def query(self, *args, **kwargs):
+                raise TimeoutError("budget")
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text("def target():\n    pass\n")
+            structural = StructuralCaller()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=TimeoutSemantic(),
+                impact_provider=structural,
+            )
+            with service:
+                response = service.query(QueryRequest(
+                    "callers", "target", {"target_path": "target.py"}
+                ))
+        self.assertEqual([node.name for node in response.nodes], ["caller"])
+        self.assertTrue(response.truncated)
+        self.assertIn("time_budget_exceeded", response.truncation["reasons"])
+
+    def test_structural_timeout_skips_post_deadline_python_merge(self) -> None:
+        class TimedOutStructural(FakeImpactProvider):
+            project = "p"
+            definition_calls = 0
+
+            def callers(self, *args, **kwargs):
+                return ImpactTraversal(
+                    (), True, ("time_budget_exceeded",), 1, 0
+                )
+
+            def definitions(self, *args, **kwargs):
+                self.definition_calls += 1
+                return super().definitions(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text("def target():\n    pass\n")
+            structural = TimedOutStructural()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=FakeSemanticProvider(),
+                impact_provider=structural,
+            )
+            with service:
+                response = service.query(QueryRequest(
+                    "callers", "target", {"target_path": "target.py"}
+                ))
+        self.assertTrue(response.truncated)
+        self.assertEqual(structural.definition_calls, 0)
+
+    def test_parallel_worker_is_closed_after_structural_query_error(self) -> None:
+        class FailingStructural(FakeImpactProvider):
+            project = "p"
+
+            def callers(self, *args, **kwargs):
+                raise RuntimeError("structural failure")
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text("def target():\n    pass\n")
+            structural = FailingStructural()
+            semantic = FakeSemanticProvider()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=semantic,
+                impact_provider=structural,
+            )
+            with self.assertRaisesRegex(RuntimeError, "structural failure"):
+                with service:
+                    service.query(QueryRequest(
+                        "callers", "target", {"target_path": "target.py"}
+                    ))
+        self.assertEqual((semantic.starts, semantic.closes), (1, 1))
+
+    def test_python_callees_does_not_start_semantic_worker(self) -> None:
+        class PythonStructural(FakeImpactProvider):
+            project = "p"
+
+        semantic = FakeSemanticProvider()
+        structural = PythonStructural()
+        service = AtlasService(
+            repository=Path("/repo"),
+            structural_provider=structural,
+            semantic_provider=semantic,
+            impact_provider=structural,
+        )
+        with service:
+            service.query(QueryRequest(
+                "callees", "target", {"target_path": "target.py"}
+            ))
+        self.assertEqual((semantic.starts, semantic.closes), (0, 0))
 
     def test_reuses_successful_python_reference_scan_within_service_session(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

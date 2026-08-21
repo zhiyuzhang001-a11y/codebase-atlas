@@ -4,6 +4,18 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.15.0 — 2026-08-21
+
+- Run the Python structural path concurrently with semantic/exact-reference
+  evidence for callers, related tests, and upstream impact while retaining one
+  main-thread Codebase Memory owner and one query-owned evidence worker.
+- Preserve one shared wall deadline, structural partial results, complete worker
+  joins, on-demand Provider startup, and exception/timeout cleanup.
+- Reduce the frozen Django/Flask six-query median by 25.9%; reduce the widest
+  Home Assistant case from 29.07 to 16.63 seconds.
+- Preserve the M17 24/24 exact gate, M19 147/147 exact soak, and all historical
+  product, oracle, and M9–M12 regressions.
+
 ## 0.14.0 — 2026-08-21
 
 - Return non-empty exact TypeScript compiler references without redundant

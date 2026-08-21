@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -291,18 +293,23 @@ class AtlasService:
         if request.query_type in {"callers", "callees"}:
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
-            if not self._ensure_structural(limits["timeout_ms"]):
-                return self._time_budget_response(request.query_type, limits, started)
             method = getattr(self.structural_provider, request.query_type)
-            remaining_timeout = self._remaining_timeout(limits, started)
-            if remaining_timeout is None:
-                return self._impact_response(
-                    request.query_type,
-                    ImpactTraversal((), True, ("time_budget_exceeded",)),
-                    limits,
-                    started,
-                )
-            traversal = method(
+
+            def structural_relation_query() -> ImpactTraversal:
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if (
+                    remaining_timeout is None
+                    or not self._ensure_structural(remaining_timeout)
+                ):
+                    return ImpactTraversal(
+                        (), True, ("time_budget_exceeded",)
+                    )
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if remaining_timeout is None:
+                    return ImpactTraversal(
+                        (), True, ("time_budget_exceeded",)
+                    )
+                return method(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                     target_owner=str(request.parameters.get("target_owner", "")),
@@ -310,10 +317,13 @@ class AtlasService:
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
                 )
+
             if request.query_type == "callers":
-                traversal = self._exact_python_caller_supplement(
-                    request, traversal, limits, started
+                traversal = self._query_with_python_caller_supplement(
+                    request, limits, started, structural_relation_query
                 )
+            else:
+                traversal = structural_relation_query()
             repository = request.parameters.get("repository", self.repository)
             if (
                 repository is not None
@@ -356,17 +366,22 @@ class AtlasService:
                 )
             if self.structural_provider is None:
                 raise RuntimeError("related-tests provider is not configured")
-            if not self._ensure_structural(limits["timeout_ms"]):
-                return self._time_budget_response(request.query_type, limits, started)
-            remaining_timeout = self._remaining_timeout(limits, started)
-            if remaining_timeout is None:
-                return self._impact_response(
-                    request.query_type,
-                    ImpactTraversal((), True, ("time_budget_exceeded",)),
-                    limits,
-                    started,
-                )
-            traversal = self.structural_provider.related_tests(
+
+            def structural_test_query() -> ImpactTraversal:
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if (
+                    remaining_timeout is None
+                    or not self._ensure_structural(remaining_timeout)
+                ):
+                    return ImpactTraversal(
+                        (), True, ("time_budget_exceeded",)
+                    )
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if remaining_timeout is None:
+                    return ImpactTraversal(
+                        (), True, ("time_budget_exceeded",)
+                    )
+                return self.structural_provider.related_tests(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                     target_owner=str(request.parameters.get("target_owner", "")),
@@ -374,8 +389,13 @@ class AtlasService:
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
                 )
-            traversal = self._exact_python_caller_supplement(
-                request, traversal, limits, started, only_tests=True
+
+            traversal = self._query_with_python_caller_supplement(
+                request,
+                limits,
+                started,
+                structural_test_query,
+                only_tests=True,
             )
             return self._impact_response(
                 request.query_type,
@@ -385,33 +405,34 @@ class AtlasService:
             )
         if self.impact_provider is None:
             raise RuntimeError("impact provider is not configured")
-        if not self._ensure_structural(limits["timeout_ms"]):
-            return self._time_budget_response(request.query_type, limits, started)
-        remaining_timeout = self._remaining_timeout(limits, started)
-        if remaining_timeout is None:
-            return self._impact_response(
-                request.query_type,
-                ImpactTraversal((), True, ("time_budget_exceeded",)),
-                limits,
-                started,
+
+        def structural_impact_query() -> ImpactTraversal:
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if (
+                remaining_timeout is None
+                or not self._ensure_structural(remaining_timeout)
+            ):
+                return ImpactTraversal((), True, ("time_budget_exceeded",))
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None:
+                return ImpactTraversal((), True, ("time_budget_exceeded",))
+            return self.impact_provider.impact(
+                request.symbol,
+                direction=str(request.parameters.get("direction", "upstream")),
+                max_depth=int(request.parameters.get("depth", 1)),
+                target_path=str(request.parameters.get("target_path", "")),
+                target_owner=str(request.parameters.get("target_owner", "")),
+                max_nodes=limits["max_nodes"],
+                max_edges=limits["max_edges"],
+                timeout_ms=remaining_timeout,
             )
-        traversal = self.impact_provider.impact(
-            request.symbol,
-            direction=str(request.parameters.get("direction", "upstream")),
-            max_depth=int(request.parameters.get("depth", 1)),
-            target_path=str(request.parameters.get("target_path", "")),
-            target_owner=str(request.parameters.get("target_owner", "")),
-            max_nodes=limits["max_nodes"],
-            max_edges=limits["max_edges"],
-            timeout_ms=remaining_timeout,
-        )
-        if (
-            request.parameters.get("direction", "upstream") == "upstream"
-            and Path(str(request.parameters.get("target_path", ""))).suffix == ".py"
-        ):
-            traversal = self._exact_python_caller_supplement(
-                request, traversal, limits, started
+
+        if request.parameters.get("direction", "upstream") == "upstream":
+            traversal = self._query_with_python_caller_supplement(
+                request, limits, started, structural_impact_query
             )
+        else:
+            traversal = structural_impact_query()
         hits_list = list(traversal)
         repository = request.parameters.get("repository", self.repository)
         extra_reasons: list[str] = []
@@ -460,15 +481,63 @@ class AtlasService:
             traversal = tuple(hits_list)
         return self._impact_response(request.query_type, traversal, limits, started)
 
-    def _exact_python_caller_supplement(
+    def _query_with_python_caller_supplement(
         self,
         request: QueryRequest,
-        structural: ImpactTraversal,
         limits: dict[str, int],
         started: float,
+        structural_query: Callable[[], ImpactTraversal],
         *,
         only_tests: bool = False,
     ) -> ImpactTraversal:
+        context = self._python_caller_context(request)
+        if context is None:
+            return structural_query()
+        repository, project, target_path, cache_key = context
+        cached_callers = self._cache_get(self._python_caller_cache, cache_key)
+        if cached_callers is not None:
+            return self._merge_python_caller_evidence(
+                structural_query(), cached_callers, only_tests=only_tests
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="atlas-python-evidence"
+        ) as executor:
+            evidence_future = executor.submit(
+                self._collect_python_reference_evidence,
+                request,
+                limits,
+                started,
+                repository,
+                target_path,
+            )
+            structural = structural_query()
+            references, evidence_timed_out = evidence_future.result()
+
+        if "time_budget_exceeded" in tuple(getattr(structural, "reasons", ())):
+            return structural
+        seeds = tuple(self.structural_provider.definitions(
+            request.symbol,
+            target_path=target_path,
+            target_owner=str(request.parameters.get("target_owner", "")),
+        ))
+        if len(seeds) != 1:
+            return structural
+        semantic = PythonExactCallerProvider(repository, project).callers(
+            seeds[0], references
+        )
+        if not evidence_timed_out:
+            self._cache_put(self._python_caller_cache, cache_key, semantic)
+        return self._merge_python_caller_evidence(
+            structural,
+            semantic,
+            only_tests=only_tests,
+            evidence_timed_out=evidence_timed_out,
+        )
+
+    def _python_caller_context(
+        self, request: QueryRequest
+    ) -> tuple[Path, str, str, tuple[Path, str, str, str, str]] | None:
         target_path = str(request.parameters.get("target_path", ""))
         repository = request.parameters.get("repository", self.repository)
         if (
@@ -476,14 +545,11 @@ class AtlasService:
             or Path(target_path).suffix != ".py"
             or self.structural_provider is None
         ):
-            return structural
+            return None
         repository = Path(repository).resolve()
-
-        structural_hits = tuple(structural)
-        structural_reasons = tuple(getattr(structural, "reasons", ()))
         project = str(getattr(self.structural_provider, "project", ""))
         if not project:
-            return structural
+            return None
         cache_key = (
             repository,
             project,
@@ -491,33 +557,16 @@ class AtlasService:
             target_path,
             str(request.parameters.get("target_owner", "")),
         )
+        return repository, project, target_path, cache_key
 
-        def merge_semantic(
-            semantic: ImpactTraversal, *, semantic_timed_out: bool = False
-        ) -> ImpactTraversal:
-            merged = list(structural_hits)
-            seen_ids = {hit.node.id for hit in merged}
-            for hit in semantic:
-                if only_tests and not self._is_python_test_node(hit.node):
-                    continue
-                if hit.node.id not in seen_ids:
-                    merged.append(hit)
-                    seen_ids.add(hit.node.id)
-            return ImpactTraversal(
-                tuple(merged),
-                bool(getattr(structural, "truncated", False)) or semantic_timed_out,
-                tuple(dict.fromkeys((
-                    *structural_reasons,
-                    *(("time_budget_exceeded",) if semantic_timed_out else ()),
-                ))),
-                max(getattr(structural, "examined_nodes", 0), len(merged)),
-                max(getattr(structural, "examined_edges", 0), len(merged)),
-            )
-
-        cached_callers = self._cache_get(self._python_caller_cache, cache_key)
-        if cached_callers is not None:
-            return merge_semantic(cached_callers)
-
+    def _collect_python_reference_evidence(
+        self,
+        request: QueryRequest,
+        limits: dict[str, int],
+        started: float,
+        repository: Path,
+        target_path: str,
+    ) -> tuple[tuple[Node, ...], bool]:
         references: list[Node] = []
         semantic_timed_out = False
         if self.semantic_provider is not None:
@@ -566,20 +615,34 @@ class AtlasService:
                     if (node.location.path, node.location.start_line, node.location.start_column)
                     not in seen_locations
                 )
-        seeds = tuple(self.structural_provider.definitions(
-            request.symbol,
-            target_path=target_path,
-            target_owner=str(request.parameters.get("target_owner", "")),
-        ))
-        if len(seeds) != 1:
-            return structural
-        semantic = PythonExactCallerProvider(repository, project).callers(
-            seeds[0], tuple(references)
+        return tuple(references), semantic_timed_out or exact_timed_out
+
+    def _merge_python_caller_evidence(
+        self,
+        structural: ImpactTraversal,
+        semantic: ImpactTraversal,
+        *,
+        only_tests: bool = False,
+        evidence_timed_out: bool = False,
+    ) -> ImpactTraversal:
+        merged = list(structural)
+        seen_ids = {hit.node.id for hit in merged}
+        for hit in semantic:
+            if only_tests and not self._is_python_test_node(hit.node):
+                continue
+            if hit.node.id not in seen_ids:
+                merged.append(hit)
+                seen_ids.add(hit.node.id)
+        return ImpactTraversal(
+            tuple(merged),
+            bool(getattr(structural, "truncated", False)) or evidence_timed_out,
+            tuple(dict.fromkeys((
+                *tuple(getattr(structural, "reasons", ())),
+                *(("time_budget_exceeded",) if evidence_timed_out else ()),
+            ))),
+            max(getattr(structural, "examined_nodes", 0), len(merged)),
+            max(getattr(structural, "examined_edges", 0), len(merged)),
         )
-        supplement_timed_out = semantic_timed_out or exact_timed_out
-        if not supplement_timed_out:
-            self._cache_put(self._python_caller_cache, cache_key, semantic)
-        return merge_semantic(semantic, semantic_timed_out=supplement_timed_out)
 
     @staticmethod
     def _is_python_test_node(node: Node) -> bool:
