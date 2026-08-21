@@ -14,6 +14,9 @@ from ..contracts import Edge, Node, SourceRange
 from ..graph import EvidenceGraph, ImpactHit
 
 
+CODE_EXTENSIONS = {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
+
+
 def _hash(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -82,7 +85,11 @@ class CodebaseMemoryImpactProvider:
             filename = group.get("file")
             if not isinstance(prefix, str) or not isinstance(filename, str):
                 continue
-            if Path(filename).is_absolute() or filename.startswith("<"):
+            if (
+                Path(filename).is_absolute()
+                or filename.startswith("<")
+                or Path(filename).suffix.lower() not in CODE_EXTENSIONS
+            ):
                 continue
             for row in group.get("rows", []):
                 if not isinstance(row, list):
