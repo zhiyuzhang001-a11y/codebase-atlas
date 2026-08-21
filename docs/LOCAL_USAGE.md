@@ -109,6 +109,12 @@ elapsed time, and whether continuation is available. The current graph provider
 cannot safely resume a partial traversal, so `continuation` is `null` and
 `resumable` is `false` rather than implying that omitted results can be recovered.
 
+Within a long-lived JSON-lines or MCP session, Atlas caches exact definitions and
+completed graph traversals. Repeating the same query and budget avoids duplicate
+CBM trace/identity work. The cache is cleared automatically when the configured
+CBM index database's modification fingerprint changes; time-truncated traversals
+are never cached.
+
 Use `--config /path/to/config.toml` when running outside the repository. The
 long-lived JSON-lines interface is `codebase-atlas query-batch`; the read-only MCP
 server is `codebase-atlas mcp`.

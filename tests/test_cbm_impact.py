@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+import tempfile
 
 from codebase_atlas.contracts import Node, SourceRange
 from codebase_atlas.providers.cbm_impact import CodebaseMemoryImpactProvider
@@ -18,8 +19,9 @@ def node(node_id: str, line: int) -> Node:
 
 
 class WideProvider(CodebaseMemoryImpactProvider):
-    def __init__(self) -> None:
-        super().__init__(Path("/tmp/cbm"), Path("/tmp/repo"), Path("/tmp/cache"), "p")
+    def __init__(self, cache_dir: Path = Path("/tmp/cache")) -> None:
+        super().__init__(Path("/tmp/cbm"), Path("/tmp/repo"), cache_dir, "p")
+        self.trace_calls = 0
         self.nodes = {
             "pkg.target": node("pkg.target", 1),
             "pkg.a": node("pkg.a", 2),
@@ -34,7 +36,9 @@ class WideProvider(CodebaseMemoryImpactProvider):
         return self.nodes[node_id]
 
     def _run(self, tool, *args, timeout_seconds=None):
-        self.assertEqual(tool, "trace_path")
+        if tool != "trace_path":
+            raise AssertionError(f"unexpected tool: {tool}")
+        self.trace_calls += 1
         return {
             "callers": {
                 "cols": ["name", "confidence"],
@@ -44,12 +48,6 @@ class WideProvider(CodebaseMemoryImpactProvider):
                 }],
             }
         }
-
-    @staticmethod
-    def assertEqual(first, second):
-        if first != second:
-            raise AssertionError(f"{first!r} != {second!r}")
-
 
 class TimeoutProvider(WideProvider):
     def _search_name(self, symbol, *, target_path="", timeout_seconds=None):
@@ -85,6 +83,26 @@ class CodebaseMemoryBudgetTests(unittest.TestCase):
         self.assertTrue(traversal.truncated)
         self.assertEqual(traversal.reasons, ("edge_budget_exceeded",))
         self.assertEqual(traversal.examined_edges, 2)
+
+    def test_reuses_traversal_until_index_fingerprint_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            cache_dir = Path(raw)
+            index = cache_dir / "p.db"
+            index.write_bytes(b"v1")
+            provider = WideProvider(cache_dir)
+            arguments = {
+                "direction": "upstream", "max_depth": 1,
+                "max_nodes": 10, "max_edges": 10, "timeout_ms": 1000,
+            }
+            first = provider.impact("target", **arguments)
+            second = provider.impact("target", **arguments)
+            self.assertIs(first, second)
+            self.assertEqual(provider.trace_calls, 1)
+
+            index.write_bytes(b"version-two")
+            third = provider.impact("target", **arguments)
+            self.assertIsNot(third, second)
+            self.assertEqual(provider.trace_calls, 2)
 
 
 if __name__ == "__main__":

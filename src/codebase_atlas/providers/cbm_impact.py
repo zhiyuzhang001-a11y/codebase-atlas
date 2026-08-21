@@ -51,6 +51,28 @@ class CodebaseMemoryImpactProvider:
         self.cache_dir = cache_dir.resolve()
         self.project = project
         self._node_cache: dict[str, Node] = {}
+        self._definition_cache: dict[tuple[str, str], tuple[Node, ...]] = {}
+        self._impact_cache: dict[
+            tuple[str, str, int, str, int, int, int], ImpactTraversal
+        ] = {}
+        self._cache_fingerprint = self._index_fingerprint()
+
+    def _index_fingerprint(self) -> tuple[int, int] | None:
+        index = self.cache_dir / f"{self.project}.db"
+        try:
+            stat = index.stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def _invalidate_if_index_changed(self) -> None:
+        fingerprint = self._index_fingerprint()
+        if fingerprint == self._cache_fingerprint:
+            return
+        self._node_cache.clear()
+        self._definition_cache.clear()
+        self._impact_cache.clear()
+        self._cache_fingerprint = fingerprint
 
     def _run(self, tool: str, *args: str, timeout_seconds: float | None = None) -> dict[str, Any]:
         environment = os.environ.copy()
@@ -145,7 +167,14 @@ class CodebaseMemoryImpactProvider:
 
     def definitions(self, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
         """Return every exact-name definition with its stable qualified identity."""
-        return self._search_name(symbol, target_path=target_path)
+        self._invalidate_if_index_changed()
+        key = (symbol, target_path)
+        cached = self._definition_cache.get(key)
+        if cached is not None:
+            return cached
+        result = self._search_name(symbol, target_path=target_path)
+        self._definition_cache[key] = result
+        return result
 
     def callers(
         self,
@@ -268,6 +297,14 @@ class CodebaseMemoryImpactProvider:
     ) -> ImpactTraversal:
         if direction not in {"upstream", "downstream"}:
             raise ValueError(f"unsupported direction: {direction}")
+        self._invalidate_if_index_changed()
+        cache_key = (
+            symbol, direction, max_depth, target_path,
+            max_nodes, max_edges, timeout_ms,
+        )
+        cached = self._impact_cache.get(cache_key)
+        if cached is not None:
+            return cached
         deadline = monotonic() + timeout_ms / 1000.0
         reasons: list[str] = []
 
@@ -278,9 +315,13 @@ class CodebaseMemoryImpactProvider:
             return value
 
         try:
-            seeds = self._search_name(
-                symbol, target_path=target_path, timeout_seconds=remaining()
-            )
+            definition_key = (symbol, target_path)
+            seeds = self._definition_cache.get(definition_key)
+            if seeds is None:
+                seeds = self._search_name(
+                    symbol, target_path=target_path, timeout_seconds=remaining()
+                )
+                self._definition_cache[definition_key] = seeds
         except TimeoutError:
             return ImpactTraversal((), True, ("time_budget_exceeded",))
         if not seeds:
@@ -392,10 +433,13 @@ class CodebaseMemoryImpactProvider:
         hits = graph.impact(
             (node.id for node in seeds), direction=direction, max_depth=max_depth
         )
-        return ImpactTraversal(
+        traversal = ImpactTraversal(
             hits,
             bool(reasons),
             tuple(dict.fromkeys(reasons)),
             len(examined_neighbor_ids),
             len(examined_edge_ids),
         )
+        if "time_budget_exceeded" not in traversal.reasons:
+            self._impact_cache[cache_key] = traversal
+        return traversal
