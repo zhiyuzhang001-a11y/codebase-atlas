@@ -144,6 +144,61 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(response.edges[0].provider, "atlas-python-exact-callers")
         self.assertEqual(response.edges[0].resolution, "exact")
 
+    def test_supplements_partial_python_callers_and_deduplicates_identity(self) -> None:
+        class PartialStructural(FakeImpactProvider):
+            project = "p"
+
+            def definitions(self, symbol, *, target_path="", target_owner=""):
+                return (Node(
+                    "p.src.x.target", "function", symbol,
+                    SourceRange(target_path, 1, 2), "structural", 1.0, HASH,
+                ),)
+
+            def callers(self, *args, **kwargs):
+                caller = Node(
+                    "p.src.x.first", "function", "first",
+                    SourceRange("src/x.py", 4, 5), "structural", 1.0, HASH,
+                )
+                edge = Edge(
+                    caller.id, "p.src.x.target", "calls", "structural", 1.0, HASH
+                )
+                return ImpactTraversal((ImpactHit(caller, 1, (edge,)),))
+
+        class ExactSemantic(FakeSemanticProvider):
+            def query(self, *args, **kwargs):
+                return (
+                    Node("ref-1", "reference", "target", SourceRange("src/x.py", 5, 5), "semantic", 1.0, HASH),
+                    Node("ref-2", "reference", "target", SourceRange("src/x.py", 8, 8), "semantic", 1.0, HASH),
+                )
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            source = repository / "src/x.py"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "def target():\n    pass\n\ndef first():\n    target()\n\n"
+                "def second():\n    target()\n"
+            )
+            structural = PartialStructural()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=structural,
+                semantic_provider=ExactSemantic(),
+                impact_provider=structural,
+            )
+            with service:
+                response = service.query(QueryRequest(
+                    "callers", "target", {"target_path": "src/x.py"}
+                ))
+        self.assertEqual(
+            [node.id for node in response.nodes],
+            ["p.src.x.first", "p.src.x.second"],
+        )
+        self.assertEqual(
+            [edge.provider for edge in response.edges],
+            ["structural", "atlas-python-exact-callers"],
+        )
+
     def test_routes_all_six_query_types(self) -> None:
         structural = FakeImpactProvider()
         service = AtlasService(

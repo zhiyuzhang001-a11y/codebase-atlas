@@ -246,8 +246,8 @@ class AtlasService:
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
                 )
-            if request.query_type == "callers" and not tuple(traversal):
-                traversal = self._exact_python_caller_fallback(
+            if request.query_type == "callers":
+                traversal = self._exact_python_caller_supplement(
                     request, traversal, limits, started
                 )
             return self._impact_response(
@@ -376,7 +376,7 @@ class AtlasService:
             traversal = tuple(hits_list)
         return self._impact_response(request.query_type, traversal, limits, started)
 
-    def _exact_python_caller_fallback(
+    def _exact_python_caller_supplement(
         self,
         request: QueryRequest,
         structural: ImpactTraversal,
@@ -391,12 +391,25 @@ class AtlasService:
             or self.structural_provider is None
         ):
             return structural
+
+        structural_hits = tuple(structural)
+        structural_reasons = tuple(getattr(structural, "reasons", ()))
+
+        def timed_out() -> ImpactTraversal:
+            return ImpactTraversal(
+                structural_hits,
+                True,
+                tuple(dict.fromkeys((*structural_reasons, "time_budget_exceeded"))),
+                max(getattr(structural, "examined_nodes", 0), len(structural_hits)),
+                max(getattr(structural, "examined_edges", 0), len(structural_hits)),
+            )
+
         remaining_timeout = self._remaining_timeout(limits, started)
         if remaining_timeout is None or not self._ensure_semantic(remaining_timeout):
-            return ImpactTraversal((), True, ("time_budget_exceeded",))
+            return timed_out()
         remaining_timeout = self._remaining_timeout(limits, started)
         if remaining_timeout is None:
-            return ImpactTraversal((), True, ("time_budget_exceeded",))
+            return timed_out()
         try:
             references = tuple(self.semantic_provider.query(
                 "references",
@@ -407,7 +420,7 @@ class AtlasService:
             ))
         except TimeoutError:
             self._semantic_started = False
-            return ImpactTraversal((), True, ("time_budget_exceeded",))
+            return timed_out()
         seeds = tuple(self.structural_provider.definitions(
             request.symbol,
             target_path=target_path,
@@ -418,8 +431,21 @@ class AtlasService:
         project = str(getattr(self.structural_provider, "project", ""))
         if not project:
             return structural
-        return PythonExactCallerProvider(self.repository, project).callers(
+        semantic = PythonExactCallerProvider(self.repository, project).callers(
             seeds[0], references
+        )
+        merged = list(structural_hits)
+        seen_ids = {hit.node.id for hit in merged}
+        for hit in semantic:
+            if hit.node.id not in seen_ids:
+                merged.append(hit)
+                seen_ids.add(hit.node.id)
+        return ImpactTraversal(
+            tuple(merged),
+            bool(getattr(structural, "truncated", False)),
+            structural_reasons,
+            max(getattr(structural, "examined_nodes", 0), len(merged)),
+            max(getattr(structural, "examined_edges", 0), len(merged)),
         )
 
     def _has_ts_project(self, repository: Path) -> bool:
