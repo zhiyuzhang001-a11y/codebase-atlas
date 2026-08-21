@@ -52,6 +52,25 @@ class PythonExactCallerTests(unittest.TestCase):
                 (),
             )
 
+    def test_does_not_reemit_recursive_seed_as_its_own_caller(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "example.py").write_text(
+                "def target():\n    target()\n\ndef wrapper():\n    target()\n"
+            )
+            seed = Node(
+                "p.example.target", "function", "target",
+                SourceRange("example.py", 1, 2), "structural", 1.0, HASH,
+            )
+            references = (
+                Node("recursive", "reference", "target", SourceRange("example.py", 2, 2), "semantic", 1.0, HASH),
+                Node("wrapper", "reference", "target", SourceRange("example.py", 5, 5), "semantic", 1.0, HASH),
+            )
+            result = PythonExactCallerProvider(repository, "p").callers(
+                seed, references
+            )
+            self.assertEqual([hit.node.id for hit in result], ["p.example.wrapper"])
+
 
 if __name__ == "__main__":
     unittest.main()

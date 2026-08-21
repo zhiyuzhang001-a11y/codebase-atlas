@@ -35,7 +35,7 @@ class PythonExactCallerProvider:
             if reference.confidence != 1.0 or reference.location.path.endswith(".py") is False:
                 continue
             caller = self._enclosing_caller(reference)
-            if caller is None or caller.id in seen:
+            if caller is None or caller.id == seed.id or caller.id in seen:
                 continue
             seen.add(caller.id)
             edge = Edge(
