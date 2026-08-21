@@ -1,5 +1,8 @@
 # Local installation and daily use
 
+For the task-oriented workflow and result interpretation, also see
+`docs/DAILY_USE_PLAYBOOK.md`.
+
 ## Requirements
 
 - Python 3.11 or newer
