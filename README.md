@@ -2,7 +2,7 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.11.0**, promoted as a private installable release after validation on
+Current release: **0.12.0**, promoted as a private maintenance release after validation on
 FastAPI, Home Assistant, NestJS, VS Code, and the product repository itself.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
@@ -21,6 +21,7 @@ interfaces.
 - explicit-depth impact traversal over stable identities;
 - bounded node, edge, and time budgets with explicit partial-result metadata;
 - Git-backed `fresh`/`stale` index diagnosis and safe Provider-managed updates;
+- read-only index/storage inspection, explicit repair, and dry-run-first cleanup;
 - large-repository and monorepo subproject support;
 - one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
 
@@ -37,6 +38,13 @@ codebase-atlas doctor
 # After source changes:
 codebase-atlas update
 codebase-atlas doctor
+
+# Diagnose or maintain Atlas-owned data:
+codebase-atlas inspect --deep
+codebase-atlas repair                 # plan only
+codebase-atlas repair --apply         # explicit mutation
+codebase-atlas clean                  # dry run
+codebase-atlas clean --apply          # exact planned targets only
 ```
 
 `setup` is a read-only preflight: it executes version/import probes and returns
@@ -51,6 +59,13 @@ index status and default to a warning when evidence may be stale; use
 The structural Provider chooses an incremental, no-op, or safe full-rebuild
 route. Atlas records freshness only after successful publication and preserves
 the previous state when an update fails or the repository changes mid-run.
+
+`inspect` validates Provider schema and identity without changing data; `--deep`
+adds SQLite `quick_check` and can take longer on large indexes. `repair` is
+read-only unless `--apply` is supplied and delegates publication/quarantine to
+the Provider's staged atomic boundary. `clean` retains the current database and
+newest previous quarantine/log generation, refuses symlinks or escaped paths,
+and applies only the exact file identities reported by its dry run.
 
 ## Verify
 

@@ -90,6 +90,46 @@ operation, the previous state marker is preserved and another `update` is
 required. Non-Git repositories remain queryable but freshness is reported as
 `unknown`.
 
+## Inspect, repair, and clean Atlas data
+
+Inspection is read-only. The default checks SQLite schema and project identity;
+the deep form also runs `quick_check` and may take longer for a large database:
+
+```bash
+codebase-atlas inspect
+codebase-atlas inspect --deep
+```
+
+Repair also defaults to a read-only plan. It distinguishes a stale Atlas state,
+a missing/invalid/corrupt Provider database, and a transient unavailable/locked
+database. Transient failures are never treated as corruption. Apply a proposed
+repair explicitly:
+
+```bash
+codebase-atlas repair
+codebase-atlas repair --apply
+```
+
+The Provider builds and verifies a staged generation before atomic publication;
+Atlas advances its state marker only after success. A failed repair leaves that
+marker unchanged, and Provider rollback/quarantine preserves the previous live
+generation according to its recovery boundary.
+
+Cleanup is dry-run first and only recognizes obsolete Atlas temporary state,
+orphan Provider staging files, older quarantine generations, and older rotated
+logs under the configured Atlas data root:
+
+```bash
+codebase-atlas clean
+codebase-atlas clean --apply
+```
+
+The apply form rechecks device, inode, modification time, size, regular-file
+type, and root containment before removing anything. It retains the live
+database, pending recovery files, the newest quarantine generation, current
+logs, and the newest rotated log. Any refused/symlink/escaped target blocks the
+entire apply operation.
+
 Configured queries expose the current index state. The default `warn` policy
 returns results plus a machine-readable `index_not_current` warning when the
 source is stale. Use the strict policy when stale results must never enter an

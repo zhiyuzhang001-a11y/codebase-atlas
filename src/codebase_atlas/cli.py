@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict
 import json
 from pathlib import Path
+import shlex
 import sys
 import time
 import os
@@ -19,7 +20,8 @@ from .index_state import (
     record_index_state,
     repository_snapshot,
 )
-from .lifecycle import CodebaseMemoryDaemon, GlobalCbmLock
+from .lifecycle import CodebaseMemoryDaemon
+from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
 from .operations import (
     STALE_POLICIES,
@@ -60,6 +62,29 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--tsconfig", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    inspect = commands.add_parser("inspect", help="inspect index health and storage without modifying it")
+    inspect.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    inspect.add_argument(
+        "--deep", action="store_true",
+        help="also run SQLite quick_check; this may take time for a large index",
+    )
+    repair = commands.add_parser(
+        "repair", help="diagnose recovery; use --apply for an explicit safe Provider update"
+    )
+    repair.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    repair.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
+    repair.add_argument(
+        "--apply", action="store_true",
+        help="apply the proposed repair; without this flag the command is read-only",
+    )
+    clean = commands.add_parser(
+        "clean", help="dry-run cleanup of recognized obsolete Atlas files"
+    )
+    clean.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    clean.add_argument(
+        "--apply", action="store_true",
+        help="remove exactly the files in the displayed in-memory plan",
+    )
     index = commands.add_parser("index", help="build the configured structural index")
     index.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     index.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
@@ -217,6 +242,93 @@ def main(argv: list[str] | None = None) -> int:
         config.write(config_path)
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
         return 0
+    if args.command == "inspect":
+        config = AtlasConfig.load(args.config)
+        report = inspect_installation(config, deep=args.deep)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["ok"] else 2
+    if args.command == "repair":
+        config = AtlasConfig.load(args.config)
+        before = inspect_installation(config)
+        plan = repair_plan(before)
+        if not args.apply or not plan["applicable"]:
+            planned_status = (
+                "planned" if plan["applicable"]
+                else "blocked" if plan["action"] == "wait_and_retry"
+                else "no_action"
+            )
+            print(json.dumps({
+                "status": planned_status,
+                "mode": "read_only",
+                "inspection": before,
+                "plan": plan,
+                "apply_command": (
+                    "codebase-atlas repair --config "
+                    f"{shlex.quote(str(args.config))} --mode {args.mode} --apply"
+                    if plan["applicable"] else ""
+                ),
+            }, ensure_ascii=False, indent=2))
+            return 0 if before["ok"] else 2
+        source_before = repository_snapshot(config.repository)
+        try:
+            payload = _index_repository(config, args.mode)
+        except RuntimeError as exc:
+            print(json.dumps({
+                "status": "failed",
+                "mode": "applied",
+                "plan": plan,
+                "error": str(exc),
+                "atlas_state_advanced": False,
+                "provider_publication": "Provider staging/rollback boundary retained",
+            }, ensure_ascii=False, indent=2))
+            return 2
+        source_after = repository_snapshot(config.repository)
+        if (
+            source_before.kind == "git"
+            and source_after.kind == "git"
+            and source_before.fingerprint != source_after.fingerprint
+        ):
+            print(json.dumps({
+                "status": "failed",
+                "mode": "applied",
+                "plan": plan,
+                "error": "repository changed while repairing; Atlas state was preserved; run repair again",
+                "atlas_state_advanced": False,
+            }, ensure_ascii=False, indent=2))
+            return 2
+        project = str(payload["project"])
+        config.with_project(project).write(args.config)
+        state = record_index_state(
+            config.data_dir, config.repository, project, args.mode, snapshot=source_after
+        )
+        after = inspect_installation(config.with_project(project))
+        print(json.dumps({
+            "status": "repaired" if after["ok"] else "repair_incomplete",
+            "mode": "applied",
+            "plan": plan,
+            "project": project,
+            "source_fingerprint": state.source_fingerprint,
+            "provider": {
+                "route": "provider_managed_staging",
+                "status": payload.get("status"),
+                "nodes": payload.get("nodes"),
+                "edges": payload.get("edges"),
+            },
+            "inspection": after,
+        }, ensure_ascii=False, indent=2))
+        return 0 if after["ok"] else 2
+    if args.command == "clean":
+        config = AtlasConfig.load(args.config)
+        plan = cleanup_plan(config)
+        if args.apply and plan["refused"]:
+            result = plan | {
+                "status": "cleanup_blocked",
+                "reason": "refused targets must be resolved before applying cleanup",
+            }
+        else:
+            result = apply_cleanup(config, plan) if args.apply else plan
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if not result.get("refused") else 2
     if args.command in {"doctor", "index", "update"}:
         config = AtlasConfig.load(args.config)
         if args.command == "doctor":
@@ -484,7 +596,12 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     environment = os.environ.copy()
     environment["CBM_CACHE_DIR"] = str(config.cache_dir)
     environment["CBM_ALLOWED_ROOT"] = str(config.repository.parent)
-    with GlobalCbmLock(timeout_seconds=300.0):
+    # Own the daemon when indexing starts it, so a one-shot index/repair does
+    # not leave a background Provider behind. A pre-existing daemon remains
+    # unowned and is deliberately not stopped.
+    with CodebaseMemoryDaemon(
+        config.cbm_binary, config.repository, config.cache_dir
+    ):
         completed = subprocess.run(
             [
                 str(config.cbm_binary), "cli", "--json", "index_repository",

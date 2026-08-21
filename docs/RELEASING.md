@@ -16,8 +16,8 @@ public product license has been selected.
 
 ```bash
 python scripts/verify_release.py
-git tag -a v0.11.0 -m "Codebase Atlas 0.11.0"
-git push origin main v0.11.0
+git tag -a v0.12.0 -m "Codebase Atlas 0.12.0"
+git push origin main v0.12.0
 ```
 
 The tag workflow rebuilds the wheel, rejects version/tag or packaged-asset
