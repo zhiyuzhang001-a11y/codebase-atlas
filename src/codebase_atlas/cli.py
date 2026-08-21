@@ -58,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     impact.add_argument("--cache-dir", type=Path, required=True)
     impact.add_argument("--project", required=True)
     impact.add_argument("--target-path", default="")
+    impact.add_argument("--max-nodes", type=int, default=100)
+    impact.add_argument("--max-edges", type=int, default=200)
+    impact.add_argument("--timeout-ms", type=int, default=30_000)
     mcp = commands.add_parser("mcp", help="run the read-only MCP server over stdio")
     mcp.add_argument("--config", type=Path)
     mcp.add_argument("--repo", type=Path)
@@ -93,11 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--target-path", default="")
     query.add_argument("--direction", choices=("upstream", "downstream"), default="upstream")
     query.add_argument("--depth", type=int, default=1)
+    query.add_argument("--max-nodes", type=int, default=100)
+    query.add_argument("--max-edges", type=int, default=200)
+    query.add_argument("--timeout-ms", type=int, default=30_000)
     batch = commands.add_parser(
         "query-batch", help="run JSON-lines queries through one long-lived product service"
     )
     for action in query._actions:
-        if action.dest in {"help", "query_type", "symbol", "target_path", "direction", "depth"}:
+        if action.dest in {
+            "help", "query_type", "symbol", "target_path", "direction", "depth",
+            "max_nodes", "max_edges", "timeout_ms",
+        }:
             continue
         options = action.option_strings
         kwargs = {
@@ -171,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
             direction=args.direction,
             max_depth=args.depth,
             target_path=args.target_path,
+            max_nodes=args.max_nodes,
+            max_edges=args.max_edges,
+            timeout_ms=args.timeout_ms,
         )
         print(
             json.dumps(
@@ -185,6 +197,14 @@ def main(argv: list[str] | None = None) -> int:
                         }
                         for hit in hits
                     ],
+                    "truncated": hits.truncated,
+                    "truncation": {
+                        "reasons": hits.reasons,
+                        "observed": {
+                            "nodes": hits.examined_nodes,
+                            "edges": hits.examined_edges,
+                        },
+                    },
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -228,6 +248,9 @@ def main(argv: list[str] | None = None) -> int:
                             "target_path": args.target_path,
                             "direction": args.direction,
                             "depth": args.depth,
+                            "max_nodes": args.max_nodes,
+                            "max_edges": args.max_edges,
+                            "timeout_ms": args.timeout_ms,
                         },
                     )
                 )
@@ -250,6 +273,8 @@ def _response_payload(response) -> dict:
             node_id: [asdict(edge) for edge in path]
             for node_id, path in response.paths.items()
         },
+        "truncated": response.truncated,
+        "truncation": response.truncation,
     }
 
 

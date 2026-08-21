@@ -59,6 +59,7 @@ class McpTests(unittest.TestCase):
                     "arguments": {
                         "symbol": "render",
                         "target_path": "packages/ui/src/render.ts",
+                        "max_nodes": 25,
                     },
                 },
             }
@@ -68,6 +69,7 @@ class McpTests(unittest.TestCase):
             self.service.last_request.parameters["target_path"],
             "packages/ui/src/render.ts",
         )
+        self.assertEqual(self.service.last_request.parameters["max_nodes"], 25)
 
     def test_stdio_emits_one_json_message_per_line(self) -> None:
         source = StringIO(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n")

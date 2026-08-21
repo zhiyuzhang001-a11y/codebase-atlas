@@ -8,10 +8,11 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from time import monotonic
 from typing import Any
 
 from ..contracts import Edge, Node, SourceRange
-from ..graph import EvidenceGraph, ImpactHit
+from ..graph import EvidenceGraph, ImpactHit, ImpactTraversal
 
 
 CODE_EXTENSIONS = {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
@@ -51,17 +52,21 @@ class CodebaseMemoryImpactProvider:
         self.project = project
         self._node_cache: dict[str, Node] = {}
 
-    def _run(self, tool: str, *args: str) -> dict[str, Any]:
+    def _run(self, tool: str, *args: str, timeout_seconds: float | None = None) -> dict[str, Any]:
         environment = os.environ.copy()
         environment["CBM_CACHE_DIR"] = str(self.cache_dir)
         environment["CBM_ALLOWED_ROOT"] = str(self.repository.parent)
-        completed = subprocess.run(
-            [str(self.binary), "cli", "--json", tool, *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
+        try:
+            completed = subprocess.run(
+                [str(self.binary), "cli", "--json", tool, *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(f"Codebase Memory {tool} exceeded the query time budget") from exc
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "Codebase Memory exited with an error")
         envelope = json.loads(completed.stdout)
@@ -114,7 +119,13 @@ class CodebaseMemoryImpactProvider:
                 nodes.append(node)
         return tuple(nodes)
 
-    def _search_name(self, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
+    def _search_name(
+        self,
+        symbol: str,
+        *,
+        target_path: str = "",
+        timeout_seconds: float | None = None,
+    ) -> tuple[Node, ...]:
         payload = self._run(
             "search_graph",
             "--project",
@@ -125,6 +136,7 @@ class CodebaseMemoryImpactProvider:
             "json",
             "--limit",
             "100",
+            timeout_seconds=timeout_seconds,
         )
         return tuple(
             node for node in self._nodes_from_search(payload)
@@ -135,27 +147,70 @@ class CodebaseMemoryImpactProvider:
         """Return every exact-name definition with its stable qualified identity."""
         return self._search_name(symbol, target_path=target_path)
 
-    def callers(self, symbol: str, *, target_path: str = "") -> tuple[ImpactHit, ...]:
-        return self.impact(symbol, direction="upstream", max_depth=1, target_path=target_path)
+    def callers(
+        self,
+        symbol: str,
+        *,
+        target_path: str = "",
+        max_nodes: int = 100,
+        max_edges: int = 200,
+        timeout_ms: int = 30_000,
+    ) -> ImpactTraversal:
+        return self.impact(
+            symbol, direction="upstream", max_depth=1, target_path=target_path,
+            max_nodes=max_nodes, max_edges=max_edges, timeout_ms=timeout_ms,
+        )
 
-    def callees(self, symbol: str, *, target_path: str = "") -> tuple[ImpactHit, ...]:
-        return self.impact(symbol, direction="downstream", max_depth=1, target_path=target_path)
+    def callees(
+        self,
+        symbol: str,
+        *,
+        target_path: str = "",
+        max_nodes: int = 100,
+        max_edges: int = 200,
+        timeout_ms: int = 30_000,
+    ) -> ImpactTraversal:
+        return self.impact(
+            symbol, direction="downstream", max_depth=1, target_path=target_path,
+            max_nodes=max_nodes, max_edges=max_edges, timeout_ms=timeout_ms,
+        )
 
-    def related_tests(self, symbol: str, *, target_path: str = "") -> tuple[ImpactHit, ...]:
-        return tuple(
+    def related_tests(
+        self,
+        symbol: str,
+        *,
+        target_path: str = "",
+        max_nodes: int = 100,
+        max_edges: int = 200,
+        timeout_ms: int = 30_000,
+    ) -> ImpactTraversal:
+        traversal = self.impact(
+            symbol,
+            direction="upstream",
+            max_depth=1,
+            target_path=target_path,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+            timeout_ms=timeout_ms,
+        )
+        hits = tuple(
             hit
-            for hit in self.impact(
-                symbol,
-                direction="upstream",
-                max_depth=1,
-                target_path=target_path,
-            )
+            for hit in traversal
             if "tests" in Path(hit.node.location.path).parts
             or ".test." in Path(hit.node.location.path).name
             or Path(hit.node.location.path).name.startswith("test_")
         )
+        return ImpactTraversal(
+            hits,
+            traversal.truncated,
+            traversal.reasons,
+            traversal.examined_nodes,
+            traversal.examined_edges,
+        )
 
-    def _search_identity(self, node_id: str) -> Node | None:
+    def _search_identity(
+        self, node_id: str, *, timeout_seconds: float | None = None
+    ) -> Node | None:
         cached = self._node_cache.get(node_id)
         if cached is not None:
             return cached
@@ -169,6 +224,7 @@ class CodebaseMemoryImpactProvider:
             "json",
             "--limit",
             "10",
+            timeout_seconds=timeout_seconds,
         )
         matches = [node for node in self._nodes_from_search(payload) if node.id == node_id]
         if not matches:
@@ -199,15 +255,44 @@ class CodebaseMemoryImpactProvider:
                     rows.append(row)
         return tuple(rows)
 
-    def impact(self, symbol: str, *, direction: str, max_depth: int, target_path: str = "") -> tuple[ImpactHit, ...]:
+    def impact(
+        self,
+        symbol: str,
+        *,
+        direction: str,
+        max_depth: int,
+        target_path: str = "",
+        max_nodes: int = 100,
+        max_edges: int = 200,
+        timeout_ms: int = 30_000,
+    ) -> ImpactTraversal:
         if direction not in {"upstream", "downstream"}:
             raise ValueError(f"unsupported direction: {direction}")
-        seeds = self._search_name(symbol, target_path=target_path)
+        deadline = monotonic() + timeout_ms / 1000.0
+        reasons: list[str] = []
+
+        def remaining() -> float:
+            value = deadline - monotonic()
+            if value <= 0:
+                raise TimeoutError("impact traversal exceeded the query time budget")
+            return value
+
+        try:
+            seeds = self._search_name(
+                symbol, target_path=target_path, timeout_seconds=remaining()
+            )
+        except TimeoutError:
+            return ImpactTraversal((), True, ("time_budget_exceeded",))
         if not seeds:
-            return ()
+            return ImpactTraversal(())
         graph = EvidenceGraph(seeds)
         frontier = {node.id for node in seeds}
         expanded: set[str] = set()
+        discovered = set(frontier)
+        edge_ids: set[tuple[str, str, str]] = set()
+        examined_neighbor_ids: set[str] = set()
+        examined_edge_ids: set[tuple[str, str, str]] = set()
+        stop = False
         for _depth in range(1, max_depth + 1):
             next_frontier: set[str] = set()
             for current_id in sorted(frontier):
@@ -216,31 +301,63 @@ class CodebaseMemoryImpactProvider:
                 expanded.add(current_id)
                 cbm_direction = "inbound" if direction == "upstream" else "outbound"
                 section = "callers" if direction == "upstream" else "callees"
-                payload = self._run(
-                    "trace_path",
-                    "--project",
-                    self.project,
-                    "--function-name",
-                    current_id,
-                    "--direction",
-                    cbm_direction,
-                    "--depth",
-                    "1",
-                    "--limit",
-                    "100",
-                    "--include-tests",
-                    "true",
-                    "--include-evidence",
-                    "true",
-                    "--format",
-                    "json",
-                )
-                for row in self._trace_rows(payload, section):
+                try:
+                    payload = self._run(
+                        "trace_path",
+                        "--project",
+                        self.project,
+                        "--function-name",
+                        current_id,
+                        "--direction",
+                        cbm_direction,
+                        "--depth",
+                        "1",
+                        "--limit",
+                        "100",
+                        "--include-tests",
+                        "true",
+                        "--include-evidence",
+                        "true",
+                        "--format",
+                        "json",
+                        timeout_seconds=remaining(),
+                    )
+                except TimeoutError:
+                    reasons.append("time_budget_exceeded")
+                    stop = True
+                    break
+                rows = self._trace_rows(payload, section)
+                if len(rows) >= 100:
+                    reasons.append("provider_result_limit")
+                for row in rows:
                     neighbor_id = row["id"]
-                    neighbor = self._search_identity(neighbor_id)
+                    examined_neighbor_ids.add(neighbor_id)
+                    if neighbor_id not in discovered and len(discovered) - len(seeds) >= max_nodes:
+                        reasons.append("node_budget_exceeded")
+                        stop = True
+                        break
+                    edge_id = (
+                        neighbor_id if direction == "upstream" else current_id,
+                        current_id if direction == "upstream" else neighbor_id,
+                        "calls",
+                    )
+                    examined_edge_ids.add(edge_id)
+                    if edge_id not in edge_ids and len(edge_ids) >= max_edges:
+                        reasons.append("edge_budget_exceeded")
+                        stop = True
+                        break
+                    try:
+                        neighbor = self._search_identity(
+                            neighbor_id, timeout_seconds=remaining()
+                        )
+                    except TimeoutError:
+                        reasons.append("time_budget_exceeded")
+                        stop = True
+                        break
                     if neighbor is None:
                         continue
                     graph.add_node(neighbor)
+                    discovered.add(neighbor_id)
                     confidence = row.get("confidence")
                     edge_confidence = float(confidence) if isinstance(confidence, (int, float)) else 1.0
                     source_id, target_id = (
@@ -263,12 +380,22 @@ class CodebaseMemoryImpactProvider:
                             },
                         )
                     )
+                    edge_ids.add(edge_id)
                     next_frontier.add(neighbor_id)
+                if stop:
+                    break
+            if stop:
+                break
             frontier = next_frontier
             if not frontier:
                 break
-        return graph.impact(
-            (node.id for node in seeds),
-            direction=direction,
-            max_depth=max_depth,
+        hits = graph.impact(
+            (node.id for node in seeds), direction=direction, max_depth=max_depth
+        )
+        return ImpactTraversal(
+            hits,
+            bool(reasons),
+            tuple(dict.fromkeys(reasons)),
+            len(examined_neighbor_ids),
+            len(examined_edge_ids),
         )

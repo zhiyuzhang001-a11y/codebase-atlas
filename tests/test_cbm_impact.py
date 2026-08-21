@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+from codebase_atlas.contracts import Node, SourceRange
+from codebase_atlas.providers.cbm_impact import CodebaseMemoryImpactProvider
+
+
+HASH = "d" * 64
+
+
+def node(node_id: str, line: int) -> Node:
+    return Node(
+        node_id, "function", node_id.rsplit(".", 1)[-1],
+        SourceRange("src/x.py", line, line), "fake", 1.0, HASH,
+    )
+
+
+class WideProvider(CodebaseMemoryImpactProvider):
+    def __init__(self) -> None:
+        super().__init__(Path("/tmp/cbm"), Path("/tmp/repo"), Path("/tmp/cache"), "p")
+        self.nodes = {
+            "pkg.target": node("pkg.target", 1),
+            "pkg.a": node("pkg.a", 2),
+            "pkg.b": node("pkg.b", 3),
+            "pkg.c": node("pkg.c", 4),
+        }
+
+    def _search_name(self, symbol, *, target_path="", timeout_seconds=None):
+        return (self.nodes["pkg.target"],)
+
+    def _search_identity(self, node_id, *, timeout_seconds=None):
+        return self.nodes[node_id]
+
+    def _run(self, tool, *args, timeout_seconds=None):
+        self.assertEqual(tool, "trace_path")
+        return {
+            "callers": {
+                "cols": ["name", "confidence"],
+                "groups": [{
+                    "qn_prefix": "pkg",
+                    "rows": [["a", 1.0], ["b", 1.0], ["c", 1.0]],
+                }],
+            }
+        }
+
+    @staticmethod
+    def assertEqual(first, second):
+        if first != second:
+            raise AssertionError(f"{first!r} != {second!r}")
+
+
+class TimeoutProvider(WideProvider):
+    def _search_name(self, symbol, *, target_path="", timeout_seconds=None):
+        raise TimeoutError("budget")
+
+
+class CodebaseMemoryBudgetTests(unittest.TestCase):
+    def test_stops_before_resolving_node_beyond_budget(self) -> None:
+        traversal = WideProvider().impact(
+            "target", direction="upstream", max_depth=1,
+            max_nodes=2, max_edges=10, timeout_ms=1000,
+        )
+        self.assertEqual([hit.node.id for hit in traversal], ["pkg.a", "pkg.b"])
+        self.assertTrue(traversal.truncated)
+        self.assertEqual(traversal.reasons, ("node_budget_exceeded",))
+        self.assertEqual(traversal.examined_nodes, 3)
+        self.assertEqual(traversal.examined_edges, 2)
+
+    def test_returns_explicit_partial_contract_on_timeout(self) -> None:
+        traversal = TimeoutProvider().impact(
+            "target", direction="upstream", max_depth=1, timeout_ms=10,
+        )
+        self.assertEqual(tuple(traversal), ())
+        self.assertTrue(traversal.truncated)
+        self.assertEqual(traversal.reasons, ("time_budget_exceeded",))
+
+    def test_stops_before_adding_edge_beyond_budget(self) -> None:
+        traversal = WideProvider().impact(
+            "target", direction="upstream", max_depth=1,
+            max_nodes=10, max_edges=1, timeout_ms=1000,
+        )
+        self.assertEqual([hit.node.id for hit in traversal], ["pkg.a"])
+        self.assertTrue(traversal.truncated)
+        self.assertEqual(traversal.reasons, ("edge_budget_exceeded",))
+        self.assertEqual(traversal.examined_edges, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

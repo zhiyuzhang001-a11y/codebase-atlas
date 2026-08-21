@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from .contracts import Edge, Node
-from .graph import ImpactHit
+from .graph import ImpactHit, ImpactTraversal
+
+
+DEFAULT_MAX_NODES = 100
+DEFAULT_MAX_EDGES = 200
+DEFAULT_TIMEOUT_MS = 30_000
 
 
 @dataclass(frozen=True)
@@ -28,6 +34,14 @@ class QueryRequest:
             raise ValueError(f"unsupported query type: {self.query_type}")
         if not self.symbol:
             raise ValueError("query symbol is required")
+        for name, default, maximum in (
+            ("max_nodes", DEFAULT_MAX_NODES, 10_000),
+            ("max_edges", DEFAULT_MAX_EDGES, 20_000),
+            ("timeout_ms", DEFAULT_TIMEOUT_MS, 300_000),
+        ):
+            value = self.parameters.get(name, default)
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= maximum:
+                raise ValueError(f"{name} must be an integer between 1 and {maximum}")
         if self.query_type == "impact":
             direction = self.parameters.get("direction", "upstream")
             depth = self.parameters.get("depth", 1)
@@ -44,6 +58,8 @@ class QueryResponse:
     edges: tuple[Edge, ...]
     depths: dict[str, int] = field(default_factory=dict)
     paths: dict[str, tuple[Edge, ...]] = field(default_factory=dict)
+    truncated: bool = False
+    truncation: dict[str, Any] = field(default_factory=dict)
 
 
 class AtlasService:
@@ -102,41 +118,60 @@ class AtlasService:
     def query(self, request: QueryRequest) -> QueryResponse:
         if not self.started:
             raise RuntimeError("AtlasService.start() must be called before query()")
+        started = monotonic()
+        limits = self._limits(request)
         if request.query_type == "definition":
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
             self._ensure_structural()
-            return QueryResponse(
+            return self._bounded_response(
                 request.query_type,
                 tuple(self.structural_provider.definitions(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                 )),
                 (),
+                limits,
+                started,
             )
         if request.query_type == "references":
             if self.semantic_provider is None:
                 raise RuntimeError("semantic reference provider is not configured")
             self._ensure_semantic()
-            return QueryResponse(
+            return self._bounded_response(
                 request.query_type,
                 tuple(self.semantic_provider.query(
                     "references", request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                 )),
                 (),
+                limits,
+                started,
             )
         if request.query_type in {"callers", "callees"}:
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
             self._ensure_structural()
             method = getattr(self.structural_provider, request.query_type)
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None:
+                return self._impact_response(
+                    request.query_type,
+                    ImpactTraversal((), True, ("time_budget_exceeded",)),
+                    limits,
+                    started,
+                )
             return self._impact_response(
                 request.query_type,
-                tuple(method(
+                method(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
-                )),
+                    max_nodes=limits["max_nodes"],
+                    max_edges=limits["max_edges"],
+                    timeout_ms=remaining_timeout,
+                ),
+                limits,
+                started,
             )
         if request.query_type == "related_tests":
             repository = request.parameters.get("repository", self.repository)
@@ -148,31 +183,57 @@ class AtlasService:
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                 )
-                return QueryResponse(
+                return self._bounded_response(
                     query_type=request.query_type,
                     nodes=tuple(node for node, _edge in results),
                     edges=tuple(edge for _node, edge in results),
+                    limits=limits,
+                    started=started,
                 )
             if self.structural_provider is None:
                 raise RuntimeError("related-tests provider is not configured")
             self._ensure_structural()
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None:
+                return self._impact_response(
+                    request.query_type,
+                    ImpactTraversal((), True, ("time_budget_exceeded",)),
+                    limits,
+                    started,
+                )
             return self._impact_response(
                 request.query_type,
-                tuple(self.structural_provider.related_tests(
+                self.structural_provider.related_tests(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
-                )),
+                    max_nodes=limits["max_nodes"],
+                    max_edges=limits["max_edges"],
+                    timeout_ms=remaining_timeout,
+                ),
+                limits,
+                started,
             )
         if self.impact_provider is None:
             raise RuntimeError("impact provider is not configured")
         self._ensure_structural()
-        hits: tuple[ImpactHit, ...] = self.impact_provider.impact(
+        remaining_timeout = self._remaining_timeout(limits, started)
+        if remaining_timeout is None:
+            return self._impact_response(
+                request.query_type,
+                ImpactTraversal((), True, ("time_budget_exceeded",)),
+                limits,
+                started,
+            )
+        traversal = self.impact_provider.impact(
             request.symbol,
             direction=str(request.parameters.get("direction", "upstream")),
             max_depth=int(request.parameters.get("depth", 1)),
             target_path=str(request.parameters.get("target_path", "")),
+            max_nodes=limits["max_nodes"],
+            max_edges=limits["max_edges"],
+            timeout_ms=remaining_timeout,
         )
-        hits_list = list(hits)
+        hits_list = list(traversal)
         repository = request.parameters.get("repository", self.repository)
         if (
             repository is not None
@@ -189,7 +250,23 @@ class AtlasService:
                 if node.id not in existing_ids:
                     hits_list.append(ImpactHit(node, 1, (edge,)))
                     existing_ids.add(node.id)
-        return self._impact_response(request.query_type, tuple(hits_list))
+        if isinstance(traversal, ImpactTraversal):
+            traversal = ImpactTraversal(
+                tuple(hits_list),
+                traversal.truncated,
+                traversal.reasons,
+                max(traversal.examined_nodes, len(hits_list)),
+                max(
+                    traversal.examined_edges,
+                    len(tuple(dict.fromkeys(
+                        (path_edge.source_id, path_edge.target_id, path_edge.relation)
+                        for hit in hits_list for path_edge in hit.path
+                    ))),
+                ),
+            )
+        else:
+            traversal = tuple(hits_list)
+        return self._impact_response(request.query_type, traversal, limits, started)
 
     def _has_ts_project(self, repository: Path) -> bool:
         if self.test_provider is None:
@@ -198,18 +275,136 @@ class AtlasService:
         return bool(selected and (repository / selected).is_file()) or (repository / "tsconfig.json").is_file()
 
     @staticmethod
-    def _impact_response(query_type: str, hits: tuple[ImpactHit, ...]) -> QueryResponse:
+    def _limits(request: QueryRequest) -> dict[str, int]:
+        return {
+            "max_nodes": int(request.parameters.get("max_nodes", DEFAULT_MAX_NODES)),
+            "max_edges": int(request.parameters.get("max_edges", DEFAULT_MAX_EDGES)),
+            "timeout_ms": int(request.parameters.get("timeout_ms", DEFAULT_TIMEOUT_MS)),
+        }
+
+    @staticmethod
+    def _remaining_timeout(limits: dict[str, int], started: float) -> int | None:
+        remaining = limits["timeout_ms"] - int((monotonic() - started) * 1000.0)
+        return remaining if remaining >= 1 else None
+
+    @staticmethod
+    def _truncation(
+        reasons: list[str],
+        limits: dict[str, int],
+        *,
+        observed_nodes: int,
+        observed_edges: int,
+        returned_nodes: int,
+        returned_edges: int,
+        elapsed_ms: float,
+    ) -> dict[str, Any]:
+        return {
+            "reasons": tuple(dict.fromkeys(reasons)),
+            "limits": dict(limits),
+            "observed": {
+                "nodes": observed_nodes,
+                "edges": observed_edges,
+                "elapsed_ms": elapsed_ms,
+            },
+            "returned": {"nodes": returned_nodes, "edges": returned_edges},
+            "continuation": None,
+            "resumable": False,
+        }
+
+    @classmethod
+    def _bounded_response(
+        cls,
+        query_type: str,
+        nodes: tuple[Node, ...],
+        edges: tuple[Edge, ...],
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        reasons: list[str] = []
+        selected_nodes = nodes[:limits["max_nodes"]]
+        if len(nodes) > len(selected_nodes):
+            reasons.append("node_budget_exceeded")
+        selected_ids = {node.id for node in selected_nodes}
+        relevant_edges = tuple(
+            edge for edge in edges
+            if edge.source_id in selected_ids or edge.target_id in selected_ids
+        )
+        selected_edges = relevant_edges[:limits["max_edges"]]
+        if len(relevant_edges) > len(selected_edges):
+            reasons.append("edge_budget_exceeded")
+        elapsed_ms = (monotonic() - started) * 1000.0
+        if elapsed_ms > limits["timeout_ms"]:
+            reasons.append("time_budget_exceeded")
+        truncation = cls._truncation(
+            reasons,
+            limits,
+            observed_nodes=len(nodes),
+            observed_edges=len(edges),
+            returned_nodes=len(selected_nodes),
+            returned_edges=len(selected_edges),
+            elapsed_ms=elapsed_ms,
+        )
+        return QueryResponse(
+            query_type,
+            selected_nodes,
+            selected_edges,
+            truncated=bool(reasons),
+            truncation=truncation,
+        )
+
+    @classmethod
+    def _impact_response(
+        cls,
+        query_type: str,
+        traversal,
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        hits = tuple(traversal)
+        reasons = list(traversal.reasons) if isinstance(traversal, ImpactTraversal) else []
+        selected_hits: list[ImpactHit] = []
         edges: list[Edge] = []
         for hit in hits:
-            for edge in hit.path:
-                if edge not in edges:
-                    edges.append(edge)
+            if len(selected_hits) >= limits["max_nodes"]:
+                reasons.append("node_budget_exceeded")
+                break
+            new_edges = [edge for edge in hit.path if edge not in edges]
+            if len(edges) + len(new_edges) > limits["max_edges"]:
+                reasons.append("edge_budget_exceeded")
+                break
+            selected_hits.append(hit)
+            edges.extend(new_edges)
+        elapsed_ms = (monotonic() - started) * 1000.0
+        if elapsed_ms > limits["timeout_ms"]:
+            reasons.append("time_budget_exceeded")
+        observed_nodes = (
+            traversal.examined_nodes if isinstance(traversal, ImpactTraversal)
+            else len(hits)
+        )
+        observed_edges = (
+            traversal.examined_edges if isinstance(traversal, ImpactTraversal)
+            else len(tuple(dict.fromkeys(
+                (edge.source_id, edge.target_id, edge.relation)
+                for hit in hits for edge in hit.path
+            )))
+        )
+        truncation = cls._truncation(
+            reasons,
+            limits,
+            observed_nodes=observed_nodes,
+            observed_edges=observed_edges,
+            returned_nodes=len(selected_hits),
+            returned_edges=len(edges),
+            elapsed_ms=elapsed_ms,
+        )
         return QueryResponse(
             query_type=query_type,
-            nodes=tuple(hit.node for hit in hits),
+            nodes=tuple(hit.node for hit in selected_hits),
             edges=tuple(edges),
-            depths={hit.node.id: hit.depth for hit in hits},
-            paths={hit.node.id: hit.path for hit in hits},
+            depths={hit.node.id: hit.depth for hit in selected_hits},
+            paths={hit.node.id: hit.path for hit in selected_hits},
+            truncated=bool(reasons),
+            truncation=truncation,
         )
 
     def __enter__(self) -> "AtlasService":

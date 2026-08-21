@@ -25,6 +25,8 @@ def _structured(response: QueryResponse) -> dict[str, Any]:
             node_id: [asdict(edge) for edge in path]
             for node_id, path in response.paths.items()
         },
+        "truncated": response.truncated,
+        "truncation": response.truncation,
     }
 
 
@@ -51,6 +53,9 @@ TOOLS = [
                         "type": "string",
                         "description": "Repository-relative path of the intended declaration.",
                     },
+                    "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
+                    "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
+                    "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
                 },
                 "required": ["symbol"],
                 "additionalProperties": False,
@@ -73,6 +78,9 @@ TOOLS = [
             "properties": {
                 "symbol": {"type": "string"},
                 "target_path": {"type": "string"},
+                "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
+                "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
+                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
             },
             "required": ["symbol"],
             "additionalProperties": False,
@@ -93,6 +101,9 @@ TOOLS = [
                     "type": "string",
                     "description": "Repository-relative path of the intended declaration.",
                 },
+                "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
+                "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
+                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
             },
             "required": ["symbol"],
             "additionalProperties": False,
@@ -150,13 +161,20 @@ class McpServer:
             target_path = arguments.get("target_path", "")
             if not isinstance(target_path, str):
                 raise ValueError("target_path must be a string")
+            budget = {
+                name: arguments[name]
+                for name in ("max_nodes", "max_edges", "timeout_ms")
+                if name in arguments
+            }
             if name in {"definition", "references", "callers", "callees"}:
-                request = QueryRequest(name, symbol, {"target_path": target_path})
+                request = QueryRequest(
+                    name, symbol, {"target_path": target_path, **budget}
+                )
             elif name == "related_tests":
                 request = QueryRequest(
                     "related_tests",
                     symbol,
-                    {"target_path": target_path},
+                    {"target_path": target_path, **budget},
                 )
             elif name == "impact":
                 request = QueryRequest(
@@ -166,6 +184,7 @@ class McpServer:
                         "direction": arguments.get("direction", "upstream"),
                         "depth": arguments.get("depth", 1),
                         "target_path": target_path,
+                        **budget,
                     },
                 )
             else:

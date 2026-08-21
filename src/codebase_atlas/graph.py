@@ -15,6 +15,26 @@ class ImpactHit:
     path: tuple[Edge, ...]
 
 
+@dataclass(frozen=True)
+class ImpactTraversal:
+    """Possibly partial impact results with an explicit completion contract."""
+
+    hits: tuple[ImpactHit, ...]
+    truncated: bool = False
+    reasons: tuple[str, ...] = ()
+    examined_nodes: int = 0
+    examined_edges: int = 0
+
+    def __iter__(self):
+        return iter(self.hits)
+
+    def __len__(self) -> int:
+        return len(self.hits)
+
+    def __getitem__(self, index):
+        return self.hits[index]
+
+
 class EvidenceGraph:
     def __init__(self, nodes: Iterable[Node] = (), edges: Iterable[Edge] = ()) -> None:
         self._nodes: dict[str, Node] = {}

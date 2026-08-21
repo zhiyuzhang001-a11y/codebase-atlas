@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from codebase_atlas.contracts import Edge, Node, SourceRange
-from codebase_atlas.graph import ImpactHit
+from codebase_atlas.graph import ImpactHit, ImpactTraversal
 from codebase_atlas.service import AtlasService, QueryRequest
 
 
@@ -27,21 +27,28 @@ class FakeImpactProvider:
     def definitions(self, symbol, *, target_path=""):
         return (Node("target", "function", symbol, SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH),)
 
-    def callers(self, symbol, *, target_path=""):
-        return self.impact(symbol, direction="upstream", max_depth=1, target_path=target_path)
+    def callers(self, symbol, *, target_path="", **budget):
+        return self.impact(
+            symbol, direction="upstream", max_depth=1,
+            target_path=target_path, **budget,
+        )
 
-    def callees(self, symbol, *, target_path=""):
-        return self.impact(symbol, direction="downstream", max_depth=1, target_path=target_path)
+    def callees(self, symbol, *, target_path="", **budget):
+        return self.impact(
+            symbol, direction="downstream", max_depth=1,
+            target_path=target_path, **budget,
+        )
 
-    def related_tests(self, symbol, *, target_path=""):
+    def related_tests(self, symbol, *, target_path="", **budget):
         return self.impact(
             symbol,
             direction="upstream",
             max_depth=1,
             target_path=target_path,
+            **budget,
         )
 
-    def impact(self, _symbol, *, direction, max_depth, target_path=""):
+    def impact(self, _symbol, *, direction, max_depth, target_path="", **_budget):
         target = Node("target", "function", "target", SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH)
         caller = Node("caller", "function", "caller", SourceRange("src/x.py", 2, 2), "fake", 1.0, HASH)
         edge = Edge("caller", "target", "calls", "fake", 1.0, HASH)
@@ -60,7 +67,10 @@ class FakeSemanticProvider:
         self.closes += 1
 
     def query(self, query_type, symbol, *, target_path=""):
-        return (Node("reference", query_type, symbol, SourceRange("src/x.py", 3, 3), "semantic", 1.0, HASH),)
+        return (
+            Node("reference-1", query_type, symbol, SourceRange("src/x.py", 3, 3), "semantic", 1.0, HASH),
+            Node("reference-2", query_type, symbol, SourceRange("src/y.py", 5, 5), "semantic", 1.0, HASH),
+        )
 
 
 class FakeTestProvider:
@@ -139,6 +149,39 @@ class ServiceTests(unittest.TestCase):
         service = AtlasService(impact_provider=FakeImpactProvider())
         with self.assertRaisesRegex(RuntimeError, "start"):
             service.query(QueryRequest("impact", "target"))
+
+    def test_applies_result_budget_and_reports_explicit_truncation(self) -> None:
+        service = AtlasService(semantic_provider=FakeSemanticProvider())
+        with service:
+            response = service.query(QueryRequest(
+                "references", "target", {"max_nodes": 1, "max_edges": 2, "timeout_ms": 1000}
+            ))
+        self.assertEqual(len(response.nodes), 1)
+        self.assertTrue(response.truncated)
+        self.assertEqual(response.truncation["reasons"], ("node_budget_exceeded",))
+        self.assertEqual(response.truncation["observed"]["nodes"], 2)
+        self.assertEqual(response.truncation["returned"]["nodes"], 1)
+        self.assertIsNone(response.truncation["continuation"])
+        self.assertFalse(response.truncation["resumable"])
+
+    def test_preserves_provider_side_time_truncation(self) -> None:
+        class TruncatedProvider(FakeImpactProvider):
+            def impact(self, *args, **kwargs):
+                hits = super().impact(*args, **kwargs)
+                return ImpactTraversal(
+                    hits, True, ("time_budget_exceeded",), 1, 1
+                )
+
+        provider = TruncatedProvider()
+        service = AtlasService(impact_provider=provider)
+        with service:
+            response = service.query(QueryRequest("impact", "target"))
+        self.assertTrue(response.truncated)
+        self.assertIn("time_budget_exceeded", response.truncation["reasons"])
+
+    def test_rejects_invalid_query_budget(self) -> None:
+        with self.assertRaisesRegex(ValueError, "max_nodes"):
+            QueryRequest("impact", "target", {"max_nodes": 0})
 
 
 if __name__ == "__main__":

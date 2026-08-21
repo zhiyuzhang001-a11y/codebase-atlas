@@ -93,6 +93,22 @@ codebase-atlas query related_tests isUriComponents \
   --target-path src/vs/base/common/uri.ts
 ```
 
+All queries have explicit safety budgets. The defaults are 100 returned nodes,
+200 evidence edges, and 30 seconds. Override them for a specific query when needed:
+
+```bash
+codebase-atlas query impact get_openapi --direction upstream --depth 2 \
+  --max-nodes 50 --max-edges 100 --timeout-ms 10000
+```
+
+Every response includes `truncated` and `truncation`. A truncated response contains
+valid partial evidence, but is not a complete answer. Its reasons can include
+`node_budget_exceeded`, `edge_budget_exceeded`, `time_budget_exceeded`, or
+`provider_result_limit`; the response also records limits, observed/returned counts,
+elapsed time, and whether continuation is available. The current graph provider
+cannot safely resume a partial traversal, so `continuation` is `null` and
+`resumable` is `false` rather than implying that omitted results can be recovered.
+
 Use `--config /path/to/config.toml` when running outside the repository. The
 long-lived JSON-lines interface is `codebase-atlas query-batch`; the read-only MCP
 server is `codebase-atlas mcp`.
