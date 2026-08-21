@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a change within or beyond the current documented scope.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the maintenance or code-intelligence task that is difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and expected outcome
+      description: Give a sanitized example and explain how correctness would be verified.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope acknowledgement
+      options:
+        - label: I checked SUPPORT.md and understand that UI, hosted services, new languages, and cross-repository intelligence are not current commitments.
+          required: true

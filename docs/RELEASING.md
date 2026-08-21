@@ -11,6 +11,9 @@ public product license has been selected.
 4. The wheel contains both bridge scripts, TypeScript 5.9.3, its license, and the
    third-party notice.
 5. The tag is exactly `v<version>`.
+6. `scripts/check_publication_readiness.py --mode pre-public` passes. Before a
+   public launch, the explicit license/visibility decisions are recorded and the
+   same gate passes with `--mode public`.
 
 ## Release
 

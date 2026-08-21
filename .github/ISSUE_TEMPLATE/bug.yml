@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible Codebase Atlas defect without sensitive source.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include secrets, private source, or vulnerability details. Use SECURITY.md for security reports.
+  - type: input
+    id: version
+    attributes:
+      label: Atlas version
+      placeholder: 0.12.1
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Linux, macOS, Windows, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include sanitized config, command, expected/actual results, and truncation/warning metadata.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include setup/doctor/inspect output only after removing sensitive paths and content.

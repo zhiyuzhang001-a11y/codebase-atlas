@@ -1,0 +1,30 @@
+# Support and compatibility
+
+Codebase Atlas is currently a private, pre-public product maintained on a
+best-effort basis with no response-time or long-term-support guarantee.
+
+## Tested scope
+
+- Python 3.11 through 3.14;
+- Linux, macOS, and Windows through the CI matrix;
+- Node.js 18 or newer;
+- Python and TypeScript/JavaScript repositories;
+- local CLI, JSON-lines batch, and read-only stdio MCP use;
+- explicitly configured Codebase Memory and Serena runtimes.
+
+Only the latest private release is the primary support target. A passing setup
+check verifies discoverable capabilities, not every Provider/repository version.
+
+## Known limits
+
+- Recall is not exhaustive. Python direct-test discovery, TypeScript
+  expression-assigned callers, and indirect test helpers can be unsupported.
+- Broad TypeScript references/related-tests/impact can reach explicit node or
+  time budgets. Truncated results are partial evidence, not completeness.
+- Large semantic references can use the full timeout; time-truncated results are
+  not cached.
+- Atlas is not a repository sandbox, hosted service, editor UI, background file
+  watcher, or cross-repository intelligence system.
+
+Use the bug form for sanitized reproductions and `SECURITY.md` for vulnerabilities.
+Out-of-scope feature requests are not compatibility commitments.

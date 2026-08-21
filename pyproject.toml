@@ -13,6 +13,9 @@ license-files = ["THIRD_PARTY_NOTICES.md"]
 
 [project.urls]
 Repository = "https://github.com/zhiyuzhang001-a11y/codebase-atlas"
+Documentation = "https://github.com/zhiyuzhang001-a11y/codebase-atlas/tree/main/docs"
+Changelog = "https://github.com/zhiyuzhang001-a11y/codebase-atlas/blob/main/CHANGELOG.md"
+Issues = "https://github.com/zhiyuzhang001-a11y/codebase-atlas/issues"
 
 [project.scripts]
 codebase-atlas = "codebase_atlas.cli:main"

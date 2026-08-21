@@ -2,9 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current candidate: **0.12.1**, retaining the private 0.12.0 maintenance release and adding
-an M17 TypeScript semantic-runtime preflight fix after independent validation on
-Django, Flask, Vite, and Zod, plus the established large-repository regressions.
+Current private release: **0.12.1**, retaining the 0.12.0 maintenance features and
+adding an M17 TypeScript semantic-runtime preflight fix after independent
+validation on Django, Flask, Vite, and Zod, plus established regressions.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -27,6 +27,26 @@ interfaces.
 - one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
 
 UI, automatic source edits, and cloud sync remain out of scope.
+
+Known limits include non-exhaustive Python direct-test discovery, unsupported
+TypeScript expression-assigned caller shapes, indirect test-helper gaps, and
+bounded broad TypeScript queries. See [`SUPPORT.md`](SUPPORT.md) for the precise
+support boundary.
+
+## Project policies
+
+- [Local use and data removal](docs/LOCAL_USAGE.md)
+- [Privacy and local data](PRIVACY.md)
+- [Security policy](SECURITY.md)
+- [Support and compatibility](SUPPORT.md)
+- [Contributing](CONTRIBUTING.md) and [code of conduct](CODE_OF_CONDUCT.md)
+- [Governance](GOVERNANCE.md), [changelog](CHANGELOG.md), and
+  [private release process](docs/RELEASING.md)
+- [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md)
+
+The product license and public repository decision remain pending. No public-use,
+copying, modification, or redistribution rights should be inferred from source
+availability or the third-party notices.
 
 ## Daily workflow
 
