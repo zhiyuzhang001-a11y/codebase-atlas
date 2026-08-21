@@ -216,11 +216,11 @@ codebase-atlas query callers fire \
 query remains compatible, but can intentionally return multiple definitions when
 the file itself is ambiguous.
 
-For TypeScript projects, scoped `references` first preserves exact compiler
-occurrences (including test files excluded by a production tsconfig), then uses
-the semantic Provider for additional occurrences within the remaining deadline.
-If semantic expansion times out, the exact partial results are retained with
-explicit truncation metadata.
+For TypeScript projects, scoped `references` uses exact compiler-symbol
+occurrences (including test files excluded by a production tsconfig) as the
+authoritative answer for the selected project. The semantic Provider is started
+only when the compiler returns no exact reference. Compiler or fallback timeout
+still produces explicit truncation metadata.
 
 All queries have explicit safety budgets. The defaults are 100 returned nodes,
 200 evidence edges, and 30 seconds. Override them for a specific query when needed:

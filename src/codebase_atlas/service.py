@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import monotonic
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 DEFAULT_MAX_NODES = 100
 DEFAULT_MAX_EDGES = 200
 DEFAULT_TIMEOUT_MS = 30_000
+MAX_SESSION_CACHE_ENTRIES = 128
 
 
 @dataclass(frozen=True)
@@ -94,12 +96,15 @@ class AtlasService:
         self.started = False
         self._structural_started = False
         self._semantic_started = False
-        self._python_reference_cache: dict[
+        self._python_reference_cache: OrderedDict[
             tuple[Path, str, str], tuple[Node, ...]
-        ] = {}
-        self._python_caller_cache: dict[
+        ] = OrderedDict()
+        self._python_complete_reference_cache: OrderedDict[
+            tuple[Path, str, str, str], tuple[Node, ...]
+        ] = OrderedDict()
+        self._python_caller_cache: OrderedDict[
             tuple[Path, str, str, str, str], ImpactTraversal
-        ] = {}
+        ] = OrderedDict()
 
     def start(self) -> None:
         if self.started:
@@ -140,6 +145,7 @@ class AtlasService:
         self._semantic_started = False
         self._structural_started = False
         self._python_reference_cache.clear()
+        self._python_complete_reference_cache.clear()
         self._python_caller_cache.clear()
         self.started = False
 
@@ -168,7 +174,21 @@ class AtlasService:
             repository = request.parameters.get("repository", self.repository)
             nodes_list: list[Node] = []
             target_path = str(request.parameters.get("target_path", ""))
+            python_cache_key: tuple[Path, str, str, str] | None = None
             if repository is not None and Path(target_path).suffix == ".py":
+                python_cache_key = (
+                    Path(repository).resolve(),
+                    request.symbol,
+                    target_path,
+                    str(request.parameters.get("target_owner", "")),
+                )
+                cached_references = self._cache_get(
+                    self._python_complete_reference_cache, python_cache_key
+                )
+                if cached_references is not None:
+                    return self._bounded_response(
+                        request.query_type, cached_references, (), limits, started
+                    )
                 remaining_timeout = self._remaining_timeout(limits, started)
                 if remaining_timeout is None:
                     return self._partial_time_response(
@@ -196,7 +216,7 @@ class AtlasService:
                         request.query_type, tuple(nodes_list), (), limits, started
                     )
                 try:
-                    nodes_list.extend(self.test_provider.references(
+                    ts_nodes = tuple(self.test_provider.references(
                         repository,
                         request.symbol,
                         target_path=str(request.parameters.get("target_path", "")),
@@ -207,9 +227,20 @@ class AtlasService:
                     return self._partial_time_response(
                         request.query_type, tuple(nodes_list), (), limits, started
                     )
+                nodes_list.extend(ts_nodes)
+                if ts_nodes:
+                    return self._bounded_response(
+                        request.query_type, tuple(nodes_list), (), limits, started
+                    )
             if self.semantic_provider is None and not nodes_list:
                 raise RuntimeError("semantic reference provider is not configured")
             if self.semantic_provider is None:
+                if python_cache_key is not None:
+                    self._cache_put(
+                        self._python_complete_reference_cache,
+                        python_cache_key,
+                        tuple(nodes_list),
+                    )
                 return self._bounded_response(
                     request.query_type, tuple(nodes_list), (), limits, started
                 )
@@ -244,6 +275,12 @@ class AtlasService:
                 if (node.location.path, node.location.start_line, node.location.start_column)
                 not in seen
             )
+            if python_cache_key is not None:
+                self._cache_put(
+                    self._python_complete_reference_cache,
+                    python_cache_key,
+                    tuple(nodes_list),
+                )
             return self._bounded_response(
                 request.query_type,
                 tuple(nodes_list),
@@ -477,7 +514,7 @@ class AtlasService:
                 max(getattr(structural, "examined_edges", 0), len(merged)),
             )
 
-        cached_callers = self._python_caller_cache.get(cache_key)
+        cached_callers = self._cache_get(self._python_caller_cache, cache_key)
         if cached_callers is not None:
             return merge_semantic(cached_callers)
 
@@ -541,7 +578,7 @@ class AtlasService:
         )
         supplement_timed_out = semantic_timed_out or exact_timed_out
         if not supplement_timed_out:
-            self._python_caller_cache[cache_key] = semantic
+            self._cache_put(self._python_caller_cache, cache_key, semantic)
         return merge_semantic(semantic, semantic_timed_out=supplement_timed_out)
 
     @staticmethod
@@ -561,7 +598,7 @@ class AtlasService:
         timeout_ms: int,
     ) -> tuple[Node, ...]:
         key = (repository.resolve(), symbol, target_path)
-        cached = self._python_reference_cache.get(key)
+        cached = self._cache_get(self._python_reference_cache, key)
         if cached is not None:
             return cached
         results = PythonExactReferenceProvider(key[0]).references(
@@ -569,8 +606,24 @@ class AtlasService:
             target_path=target_path,
             timeout_ms=timeout_ms,
         )
-        self._python_reference_cache[key] = results
+        self._cache_put(self._python_reference_cache, key, results)
         return results
+
+    @staticmethod
+    def _cache_get(cache: OrderedDict, key):
+        try:
+            value = cache.pop(key)
+        except KeyError:
+            return None
+        cache[key] = value
+        return value
+
+    @staticmethod
+    def _cache_put(cache: OrderedDict, key, value) -> None:
+        cache.pop(key, None)
+        cache[key] = value
+        while len(cache) > MAX_SESSION_CACHE_ENTRIES:
+            cache.popitem(last=False)
 
     def _exact_ts_relation_supplement(
         self,

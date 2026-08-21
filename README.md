@@ -2,8 +2,8 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.13.0**, closing the seven independently observed Python and
-TypeScript query-completeness gaps from the 0.12 line.
+Current release: **0.14.0**, improving large-repository TypeScript references and
+bounded Python session performance without weakening the 0.13 correctness gate.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

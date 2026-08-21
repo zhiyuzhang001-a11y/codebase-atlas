@@ -4,6 +4,20 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.14.0 — 2026-08-21
+
+- Return non-empty exact TypeScript compiler references without redundant
+  semantic Provider startup; retain semantic analysis as the empty-result
+  fallback and preserve explicit node/time budgets.
+- Add bounded 128-entry LRU caches for successful Python reference, exact-scan,
+  and caller-supplement session results; never cache timed-out answers and clear
+  all session caches on close.
+- Reduce frozen Vite references from about 30.10 seconds with time truncation to
+  0.415 seconds without truncation, and VS Code `URI.file` from 30.20 to 8.06
+  seconds while preserving its exact 5,532-result node-budget contract.
+- Reduce repeated Django Python references from about 1.15 seconds to 0.11
+  milliseconds with stable answers and no measured post-cold RSS growth.
+
 ## 0.13.0 — 2026-08-21
 
 - Add exact Python import/re-export-bound references and use them to supplement

@@ -504,6 +504,61 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual((lifecycle.starts, semantic.starts), (0, 1))
         self.assertEqual((lifecycle.closes, semantic.closes), (0, 1))
 
+    def test_nonempty_ts_compiler_references_skip_semantic_provider(self) -> None:
+        class ExactTsReferences(FakeTestProvider):
+            def references(self, _repository, symbol, **_options):
+                return (Node(
+                    "ts-reference", "references", symbol,
+                    SourceRange("src/x.ts", 7, 7),
+                    "atlas-ts-references", 1.0, HASH,
+                ),)
+
+        semantic = FakeSemanticProvider()
+        service = AtlasService(
+            repository=Path(__file__).resolve().parents[1] / "fixtures/ts-tests",
+            semantic_provider=semantic,
+            test_provider=ExactTsReferences(),
+        )
+        with service:
+            response = service.query(QueryRequest("references", "target"))
+            self.assertEqual(semantic.starts, 0)
+        self.assertEqual([node.provider for node in response.nodes], ["atlas-ts-references"])
+        self.assertEqual(semantic.closes, 0)
+
+    def test_empty_ts_compiler_references_fall_back_to_semantic_provider(self) -> None:
+        class EmptyTsReferences(FakeTestProvider):
+            def references(self, _repository, _symbol, **_options):
+                return ()
+
+        semantic = FakeSemanticProvider()
+        service = AtlasService(
+            repository=Path(__file__).resolve().parents[1] / "fixtures/ts-tests",
+            semantic_provider=semantic,
+            test_provider=EmptyTsReferences(),
+        )
+        with service:
+            response = service.query(QueryRequest("references", "target"))
+            self.assertEqual(semantic.starts, 1)
+        self.assertEqual([node.provider for node in response.nodes], ["semantic", "semantic"])
+        self.assertEqual(semantic.closes, 1)
+
+    def test_ts_compiler_reference_timeout_does_not_start_semantic_provider(self) -> None:
+        class TimeoutTsReferences(FakeTestProvider):
+            def references(self, _repository, _symbol, **_options):
+                raise TimeoutError("budget")
+
+        semantic = FakeSemanticProvider()
+        service = AtlasService(
+            repository=Path(__file__).resolve().parents[1] / "fixtures/ts-tests",
+            semantic_provider=semantic,
+            test_provider=TimeoutTsReferences(),
+        )
+        with service:
+            response = service.query(QueryRequest("references", "target"))
+        self.assertTrue(response.truncated)
+        self.assertEqual(response.truncation["reasons"], ("time_budget_exceeded",))
+        self.assertEqual((semantic.starts, semantic.closes), (0, 0))
+
     def test_returns_explicit_truncation_when_semantic_provider_times_out(self) -> None:
         class TimeoutSemantic(FakeSemanticProvider):
             def query(self, *args, **kwargs):
@@ -516,6 +571,72 @@ class ServiceTests(unittest.TestCase):
             ))
         self.assertTrue(response.truncated)
         self.assertEqual(response.truncation["reasons"], ("time_budget_exceeded",))
+
+    def test_reuses_successful_python_reference_answer_with_new_result_budget(self) -> None:
+        class CountingSemantic(FakeSemanticProvider):
+            calls = 0
+
+            def query(self, *args, **kwargs):
+                self.calls += 1
+                return super().query(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text("def target():\n    pass\n")
+            semantic = CountingSemantic()
+            service = AtlasService(repository=repository, semantic_provider=semantic)
+            with service:
+                first = service.query(QueryRequest(
+                    "references", "target",
+                    {"target_path": "target.py", "max_nodes": 1},
+                ))
+                second = service.query(QueryRequest(
+                    "references", "target",
+                    {"target_path": "target.py", "max_nodes": 2},
+                ))
+        self.assertEqual(semantic.calls, 1)
+        self.assertEqual((len(first.nodes), len(second.nodes)), (1, 2))
+        self.assertTrue(first.truncated)
+        self.assertFalse(second.truncated)
+
+    def test_does_not_cache_timed_out_python_reference_answer(self) -> None:
+        class FlakySemantic(FakeSemanticProvider):
+            calls = 0
+
+            def query(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise TimeoutError("budget")
+                return super().query(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "target.py").write_text("def target():\n    pass\n")
+            semantic = FlakySemantic()
+            service = AtlasService(repository=repository, semantic_provider=semantic)
+            with service:
+                first = service.query(QueryRequest(
+                    "references", "target", {"target_path": "target.py"}
+                ))
+                second = service.query(QueryRequest(
+                    "references", "target", {"target_path": "target.py"}
+                ))
+        self.assertTrue(first.truncated)
+        self.assertFalse(second.truncated)
+        self.assertEqual(semantic.calls, 2)
+
+    def test_python_session_caches_are_bounded_and_cleared_on_close(self) -> None:
+        service = AtlasService()
+        for index in range(129):
+            service._cache_put(
+                service._python_complete_reference_cache,
+                (Path("/repo"), f"symbol-{index}", "target.py", ""),
+                (),
+            )
+        self.assertEqual(len(service._python_complete_reference_cache), 128)
+        service.started = True
+        service.close()
+        self.assertEqual(len(service._python_complete_reference_cache), 0)
 
     def test_requires_started_service(self) -> None:
         service = AtlasService(impact_provider=FakeImpactProvider())
