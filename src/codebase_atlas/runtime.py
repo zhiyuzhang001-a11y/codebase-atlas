@@ -174,17 +174,40 @@ def runtime_checks(
             remediation="pass --tsconfig with a repository-relative TypeScript project path",
         ))
         bin_dir = (node_bin_dir or (node_path.parent if node_path else None))
-        language_server = bin_dir / "typescript-language-server" if bin_dir else None
+        search_path = os.pathsep.join(
+            part for part in (str(bin_dir) if bin_dir else "", os.environ.get("PATH", ""))
+            if part
+        )
+        language_server_found = shutil.which("typescript-language-server", path=search_path)
+        npm_found = shutil.which("npm", path=search_path)
+        language_server = Path(language_server_found).absolute() if language_server_found else None
+        npm = Path(npm_found).absolute() if npm_found else None
         checks.append(_check(
-            "typescript_language_server", bool(language_server and language_server.is_file()),
+            "typescript_language_server", language_server is not None,
             path=language_server,
             detail=(
                 "explicit language server available"
-                if language_server and language_server.is_file()
+                if language_server
                 else "not explicit; Serena may install its pinned managed server on first use"
             ),
             remediation="",
             required=False,
+        ))
+        semantic_runtime_ok = language_server is not None or npm is not None
+        checks.append(_check(
+            "typescript_semantic_runtime", semantic_runtime_ok,
+            path=language_server or npm,
+            detail=(
+                "explicit TypeScript language server is available"
+                if language_server else
+                "npm is available for Serena's pinned managed TypeScript language server"
+                if npm else
+                "neither typescript-language-server nor npm is available"
+            ),
+            remediation=(
+                "install npm beside the configured Node.js runtime, or provide a "
+                "node bin directory containing typescript-language-server"
+            ),
         ))
     return checks
 

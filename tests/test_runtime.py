@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from codebase_atlas.runtime import required_checks_ok, runtime_checks
 
@@ -53,30 +54,74 @@ class RuntimeCheckTests(unittest.TestCase):
             failed = [item for item in checks if item["required"] and not item["ok"]]
             self.assertTrue(all(item["remediation"] for item in failed))
 
-    def test_typescript_language_server_is_optional(self) -> None:
+    def test_typescript_runtime_accepts_npm_for_managed_server(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repo = root / "repo"
             repo.mkdir()
             (repo / "tsconfig.json").touch()
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            npm = bin_dir / "npm"
+            npm.touch()
 
             def runner(command, **_kwargs):
                 output = "v18.20.0" if command[-1] == "--version" else "1.7.1"
                 return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-            checks = runtime_checks(
-                repo,
-                language="typescript",
-                node=root / "node",
-                cbm_binary=root / "cbm",
-                serena_python=root / "python",
-                runner=runner,
-            )
+            with patch(
+                "codebase_atlas.runtime.shutil.which",
+                side_effect=lambda command, **_kwargs: str(npm) if command == "npm" else None,
+            ):
+                checks = runtime_checks(
+                    repo,
+                    language="typescript",
+                    node=root / "node",
+                    cbm_binary=root / "cbm",
+                    serena_python=root / "python",
+                    node_bin_dir=bin_dir,
+                    runner=runner,
+                )
             language_server = next(
                 item for item in checks if item["name"] == "typescript_language_server"
             )
             self.assertFalse(language_server["required"])
+            semantic_runtime = next(
+                item for item in checks if item["name"] == "typescript_semantic_runtime"
+            )
+            self.assertTrue(semantic_runtime["required"])
+            self.assertTrue(semantic_runtime["ok"])
             self.assertTrue(required_checks_ok(checks))
+
+    def test_typescript_runtime_requires_npm_or_explicit_server(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            (repo / "tsconfig.json").touch()
+            empty_bin = root / "empty-bin"
+            empty_bin.mkdir()
+
+            def runner(command, **_kwargs):
+                output = "v18.20.0" if command[-1] == "--version" else "1.7.1"
+                return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+            with patch("codebase_atlas.runtime.shutil.which", return_value=None):
+                checks = runtime_checks(
+                    repo,
+                    language="typescript",
+                    node=empty_bin / "node",
+                    cbm_binary=root / "cbm",
+                    serena_python=root / "python",
+                    node_bin_dir=empty_bin,
+                    runner=runner,
+                )
+            semantic_runtime = next(
+                item for item in checks if item["name"] == "typescript_semantic_runtime"
+            )
+            self.assertFalse(semantic_runtime["ok"])
+            self.assertTrue(semantic_runtime["remediation"])
+            self.assertFalse(required_checks_ok(checks))
 
 
 if __name__ == "__main__":

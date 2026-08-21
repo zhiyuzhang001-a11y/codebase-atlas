@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from codebase_atlas.config import AtlasConfig, default_data_dir, diagnose
 from codebase_atlas.index_state import record_index_state
@@ -17,8 +18,9 @@ class ConfigTests(unittest.TestCase):
             repo.mkdir()
             (repo / "packages/app").mkdir(parents=True)
             (repo / "packages/app/tsconfig.json").touch()
-            for name in ("node", "cbm", "serena-python"):
+            for name in ("node", "npm", "cbm", "serena-python"):
                 (root / name).touch()
+            (root / "npm").chmod(0o755)
             config = AtlasConfig(
                 repo, "typescript", root / "node", root / "cbm",
                 root / "serena-python", root / "data", "project-v1", root,
@@ -42,7 +44,11 @@ class ConfigTests(unittest.TestCase):
                     output = "1.7.1"
                 return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-            checks = diagnose(loaded, runner=runner)
+            with patch(
+                "codebase_atlas.runtime.shutil.which",
+                side_effect=lambda command, **_kwargs: str(root / "npm") if command == "npm" else None,
+            ):
+                checks = diagnose(loaded, runner=runner)
             self.assertTrue(all(item["ok"] for item in checks if item["required"]))
 
     def test_default_data_dir_is_stable_and_repository_specific(self) -> None:

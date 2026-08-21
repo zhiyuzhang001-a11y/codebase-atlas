@@ -6,7 +6,8 @@ For the task-oriented workflow and result interpretation, also see
 ## Requirements
 
 - Python 3.11 through 3.14
-- Node.js 18 or newer
+- Node.js 18 or newer, with npm available (or an explicit
+  `typescript-language-server`) for TypeScript semantic queries
 - a local Codebase Memory executable
 - a Python environment with Serena installed
 
@@ -15,6 +16,9 @@ under `~/.local/share/codebase-atlas/` by default and user source files remain
 unchanged.
 The wheel includes the pinned TypeScript 5.9.3 runtime used by the exact test
 analyzer; it does not depend on a target repository's `node_modules` for that API.
+The Serena semantic provider separately needs either npm to provision its pinned
+managed language server or an existing `typescript-language-server` executable.
+`setup` treats the absence of both as a required failure.
 
 Run the read-only preflight before initialization:
 

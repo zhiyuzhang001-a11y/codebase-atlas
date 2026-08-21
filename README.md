@@ -2,8 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.12.0**, promoted as a private maintenance release after validation on
-FastAPI, Home Assistant, NestJS, VS Code, and the product repository itself.
+Current candidate: **0.12.1**, retaining the private 0.12.0 maintenance release and adding
+an M17 TypeScript semantic-runtime preflight fix after independent validation on
+Django, Flask, Vite, and Zod, plus the established large-repository regressions.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
