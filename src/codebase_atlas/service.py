@@ -103,12 +103,16 @@ class AtlasService:
         self._structural_started = True
         return True
 
-    def _ensure_semantic(self) -> None:
+    def _ensure_semantic(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
         if self._semantic_started:
-            return
+            return True
         if self.semantic_provider is not None and hasattr(self.semantic_provider, "start"):
-            self.semantic_provider.start()
+            try:
+                self.semantic_provider.start(timeout_seconds=timeout_ms / 1000.0)
+            except TimeoutError:
+                return False
         self._semantic_started = True
+        return True
 
     def close(self) -> None:
         if not self.started:
@@ -147,14 +151,24 @@ class AtlasService:
         if request.query_type == "references":
             if self.semantic_provider is None:
                 raise RuntimeError("semantic reference provider is not configured")
-            self._ensure_semantic()
-            return self._bounded_response(
-                request.query_type,
-                tuple(self.semantic_provider.query(
+            if not self._ensure_semantic(limits["timeout_ms"]):
+                return self._time_budget_response(request.query_type, limits, started)
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None:
+                return self._time_budget_response(request.query_type, limits, started)
+            try:
+                nodes = tuple(self.semantic_provider.query(
                     "references", request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                     target_owner=str(request.parameters.get("target_owner", "")),
-                )),
+                    timeout_ms=remaining_timeout,
+                ))
+            except TimeoutError:
+                self._semantic_started = False
+                return self._time_budget_response(request.query_type, limits, started)
+            return self._bounded_response(
+                request.query_type,
+                nodes,
                 (),
                 limits,
                 started,
@@ -191,12 +205,19 @@ class AtlasService:
             if repository is None:
                 raise RuntimeError("repository is required for related-tests")
             if self._has_ts_project(repository):
-                results = self.test_provider.related_tests(
-                    repository,
-                    request.symbol,
-                    target_path=str(request.parameters.get("target_path", "")),
-                    target_owner=str(request.parameters.get("target_owner", "")),
-                )
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if remaining_timeout is None:
+                    return self._time_budget_response(request.query_type, limits, started)
+                try:
+                    results = self.test_provider.related_tests(
+                        repository,
+                        request.symbol,
+                        target_path=str(request.parameters.get("target_path", "")),
+                        target_owner=str(request.parameters.get("target_owner", "")),
+                        timeout_ms=remaining_timeout,
+                    )
+                except TimeoutError:
+                    return self._time_budget_response(request.query_type, limits, started)
                 return self._bounded_response(
                     query_type=request.query_type,
                     nodes=tuple(node for node, _edge in results),
@@ -253,17 +274,29 @@ class AtlasService:
         )
         hits_list = list(traversal)
         repository = request.parameters.get("repository", self.repository)
+        extra_reasons: list[str] = []
         if (
             repository is not None
             and self._has_ts_project(repository)
             and request.parameters.get("direction", "upstream") == "upstream"
+            and "time_budget_exceeded" not in getattr(traversal, "reasons", ())
         ):
-            test_results = self.test_provider.related_tests(
-                repository,
-                request.symbol,
-                target_path=str(request.parameters.get("target_path", "")),
-                target_owner=str(request.parameters.get("target_owner", "")),
-            )
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None:
+                test_results = ()
+                extra_reasons.append("time_budget_exceeded")
+            else:
+                try:
+                    test_results = self.test_provider.related_tests(
+                        repository,
+                        request.symbol,
+                        target_path=str(request.parameters.get("target_path", "")),
+                        target_owner=str(request.parameters.get("target_owner", "")),
+                        timeout_ms=remaining_timeout,
+                    )
+                except TimeoutError:
+                    test_results = ()
+                    extra_reasons.append("time_budget_exceeded")
             existing_ids = {hit.node.id for hit in hits_list}
             for node, edge in test_results:
                 if node.id not in existing_ids:
@@ -273,7 +306,7 @@ class AtlasService:
             traversal = ImpactTraversal(
                 tuple(hits_list),
                 traversal.truncated,
-                traversal.reasons,
+                tuple(dict.fromkeys((*traversal.reasons, *extra_reasons))),
                 max(traversal.examined_nodes, len(hits_list)),
                 max(
                     traversal.examined_edges,

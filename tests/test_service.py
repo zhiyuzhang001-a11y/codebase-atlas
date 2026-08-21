@@ -63,13 +63,21 @@ class FakeSemanticProvider:
         self.starts = 0
         self.closes = 0
 
-    def start(self):
+    def start(self, *, timeout_seconds=None):
         self.starts += 1
 
     def close(self):
         self.closes += 1
 
-    def query(self, query_type, symbol, *, target_path="", target_owner=""):
+    def query(
+        self,
+        query_type,
+        symbol,
+        *,
+        target_path="",
+        target_owner="",
+        timeout_ms=None,
+    ):
         return (
             Node("reference-1", query_type, symbol, SourceRange("src/x.py", 3, 3), "semantic", 1.0, HASH),
             Node("reference-2", query_type, symbol, SourceRange("src/y.py", 5, 5), "semantic", 1.0, HASH),
@@ -77,9 +85,18 @@ class FakeSemanticProvider:
 
 
 class FakeTestProvider:
+    calls = 0
+
     def related_tests(
-        self, _repository, symbol, *, target_path="", target_owner=""
+        self,
+        _repository,
+        symbol,
+        *,
+        target_path="",
+        target_owner="",
+        timeout_ms=None,
     ):
+        self.calls += 1
         target = Node("target", "function", symbol, SourceRange(target_path or "src/x.ts", 1, 1), "fake", 1.0, HASH)
         test = Node("test", "test", "works", SourceRange("tests/x.test.ts", 4, 5), "tests", 1.0, HASH)
         return ((test, Edge("test", target.id, "calls", "tests", 1.0, HASH)),)
@@ -171,6 +188,19 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual((lifecycle.starts, semantic.starts), (0, 1))
         self.assertEqual((lifecycle.closes, semantic.closes), (0, 1))
 
+    def test_returns_explicit_truncation_when_semantic_provider_times_out(self) -> None:
+        class TimeoutSemantic(FakeSemanticProvider):
+            def query(self, *args, **kwargs):
+                raise TimeoutError("budget")
+
+        service = AtlasService(semantic_provider=TimeoutSemantic())
+        with service:
+            response = service.query(QueryRequest(
+                "references", "target", {"timeout_ms": 1000}
+            ))
+        self.assertTrue(response.truncated)
+        self.assertEqual(response.truncation["reasons"], ("time_budget_exceeded",))
+
     def test_requires_started_service(self) -> None:
         service = AtlasService(impact_provider=FakeImpactProvider())
         with self.assertRaisesRegex(RuntimeError, "start"):
@@ -204,6 +234,38 @@ class ServiceTests(unittest.TestCase):
             response = service.query(QueryRequest("impact", "target"))
         self.assertTrue(response.truncated)
         self.assertIn("time_budget_exceeded", response.truncation["reasons"])
+
+    def test_skips_ts_test_augmentation_after_graph_timeout(self) -> None:
+        class TruncatedProvider(FakeImpactProvider):
+            def impact(self, *args, **kwargs):
+                return ImpactTraversal(
+                    (), True, ("time_budget_exceeded",), 1, 0
+                )
+
+        tests = FakeTestProvider()
+        service = AtlasService(
+            repository=Path(__file__).resolve().parents[1] / "fixtures/ts-tests",
+            impact_provider=TruncatedProvider(),
+            test_provider=tests,
+        )
+        with service:
+            response = service.query(QueryRequest("impact", "run"))
+        self.assertEqual(tests.calls, 0)
+        self.assertIn("time_budget_exceeded", response.truncation["reasons"])
+
+    def test_returns_explicit_truncation_when_ts_test_provider_times_out(self) -> None:
+        class TimeoutTests(FakeTestProvider):
+            def related_tests(self, *args, **kwargs):
+                raise TimeoutError("budget")
+
+        service = AtlasService(
+            repository=Path(__file__).resolve().parents[1] / "fixtures/ts-tests",
+            test_provider=TimeoutTests(),
+        )
+        with service:
+            response = service.query(QueryRequest("related_tests", "run"))
+        self.assertTrue(response.truncated)
+        self.assertEqual(response.truncation["reasons"], ("time_budget_exceeded",))
 
     def test_rejects_invalid_query_budget(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_nodes"):

@@ -73,13 +73,20 @@ function testTitle(call, line) {
   return `<dynamic-test@${line}>`;
 }
 
-function callbackCallsTarget(callback, checker, targetSymbols) {
+function declarationKey(node) {
+  return `${path.resolve(node.getSourceFile().fileName)}:${node.getStart(node.getSourceFile())}`;
+}
+
+function callbackCallsTarget(callback, checker, targetSymbols, targetDeclarationKeys) {
   let matched = false;
   function visit(node) {
     if (matched) return;
     if (ts.isCallExpression(node)) {
       const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(node.expression));
-      if (symbol && targetSymbols.has(symbol)) {
+      const declarationMatch = symbol?.declarations?.some(
+        declaration => targetDeclarationKeys.has(declarationKey(declaration)),
+      );
+      if (symbol && (targetSymbols.has(symbol) || declarationMatch)) {
         matched = true;
         return;
       }
@@ -139,6 +146,7 @@ function main() {
   const program = loadProgram(repository, args.tsconfig ?? '', targetPath);
   const checker = program.getTypeChecker();
   const targetSymbols = new Set();
+  const targetDeclarationKeys = new Set();
   const targetDeclarations = [];
 
   for (const sourceFile of program.getSourceFiles()) {
@@ -158,6 +166,7 @@ function main() {
         const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(name));
         if (symbol && !targetSymbols.has(symbol)) {
           targetSymbols.add(symbol);
+          targetDeclarationKeys.add(declarationKey(node));
           targetDeclarations.push({ sourceFile, node, symbol });
         }
       }
@@ -186,7 +195,7 @@ function main() {
     function findTests(node) {
       if (ts.isCallExpression(node) && testApiName(node.expression)) {
         const callback = callbackArgument(node);
-        if (callback && callbackCallsTarget(callback, checker, targetSymbols)) {
+        if (callback && callbackCallsTarget(callback, checker, targetSymbols, targetDeclarationKeys)) {
           const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
           const end = sourceFile.getLineAndCharacterOfPosition(node.end);
           const line = start.line + 1;

@@ -35,6 +35,7 @@ class TypeScriptTestProvider:
         *,
         target_path: str = "",
         target_owner: str = "",
+        timeout_ms: int | None = None,
     ) -> tuple[tuple[Node, Edge], ...]:
         command = [
             str(self.node),
@@ -50,7 +51,16 @@ class TypeScriptTestProvider:
             command.extend(("--target-owner", target_owner))
         if self.tsconfig is not None:
             command.extend(("--tsconfig", str(self.tsconfig)))
-        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_ms / 1000.0 if timeout_ms is not None else None,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError("TypeScript test analysis exceeded the query time budget") from exc
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "TypeScript test analyzer failed")
         payload = json.loads(completed.stdout)

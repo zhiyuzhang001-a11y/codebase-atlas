@@ -77,12 +77,13 @@ class SerenaSemanticProvider:
         self._stderr_handle: Any = None
         self.startup_ms = 0.0
 
-    def _read(self) -> dict[str, Any]:
+    def _read(self, timeout_seconds: float | None = None) -> dict[str, Any]:
         if self._process is None or self._process.stdout is None:
             raise RuntimeError("Serena runner is not started")
-        ready, _, _ = select.select([self._process.stdout], [], [], self.timeout_seconds)
+        timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        ready, _, _ = select.select([self._process.stdout], [], [], timeout)
         if not ready:
-            raise TimeoutError(f"Serena runner exceeded {self.timeout_seconds:.0f}s")
+            raise TimeoutError(f"Serena runner exceeded {timeout:.3f}s")
         line = self._process.stdout.readline()
         if not line:
             raise RuntimeError(f"Serena runner exited before responding (exit={self._process.poll()})")
@@ -91,7 +92,7 @@ class SerenaSemanticProvider:
             raise ValueError("Serena runner response must be an object")
         return value
 
-    def start(self) -> None:
+    def start(self, *, timeout_seconds: float | None = None) -> None:
         if self._process is not None:
             return
         self.serena_home.mkdir(parents=True, exist_ok=True)
@@ -128,10 +129,14 @@ class SerenaSemanticProvider:
             text=True,
             env=environment,
         )
-        response = self._read()
-        if response.get("status") != "ready":
-            raise RuntimeError(f"Serena runner did not become ready: {response}")
-        self.startup_ms = float(response.get("startup_ms", 0.0))
+        try:
+            response = self._read(timeout_seconds)
+            if response.get("status") != "ready":
+                raise RuntimeError(f"Serena runner did not become ready: {response}")
+            self.startup_ms = float(response.get("startup_ms", 0.0))
+        except Exception:
+            self._terminate()
+            raise
 
     def query(
         self,
@@ -140,6 +145,7 @@ class SerenaSemanticProvider:
         *,
         target_path: str = "",
         target_owner: str = "",
+        timeout_ms: int | None = None,
     ) -> tuple[Node, ...]:
         if query_type not in {"definition", "references"}:
             raise ValueError(f"unsupported Serena query: {query_type}")
@@ -152,7 +158,15 @@ class SerenaSemanticProvider:
             "target_owner": target_owner,
         }) + "\n")
         self._process.stdin.flush()
-        response = self._read()
+        try:
+            response = self._read(
+                timeout_ms / 1000.0 if timeout_ms is not None else None
+            )
+        except TimeoutError:
+            # A late response would corrupt the next request/response pairing.
+            # Restart the Provider on the next query instead.
+            self._terminate()
+            raise
         if response.get("status") != "ok":
             raise RuntimeError(str(response.get("message", "unknown Serena error")))
         return normalize_serena_rows(response.get("results"), query_type=query_type, symbol=symbol)
@@ -173,6 +187,20 @@ class SerenaSemanticProvider:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+        self._process = None
+        if self._stderr_handle is not None:
+            self._stderr_handle.close()
+            self._stderr_handle = None
+
+    def _terminate(self) -> None:
+        process = self._process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
         self._process = None
         if self._stderr_handle is not None:
             self._stderr_handle.close()

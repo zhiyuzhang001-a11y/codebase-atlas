@@ -27,7 +27,8 @@ def definitions(
     target_path: str = "",
     target_owner: str = "",
 ) -> list[dict[str, Any]]:
-    rows = json.loads(tool.apply(name_path_pattern=query))
+    name_path_pattern = f"{target_owner}/{query}" if target_owner else query
+    rows = json.loads(tool.apply(name_path_pattern=name_path_pattern))
     if not isinstance(rows, list):
         raise ValueError("Serena find_symbol returned a non-list result")
     return [
