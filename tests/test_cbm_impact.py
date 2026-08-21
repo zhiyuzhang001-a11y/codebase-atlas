@@ -43,10 +43,10 @@ class WideProvider(CodebaseMemoryImpactProvider):
         self.trace_calls += 1
         return {
             "callers": {
-                "cols": ["name", "confidence"],
+                "cols": ["name", "confidence", "strategy"],
                 "groups": [{
                     "qn_prefix": "pkg",
-                    "rows": [["a", 1.0], ["b", 1.0], ["c", 1.0]],
+                    "rows": [["a", 1.0, "lsp"], ["b", 1.0, "lsp"], ["c", 1.0, "lsp"]],
                 }],
             }
         }
@@ -56,6 +56,19 @@ class TimeoutProvider(WideProvider):
         self, symbol, *, target_path="", target_owner="", timeout_seconds=None
     ):
         raise TimeoutError("budget")
+
+
+class MixedResolutionProvider(WideProvider):
+    def _run(self, tool, *args, timeout_seconds=None):
+        return {
+            "callers": {
+                "cols": ["name", "confidence", "strategy"],
+                "groups": [{
+                    "qn_prefix": "pkg",
+                    "rows": [["a", 0.01, "heuristic"], ["b", 0.95, "lsp"]],
+                }],
+            }
+        }
 
 
 class OwnerSearchProvider(CodebaseMemoryImpactProvider):
@@ -83,6 +96,15 @@ class OwnerSearchProvider(CodebaseMemoryImpactProvider):
 
 
 class CodebaseMemoryBudgetTests(unittest.TestCase):
+    def test_excludes_heuristic_provider_edges_from_exact_results(self) -> None:
+        traversal = MixedResolutionProvider().impact(
+            "target", direction="upstream", max_depth=1, timeout_ms=1000,
+        )
+        self.assertEqual([hit.node.id for hit in traversal], ["pkg.b"])
+        self.assertTrue(all(
+            edge.resolution == "exact" for hit in traversal for edge in hit.path
+        ))
+
     def test_owner_uses_qualified_search_and_selects_one_same_file_member(self) -> None:
         provider = OwnerSearchProvider()
         result = provider.definitions(

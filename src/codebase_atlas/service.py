@@ -149,15 +149,48 @@ class AtlasService:
                 started,
             )
         if request.query_type == "references":
-            if self.semantic_provider is None:
+            repository = request.parameters.get("repository", self.repository)
+            nodes_list: list[Node] = []
+            if (
+                repository is not None
+                and self._has_ts_project(repository)
+                and hasattr(self.test_provider, "references")
+            ):
+                remaining_timeout = self._remaining_timeout(limits, started)
+                if remaining_timeout is None:
+                    return self._partial_time_response(
+                        request.query_type, tuple(nodes_list), (), limits, started
+                    )
+                try:
+                    nodes_list.extend(self.test_provider.references(
+                        repository,
+                        request.symbol,
+                        target_path=str(request.parameters.get("target_path", "")),
+                        target_owner=str(request.parameters.get("target_owner", "")),
+                        timeout_ms=remaining_timeout,
+                    ))
+                except TimeoutError:
+                    return self._partial_time_response(
+                        request.query_type, tuple(nodes_list), (), limits, started
+                    )
+            if self.semantic_provider is None and not nodes_list:
                 raise RuntimeError("semantic reference provider is not configured")
-            if not self._ensure_semantic(limits["timeout_ms"]):
-                return self._time_budget_response(request.query_type, limits, started)
+            if self.semantic_provider is None:
+                return self._bounded_response(
+                    request.query_type, tuple(nodes_list), (), limits, started
+                )
+            remaining_timeout = self._remaining_timeout(limits, started)
+            if remaining_timeout is None or not self._ensure_semantic(remaining_timeout):
+                return self._partial_time_response(
+                    request.query_type, tuple(nodes_list), (), limits, started
+                )
             remaining_timeout = self._remaining_timeout(limits, started)
             if remaining_timeout is None:
-                return self._time_budget_response(request.query_type, limits, started)
+                return self._partial_time_response(
+                    request.query_type, tuple(nodes_list), (), limits, started
+                )
             try:
-                nodes = tuple(self.semantic_provider.query(
+                semantic_nodes = tuple(self.semantic_provider.query(
                     "references", request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
                     target_owner=str(request.parameters.get("target_owner", "")),
@@ -165,10 +198,21 @@ class AtlasService:
                 ))
             except TimeoutError:
                 self._semantic_started = False
-                return self._time_budget_response(request.query_type, limits, started)
+                return self._partial_time_response(
+                    request.query_type, tuple(nodes_list), (), limits, started
+                )
+            seen = {
+                (node.location.path, node.location.start_line, node.location.start_column)
+                for node in nodes_list
+            }
+            nodes_list.extend(
+                node for node in semantic_nodes
+                if (node.location.path, node.location.start_line, node.location.start_column)
+                not in seen
+            )
             return self._bounded_response(
                 request.query_type,
-                nodes,
+                tuple(nodes_list),
                 (),
                 limits,
                 started,
@@ -355,6 +399,32 @@ class AtlasService:
         )
         return QueryResponse(
             query_type, (), (), truncated=True, truncation=truncation
+        )
+
+    @classmethod
+    def _partial_time_response(
+        cls,
+        query_type: str,
+        nodes: tuple[Node, ...],
+        edges: tuple[Edge, ...],
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        response = cls._bounded_response(
+            query_type, nodes, edges, limits, started
+        )
+        truncation = dict(response.truncation)
+        truncation["reasons"] = tuple(dict.fromkeys(
+            (*truncation.get("reasons", ()), "time_budget_exceeded")
+        ))
+        return QueryResponse(
+            response.query_type,
+            response.nodes,
+            response.edges,
+            response.depths,
+            response.paths,
+            True,
+            truncation,
         )
 
     @staticmethod

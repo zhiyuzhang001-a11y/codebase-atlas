@@ -69,6 +69,18 @@ class TypeScriptTestProviderTests(unittest.TestCase):
             "runs the primary worker",
         ])
 
+    def test_owner_returns_exact_same_file_member_references(self) -> None:
+        results = self.provider.references(
+            ROOT / "fixtures/ts-tests",
+            "run",
+            target_path="src/members.ts",
+            target_owner="PrimaryWorker",
+        )
+        self.assertEqual(
+            [(node.location.path, node.location.start_line) for node in results],
+            [("tests/members.test.ts", 4)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

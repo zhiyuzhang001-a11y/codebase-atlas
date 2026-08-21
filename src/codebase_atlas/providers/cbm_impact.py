@@ -396,6 +396,12 @@ class CodebaseMemoryImpactProvider:
                 if len(rows) >= 100:
                     reasons.append("provider_result_limit")
                 for row in rows:
+                    # CBM can include low-confidence name-based guesses beside
+                    # LSP-resolved edges. The default Atlas graph contract is
+                    # exact-only, so guesses must not consume result budgets or
+                    # enter paths labeled as exact.
+                    if row.get("strategy") != "lsp":
+                        continue
                     neighbor_id = row["id"]
                     examined_neighbor_ids.add(neighbor_id)
                     if neighbor_id not in discovered and len(discovered) - len(seeds) >= max_nodes:
