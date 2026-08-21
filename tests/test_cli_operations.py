@@ -121,9 +121,32 @@ class CliOperationTests(unittest.TestCase):
             config.cache_dir.mkdir(parents=True, exist_ok=True)
             (config.cache_dir / f"{config.project}.db").write_bytes(b"database")
             output = StringIO()
-            with redirect_stdout(output):
-                self.assertEqual(main(["doctor", "--config", str(path)]), 0)
+            runtime_ready = [{
+                "name": "runtime", "ok": True, "required": True,
+                "path": "", "version": "", "detail": "ready", "remediation": "",
+            }]
+            with patch("codebase_atlas.runtime.runtime_checks", return_value=runtime_ready):
+                with redirect_stdout(output):
+                    self.assertEqual(main(["doctor", "--config", str(path)]), 0)
             self.assertEqual(json.loads(output.getvalue())["index"]["status"], "fresh")
+
+    def test_setup_reports_structured_read_only_result(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            _config, path = self.config(Path(raw))
+            checks = [
+                {
+                    "name": "node", "ok": True, "required": True,
+                    "path": "/node", "version": "20.0.0", "detail": "ready",
+                    "remediation": "",
+                }
+            ]
+            output = StringIO()
+            with patch("codebase_atlas.cli.runtime_checks", return_value=checks):
+                with redirect_stdout(output):
+                    self.assertEqual(main(["setup", "--config", str(path)]), 0)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["mode"], "read_only")
 
 
 if __name__ == "__main__":

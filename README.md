@@ -2,7 +2,7 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.10.0**, promoted for local daily use after validation on
+Current release: **0.11.0**, promoted as a private installable release after validation on
 FastAPI, Home Assistant, NestJS, VS Code, and the product repository itself.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
@@ -29,6 +29,7 @@ UI, automatic source edits, and cloud sync remain out of scope.
 ## Daily workflow
 
 ```bash
+codebase-atlas setup
 codebase-atlas init
 codebase-atlas index
 codebase-atlas doctor
@@ -37,6 +38,10 @@ codebase-atlas doctor
 codebase-atlas update
 codebase-atlas doctor
 ```
+
+`setup` is a read-only preflight: it executes version/import probes and returns
+machine-readable remediation without installing software or changing project,
+editor, or MCP configuration.
 
 When source and Provider storage are already current, `update` takes an
 Atlas-owned fast path without starting the Provider. Configured queries expose

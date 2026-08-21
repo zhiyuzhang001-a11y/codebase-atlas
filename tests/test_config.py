@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from codebase_atlas.config import AtlasConfig, default_data_dir, diagnose
 from codebase_atlas.index_state import record_index_state
@@ -31,7 +32,18 @@ class ConfigTests(unittest.TestCase):
             (loaded.cache_dir / f"{loaded.project}.db").write_bytes(b"database")
             self.assertEqual(loaded, config)
             self.assertEqual(loaded.cache_dir, (root / "data/codebase-memory").resolve())
-            self.assertTrue(all(item["ok"] for item in diagnose(loaded)))
+
+            def runner(command, **_kwargs):
+                if command[0] == str(loaded.node):
+                    output = "v20.0.0"
+                elif command[0] == str(loaded.cbm_binary):
+                    output = "codebase-memory-mcp 0.4.0"
+                else:
+                    output = "1.7.1"
+                return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+            checks = diagnose(loaded, runner=runner)
+            self.assertTrue(all(item["ok"] for item in checks if item["required"]))
 
     def test_default_data_dir_is_stable_and_repository_specific(self) -> None:
         first = default_data_dir(Path("/tmp/example-a"))

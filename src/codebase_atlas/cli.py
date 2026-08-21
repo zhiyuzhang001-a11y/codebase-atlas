@@ -12,7 +12,7 @@ import os
 import subprocess
 
 from . import __version__
-from .config import AtlasConfig, CONFIG_NAME, diagnose
+from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
 from .index_state import (
     index_freshness,
     provider_database_health,
@@ -29,6 +29,7 @@ from .operations import (
     unknown_operational_status,
 )
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
+from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
 
 
@@ -46,6 +47,17 @@ def main(argv: list[str] | None = None) -> int:
     initialize.add_argument("--node-bin-dir", type=Path)
     initialize.add_argument("--tsconfig", type=Path)
     initialize.add_argument("--data-dir", type=Path)
+    setup = commands.add_parser(
+        "setup", help="read-only compatibility check for required local runtimes"
+    )
+    setup.add_argument("--repo", type=Path, default=Path.cwd())
+    setup.add_argument("--config", type=Path)
+    setup.add_argument("--language", choices=("python", "typescript"))
+    setup.add_argument("--node", type=Path)
+    setup.add_argument("--cbm-binary", type=Path)
+    setup.add_argument("--serena-python", type=Path)
+    setup.add_argument("--node-bin-dir", type=Path)
+    setup.add_argument("--tsconfig", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     index = commands.add_parser("index", help="build the configured structural index")
@@ -69,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     related.add_argument(
         "--analyzer",
         type=Path,
-        default=Path(__file__).resolve().parents[2] / "scripts/ts_test_analyzer.mjs",
+        default=_asset("ts_test_analyzer.mjs"),
     )
     impact = commands.add_parser("impact")
     impact.add_argument("--repo", type=Path, required=True)
@@ -88,12 +100,12 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--config", type=Path)
     mcp.add_argument("--repo", type=Path)
     mcp.add_argument("--node", type=Path)
-    mcp.add_argument("--analyzer", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/ts_test_analyzer.mjs")
+    mcp.add_argument("--analyzer", type=Path, default=_asset("ts_test_analyzer.mjs"))
     mcp.add_argument("--binary", type=Path)
     mcp.add_argument("--cache-dir", type=Path)
     mcp.add_argument("--project")
     mcp.add_argument("--serena-python", type=Path)
-    mcp.add_argument("--serena-runner", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/serena_runner.py")
+    mcp.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     mcp.add_argument("--serena-home", type=Path)
     mcp.add_argument("--metadata-root", type=Path)
     mcp.add_argument("--language", choices=("python", "typescript"))
@@ -106,12 +118,12 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--config", type=Path)
     query.add_argument("--repo", type=Path)
     query.add_argument("--node", type=Path)
-    query.add_argument("--analyzer", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/ts_test_analyzer.mjs")
+    query.add_argument("--analyzer", type=Path, default=_asset("ts_test_analyzer.mjs"))
     query.add_argument("--binary", type=Path)
     query.add_argument("--cache-dir", type=Path)
     query.add_argument("--project")
     query.add_argument("--serena-python", type=Path)
-    query.add_argument("--serena-runner", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/serena_runner.py")
+    query.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     query.add_argument("--serena-home", type=Path)
     query.add_argument("--metadata-root", type=Path)
     query.add_argument("--language", choices=("python", "typescript"))
@@ -149,6 +161,50 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
         return 0
+    if args.command == "setup":
+        candidate = args.config
+        if candidate is None:
+            local = args.repo / CONFIG_NAME
+            candidate = local if local.is_file() else None
+        if candidate is not None:
+            configured = AtlasConfig.load(candidate)
+            repository = configured.repository
+            language = configured.language
+            node = configured.node
+            cbm_binary = configured.cbm_binary
+            serena_python = configured.serena_python
+            node_bin_dir = configured.node_bin_dir
+            tsconfig = configured.tsconfig
+        else:
+            repository = args.repo
+            language = args.language or (
+                "typescript"
+                if args.tsconfig is not None or (repository / "tsconfig.json").is_file()
+                else "python"
+            )
+            node = args.node
+            cbm_binary = args.cbm_binary
+            serena_python = args.serena_python
+            node_bin_dir = args.node_bin_dir
+            tsconfig = args.tsconfig
+        checks = runtime_checks(
+            repository,
+            language=language,
+            node=node,
+            cbm_binary=cbm_binary,
+            serena_python=serena_python,
+            node_bin_dir=node_bin_dir,
+            tsconfig=tsconfig,
+        )
+        ok = required_checks_ok(checks)
+        print(json.dumps({
+            "status": "ready" if ok else "incomplete",
+            "mode": "read_only",
+            "config": str(candidate or ""),
+            "language": language,
+            "checks": checks,
+        }, indent=2))
+        return 0 if ok else 2
     if args.command == "init":
         config_path = (args.config or args.repo / CONFIG_NAME).resolve()
         config = AtlasConfig.discover(
@@ -165,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         config = AtlasConfig.load(args.config)
         if args.command == "doctor":
             checks = diagnose(config)
-            ok = all(bool(item["ok"]) for item in checks)
+            ok = required_checks_ok(checks)
             freshness = index_freshness(config.data_dir, config.repository, config.project)
             provider_database = provider_database_health(config.cache_dir, config.project)
             print(json.dumps({

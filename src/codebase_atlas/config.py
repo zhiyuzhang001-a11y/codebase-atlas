@@ -153,33 +153,41 @@ class AtlasConfig:
         path.write_text(text, encoding="utf-8")
 
 
-def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
+def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
     from .index_state import index_freshness, provider_database_health
+    from .runtime import runtime_checks
 
     freshness = index_freshness(config.data_dir, config.repository, config.project)
     provider_database = provider_database_health(config.cache_dir, config.project)
-    checks = [
-        ("python_version", sys.version_info >= (3, 11), f"{sys.version_info.major}.{sys.version_info.minor}"),
-        ("repository", config.repository.is_dir(), str(config.repository)),
-        ("node", config.node.is_file(), str(config.node)),
-        ("codebase_memory", config.cbm_binary.is_file(), str(config.cbm_binary)),
-        ("serena_python", config.serena_python.is_file(), str(config.serena_python)),
-        ("node_bin_dir", bool(config.node_bin_dir and config.node_bin_dir.is_dir()), str(config.node_bin_dir or "")),
-        ("ts_analyzer", config.analyzer.is_file(), str(config.analyzer)),
-        ("serena_runner", config.serena_runner.is_file(), str(config.serena_runner)),
-        ("indexed_project", bool(config.project), config.project or "run codebase-atlas index"),
-        (
-            "index_freshness",
-            bool(freshness["ok"]),
-            f"{freshness['status']}: {freshness['reason']}",
-        ),
-        (
-            "provider_database",
-            bool(provider_database["ok"]),
-            f"{provider_database['status']}: {provider_database['reason']}",
-        ),
-    ]
-    if config.language == "typescript":
-        selected = config.repository / (config.tsconfig or Path("tsconfig.json"))
-        checks.append(("tsconfig", selected.is_file(), str(selected)))
-    return [{"name": name, "ok": ok, "detail": detail} for name, ok, detail in checks]
+    kwargs = {} if runner is None else {"runner": runner}
+    checks = runtime_checks(
+        config.repository,
+        language=config.language,
+        node=config.node,
+        cbm_binary=config.cbm_binary,
+        serena_python=config.serena_python,
+        node_bin_dir=config.node_bin_dir,
+        tsconfig=config.tsconfig,
+        **kwargs,
+    )
+    checks.extend([
+        {
+            "name": "indexed_project", "ok": bool(config.project), "required": True,
+            "path": "", "version": "",
+            "detail": config.project or "project identity has not been indexed",
+            "remediation": "" if config.project else "run 'codebase-atlas index'",
+        },
+        {
+            "name": "index_freshness", "ok": bool(freshness["ok"]), "required": True,
+            "path": str(config.data_dir / "index-state.json"), "version": "",
+            "detail": f"{freshness['status']}: {freshness['reason']}",
+            "remediation": "" if freshness["ok"] else "run 'codebase-atlas update'",
+        },
+        {
+            "name": "provider_database", "ok": bool(provider_database["ok"]), "required": True,
+            "path": str(config.cache_dir), "version": "",
+            "detail": f"{provider_database['status']}: {provider_database['reason']}",
+            "remediation": "" if provider_database["ok"] else "run 'codebase-atlas index'",
+        },
+    ])
+    return checks

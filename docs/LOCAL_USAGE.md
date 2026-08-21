@@ -5,8 +5,8 @@ For the task-oriented workflow and result interpretation, also see
 
 ## Requirements
 
-- Python 3.11 or newer
-- Node.js
+- Python 3.11 through 3.14
+- Node.js 18 or newer
 - a local Codebase Memory executable
 - a Python environment with Serena installed
 
@@ -15,6 +15,20 @@ under `~/.local/share/codebase-atlas/` by default and user source files remain
 unchanged.
 The wheel includes the pinned TypeScript 5.9.3 runtime used by the exact test
 analyzer; it does not depend on a target repository's `node_modules` for that API.
+
+Run the read-only preflight before initialization:
+
+```bash
+codebase-atlas setup \
+  --repo /path/to/repository \
+  --serena-python /path/to/serena-venv/bin/python
+```
+
+The JSON result validates executable versions and Serena import capability and
+provides a remediation command for every required failure. It never installs a
+runtime or changes project, editor, or MCP configuration. Once a project config
+exists, `codebase-atlas setup --config /path/to/.codebase-atlas.toml` validates
+the exact recorded paths.
 
 ## Install
 
@@ -220,3 +234,6 @@ python3.12 -m pip uninstall codebase-atlas
 Uninstalling the package does not remove project configuration or caches. After
 checking the path printed by `codebase-atlas doctor`, those can be removed
 separately if no longer needed.
+
+Private release mechanics, version/tag checks, checksums, and the unresolved
+public-license boundary are documented in `docs/RELEASING.md`.

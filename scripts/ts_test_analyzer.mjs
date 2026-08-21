@@ -2,9 +2,26 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import process from 'node:process';
-import ts from 'typescript';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+let ts;
+for (const candidate of [
+  path.join(scriptDirectory, 'node_modules/typescript/lib/typescript.js'),
+  path.join(scriptDirectory, '../vendor/typescript/lib/typescript.js'),
+]) {
+  if (fs.existsSync(candidate)) {
+    ts = require(candidate);
+    break;
+  }
+}
+if (!ts) {
+  throw new Error('the pinned TypeScript runtime is missing; reinstall Codebase Atlas');
+}
 
 function parseArguments(argv) {
   const result = {};
