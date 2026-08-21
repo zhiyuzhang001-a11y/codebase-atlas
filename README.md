@@ -2,17 +2,45 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-The initial product phase follows the `BUILD_PROVIDER_GAPS` decision from the sibling evaluation workspace. Codebase Memory supplies broad structural graph facts, Serena supplies exact definitions and references, and this repository owns normalized contracts, exact TS/JS test mapping, identity-safe impact traversal, provenance policy, and product interfaces.
+Current release: **0.9.0**, promoted for local daily use after validation on
+FastAPI, Home Assistant, NestJS, VS Code, and the product repository itself.
+
+Codebase Memory supplies broad structural graph facts, Serena supplies exact
+definitions and references, and this repository owns normalized contracts,
+exact TS/JS test mapping, identity-safe impact traversal, exact Python caller
+supplementation, provenance policy, query budgets, index freshness, and product
+interfaces.
 
 ## Current scope
 
 - local and read-only against user source;
 - provider-neutral result and graph contracts;
+- Python and TypeScript/JavaScript repositories;
 - exact TS/JS Vitest/Jest callback mapping;
+- path and owner-qualified identity for same-name symbols and members;
 - explicit-depth impact traversal over stable identities;
+- bounded node, edge, and time budgets with explicit partial-result metadata;
+- Git-backed `fresh`/`stale` index diagnosis and safe Provider-managed updates;
+- large-repository and monorepo subproject support;
 - one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
 
-UI, automatic source edits, cloud sync, and token-saving claims are out of scope.
+UI, automatic source edits, and cloud sync remain out of scope.
+
+## Daily workflow
+
+```bash
+codebase-atlas init
+codebase-atlas index
+codebase-atlas doctor
+
+# After source changes:
+codebase-atlas update
+codebase-atlas doctor
+```
+
+The structural Provider chooses an incremental, no-op, or safe full-rebuild
+route. Atlas records freshness only after successful publication and preserves
+the previous state when an update fails or the repository changes mid-run.
 
 ## Verify
 
