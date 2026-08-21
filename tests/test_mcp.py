@@ -48,7 +48,7 @@ class McpTests(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(response["result"]["structuredContent"]["nodes"][0]["name"], "target")
 
-    def test_forwards_target_path_for_ambiguous_symbols(self) -> None:
+    def test_forwards_path_and_owner_for_ambiguous_members(self) -> None:
         response = self.server.handle(
             {
                 "jsonrpc": "2.0",
@@ -59,6 +59,7 @@ class McpTests(unittest.TestCase):
                     "arguments": {
                         "symbol": "render",
                         "target_path": "packages/ui/src/render.ts",
+                        "target_owner": "Renderer",
                         "max_nodes": 25,
                     },
                 },
@@ -68,6 +69,10 @@ class McpTests(unittest.TestCase):
         self.assertEqual(
             self.service.last_request.parameters["target_path"],
             "packages/ui/src/render.ts",
+        )
+        self.assertEqual(
+            self.service.last_request.parameters["target_owner"],
+            "Renderer",
         )
         self.assertEqual(self.service.last_request.parameters["max_nodes"], 25)
 

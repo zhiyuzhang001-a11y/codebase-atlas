@@ -53,6 +53,10 @@ TOOLS = [
                         "type": "string",
                         "description": "Repository-relative path of the intended declaration.",
                     },
+                    "target_owner": {
+                        "type": "string",
+                        "description": "Enclosing class or object name for a same-file member.",
+                    },
                     "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
                     "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
                     "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
@@ -78,6 +82,7 @@ TOOLS = [
             "properties": {
                 "symbol": {"type": "string"},
                 "target_path": {"type": "string"},
+                "target_owner": {"type": "string"},
                 "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
                 "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
                 "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
@@ -100,6 +105,10 @@ TOOLS = [
                 "target_path": {
                     "type": "string",
                     "description": "Repository-relative path of the intended declaration.",
+                },
+                "target_owner": {
+                    "type": "string",
+                    "description": "Enclosing class or object name for a same-file member.",
                 },
                 "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
                 "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
@@ -161,6 +170,9 @@ class McpServer:
             target_path = arguments.get("target_path", "")
             if not isinstance(target_path, str):
                 raise ValueError("target_path must be a string")
+            target_owner = arguments.get("target_owner", "")
+            if not isinstance(target_owner, str):
+                raise ValueError("target_owner must be a string")
             budget = {
                 name: arguments[name]
                 for name in ("max_nodes", "max_edges", "timeout_ms")
@@ -168,13 +180,21 @@ class McpServer:
             }
             if name in {"definition", "references", "callers", "callees"}:
                 request = QueryRequest(
-                    name, symbol, {"target_path": target_path, **budget}
+                    name, symbol, {
+                        "target_path": target_path,
+                        "target_owner": target_owner,
+                        **budget,
+                    }
                 )
             elif name == "related_tests":
                 request = QueryRequest(
                     "related_tests",
                     symbol,
-                    {"target_path": target_path, **budget},
+                    {
+                        "target_path": target_path,
+                        "target_owner": target_owner,
+                        **budget,
+                    },
                 )
             elif name == "impact":
                 request = QueryRequest(
@@ -184,6 +204,7 @@ class McpServer:
                         "direction": arguments.get("direction", "upstream"),
                         "depth": arguments.get("depth", 1),
                         "target_path": target_path,
+                        "target_owner": target_owner,
                         **budget,
                     },
                 )

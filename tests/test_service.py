@@ -24,31 +24,34 @@ class FakeLifecycle:
 
 
 class FakeImpactProvider:
-    def definitions(self, symbol, *, target_path=""):
+    def definitions(self, symbol, *, target_path="", target_owner=""):
         return (Node("target", "function", symbol, SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH),)
 
-    def callers(self, symbol, *, target_path="", **budget):
+    def callers(self, symbol, *, target_path="", target_owner="", **budget):
         return self.impact(
             symbol, direction="upstream", max_depth=1,
-            target_path=target_path, **budget,
+            target_path=target_path, target_owner=target_owner, **budget,
         )
 
-    def callees(self, symbol, *, target_path="", **budget):
+    def callees(self, symbol, *, target_path="", target_owner="", **budget):
         return self.impact(
             symbol, direction="downstream", max_depth=1,
-            target_path=target_path, **budget,
+            target_path=target_path, target_owner=target_owner, **budget,
         )
 
-    def related_tests(self, symbol, *, target_path="", **budget):
+    def related_tests(self, symbol, *, target_path="", target_owner="", **budget):
         return self.impact(
             symbol,
             direction="upstream",
             max_depth=1,
             target_path=target_path,
+            target_owner=target_owner,
             **budget,
         )
 
-    def impact(self, _symbol, *, direction, max_depth, target_path="", **_budget):
+    def impact(
+        self, _symbol, *, direction, max_depth, target_path="", target_owner="", **_budget
+    ):
         target = Node("target", "function", "target", SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH)
         caller = Node("caller", "function", "caller", SourceRange("src/x.py", 2, 2), "fake", 1.0, HASH)
         edge = Edge("caller", "target", "calls", "fake", 1.0, HASH)
@@ -66,7 +69,7 @@ class FakeSemanticProvider:
     def close(self):
         self.closes += 1
 
-    def query(self, query_type, symbol, *, target_path=""):
+    def query(self, query_type, symbol, *, target_path="", target_owner=""):
         return (
             Node("reference-1", query_type, symbol, SourceRange("src/x.py", 3, 3), "semantic", 1.0, HASH),
             Node("reference-2", query_type, symbol, SourceRange("src/y.py", 5, 5), "semantic", 1.0, HASH),
@@ -74,7 +77,9 @@ class FakeSemanticProvider:
 
 
 class FakeTestProvider:
-    def related_tests(self, _repository, symbol, *, target_path=""):
+    def related_tests(
+        self, _repository, symbol, *, target_path="", target_owner=""
+    ):
         target = Node("target", "function", symbol, SourceRange(target_path or "src/x.ts", 1, 1), "fake", 1.0, HASH)
         test = Node("test", "test", "works", SourceRange("tests/x.test.ts", 4, 5), "tests", 1.0, HASH)
         return ((test, Edge("test", target.id, "calls", "tests", 1.0, HASH)),)
@@ -112,6 +117,27 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(responses["references"].nodes[0].kind, "references")
         self.assertEqual(responses["related_tests"].nodes[0].kind, "test")
         self.assertTrue(responses["impact"].paths["caller"])
+
+    def test_forwards_same_file_owner_selector(self) -> None:
+        class CapturingProvider(FakeImpactProvider):
+            owner = ""
+
+            def definitions(self, symbol, *, target_path="", target_owner=""):
+                self.owner = target_owner
+                return super().definitions(
+                    symbol, target_path=target_path, target_owner=target_owner
+                )
+
+        provider = CapturingProvider()
+        service = AtlasService(structural_provider=provider)
+        with service:
+            response = service.query(QueryRequest(
+                "definition",
+                "run",
+                {"target_path": "src/members.ts", "target_owner": "PrimaryWorker"},
+            ))
+        self.assertEqual(provider.owner, "PrimaryWorker")
+        self.assertEqual(len(response.nodes), 1)
 
     def test_reuses_one_lifecycle_for_multiple_queries(self) -> None:
         lifecycle = FakeLifecycle()
@@ -182,6 +208,10 @@ class ServiceTests(unittest.TestCase):
     def test_rejects_invalid_query_budget(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_nodes"):
             QueryRequest("impact", "target", {"max_nodes": 0})
+
+    def test_rejects_non_string_owner_selector(self) -> None:
+        with self.assertRaisesRegex(ValueError, "target_owner"):
+            QueryRequest("definition", "target", {"target_owner": 42})
 
 
 if __name__ == "__main__":

@@ -29,7 +29,9 @@ class WideProvider(CodebaseMemoryImpactProvider):
             "pkg.c": node("pkg.c", 4),
         }
 
-    def _search_name(self, symbol, *, target_path="", timeout_seconds=None):
+    def _search_name(
+        self, symbol, *, target_path="", target_owner="", timeout_seconds=None
+    ):
         return (self.nodes["pkg.target"],)
 
     def _search_identity(self, node_id, *, timeout_seconds=None):
@@ -50,11 +52,47 @@ class WideProvider(CodebaseMemoryImpactProvider):
         }
 
 class TimeoutProvider(WideProvider):
-    def _search_name(self, symbol, *, target_path="", timeout_seconds=None):
+    def _search_name(
+        self, symbol, *, target_path="", target_owner="", timeout_seconds=None
+    ):
         raise TimeoutError("budget")
 
 
+class OwnerSearchProvider(CodebaseMemoryImpactProvider):
+    def __init__(self) -> None:
+        super().__init__(Path("/tmp/cbm"), Path("/tmp/repo"), Path("/tmp/cache"), "p")
+        self.arguments = ()
+
+    def _run(self, tool, *args, timeout_seconds=None):
+        self.arguments = args
+        return {
+            "cols": ["name", "label", "lines"],
+            "groups": [
+                {
+                    "file": "src/members.ts",
+                    "qn_prefix": "p.src.members.PrimaryWorker",
+                    "rows": [["run", "Method", "2-4"]],
+                },
+                {
+                    "file": "src/members.ts",
+                    "qn_prefix": "p.src.members.SecondaryWorker",
+                    "rows": [["run", "Method", "8-10"]],
+                },
+            ],
+        }
+
+
 class CodebaseMemoryBudgetTests(unittest.TestCase):
+    def test_owner_uses_qualified_search_and_selects_one_same_file_member(self) -> None:
+        provider = OwnerSearchProvider()
+        result = provider.definitions(
+            "run", target_path="src/members.ts", target_owner="PrimaryWorker"
+        )
+        self.assertEqual([node.id for node in result], [
+            "p.src.members.PrimaryWorker.run"
+        ])
+        self.assertIn("--qn-pattern", provider.arguments)
+
     def test_stops_before_resolving_node_beyond_budget(self) -> None:
         traversal = WideProvider().impact(
             "target", direction="upstream", max_depth=1,

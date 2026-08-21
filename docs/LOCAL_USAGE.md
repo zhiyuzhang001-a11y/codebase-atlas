@@ -93,6 +93,20 @@ codebase-atlas query related_tests isUriComponents \
   --target-path src/vs/base/common/uri.ts
 ```
 
+If one file contains several members with the same name, add the enclosing class
+or object. This selects the stored qualified identity instead of merging every
+`fire` declaration in the file:
+
+```bash
+codebase-atlas query callers fire \
+  --target-path src/vs/base/common/event.ts \
+  --target-owner Emitter
+```
+
+`target_owner` is also available in JSON-lines and MCP requests. A path-only
+query remains compatible, but can intentionally return multiple definitions when
+the file itself is ambiguous.
+
 All queries have explicit safety budgets. The defaults are 100 returned nodes,
 200 evidence edges, and 30 seconds. Override them for a specific query when needed:
 

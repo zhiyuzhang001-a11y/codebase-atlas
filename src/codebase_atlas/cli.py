@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     related.add_argument("--repo", type=Path, required=True)
     related.add_argument("--symbol", required=True)
     related.add_argument("--target-path", default="")
+    related.add_argument("--target-owner", default="")
     related.add_argument("--node", type=Path, required=True)
     related.add_argument("--tsconfig", type=Path)
     related.add_argument(
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     impact.add_argument("--cache-dir", type=Path, required=True)
     impact.add_argument("--project", required=True)
     impact.add_argument("--target-path", default="")
+    impact.add_argument("--target-owner", default="")
     impact.add_argument("--max-nodes", type=int, default=100)
     impact.add_argument("--max-edges", type=int, default=200)
     impact.add_argument("--timeout-ms", type=int, default=30_000)
@@ -94,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--node-bin-dir", type=Path)
     query.add_argument("--tsconfig", type=Path)
     query.add_argument("--target-path", default="")
+    query.add_argument("--target-owner", default="")
     query.add_argument("--direction", choices=("upstream", "downstream"), default="upstream")
     query.add_argument("--depth", type=int, default=1)
     query.add_argument("--max-nodes", type=int, default=100)
@@ -104,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     for action in query._actions:
         if action.dest in {
-            "help", "query_type", "symbol", "target_path", "direction", "depth",
+            "help", "query_type", "symbol", "target_path", "target_owner", "direction", "depth",
             "max_nodes", "max_edges", "timeout_ms",
         }:
             continue
@@ -152,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo,
             args.symbol,
             target_path=args.target_path,
+            target_owner=args.target_owner,
         )
         print(
             json.dumps(
@@ -182,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
                 direction=args.direction,
                 max_depth=args.depth,
                 target_path=args.target_path,
+                target_owner=args.target_owner,
                 max_nodes=args.max_nodes,
                 max_edges=args.max_edges,
                 timeout_ms=args.timeout_ms,
@@ -248,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.symbol,
                         {
                             "target_path": args.target_path,
+                            "target_owner": args.target_owner,
                             "direction": args.direction,
                             "depth": args.depth,
                             "max_nodes": args.max_nodes,

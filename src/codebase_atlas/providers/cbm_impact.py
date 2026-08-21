@@ -51,9 +51,9 @@ class CodebaseMemoryImpactProvider:
         self.cache_dir = cache_dir.resolve()
         self.project = project
         self._node_cache: dict[str, Node] = {}
-        self._definition_cache: dict[tuple[str, str], tuple[Node, ...]] = {}
+        self._definition_cache: dict[tuple[str, str, str], tuple[Node, ...]] = {}
         self._impact_cache: dict[
-            tuple[str, str, int, str, int, int, int], ImpactTraversal
+            tuple[str, str, int, str, str, int, int, int], ImpactTraversal
         ] = {}
         self._cache_fingerprint = self._index_fingerprint()
 
@@ -146,14 +146,19 @@ class CodebaseMemoryImpactProvider:
         symbol: str,
         *,
         target_path: str = "",
+        target_owner: str = "",
         timeout_seconds: float | None = None,
     ) -> tuple[Node, ...]:
+        selector = (
+            ("--qn-pattern", rf"(^|\.){re.escape(target_owner)}\.{re.escape(symbol)}$")
+            if target_owner
+            else ("--name-pattern", f"^{re.escape(symbol)}$")
+        )
         payload = self._run(
             "search_graph",
             "--project",
             self.project,
-            "--name-pattern",
-            f"^{re.escape(symbol)}$",
+            *selector,
             "--format",
             "json",
             "--limit",
@@ -162,17 +167,27 @@ class CodebaseMemoryImpactProvider:
         )
         return tuple(
             node for node in self._nodes_from_search(payload)
-            if node.name == symbol and (not target_path or node.location.path == target_path)
+            if node.name == symbol
+            and (not target_path or node.location.path == target_path)
+            and (
+                not target_owner
+                or node.id == f"{target_owner}.{symbol}"
+                or node.id.endswith(f".{target_owner}.{symbol}")
+            )
         )
 
-    def definitions(self, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
+    def definitions(
+        self, symbol: str, *, target_path: str = "", target_owner: str = ""
+    ) -> tuple[Node, ...]:
         """Return every exact-name definition with its stable qualified identity."""
         self._invalidate_if_index_changed()
-        key = (symbol, target_path)
+        key = (symbol, target_path, target_owner)
         cached = self._definition_cache.get(key)
         if cached is not None:
             return cached
-        result = self._search_name(symbol, target_path=target_path)
+        result = self._search_name(
+            symbol, target_path=target_path, target_owner=target_owner
+        )
         self._definition_cache[key] = result
         return result
 
@@ -181,12 +196,14 @@ class CodebaseMemoryImpactProvider:
         symbol: str,
         *,
         target_path: str = "",
+        target_owner: str = "",
         max_nodes: int = 100,
         max_edges: int = 200,
         timeout_ms: int = 30_000,
     ) -> ImpactTraversal:
         return self.impact(
             symbol, direction="upstream", max_depth=1, target_path=target_path,
+            target_owner=target_owner,
             max_nodes=max_nodes, max_edges=max_edges, timeout_ms=timeout_ms,
         )
 
@@ -195,12 +212,14 @@ class CodebaseMemoryImpactProvider:
         symbol: str,
         *,
         target_path: str = "",
+        target_owner: str = "",
         max_nodes: int = 100,
         max_edges: int = 200,
         timeout_ms: int = 30_000,
     ) -> ImpactTraversal:
         return self.impact(
             symbol, direction="downstream", max_depth=1, target_path=target_path,
+            target_owner=target_owner,
             max_nodes=max_nodes, max_edges=max_edges, timeout_ms=timeout_ms,
         )
 
@@ -209,6 +228,7 @@ class CodebaseMemoryImpactProvider:
         symbol: str,
         *,
         target_path: str = "",
+        target_owner: str = "",
         max_nodes: int = 100,
         max_edges: int = 200,
         timeout_ms: int = 30_000,
@@ -218,6 +238,7 @@ class CodebaseMemoryImpactProvider:
             direction="upstream",
             max_depth=1,
             target_path=target_path,
+            target_owner=target_owner,
             max_nodes=max_nodes,
             max_edges=max_edges,
             timeout_ms=timeout_ms,
@@ -291,6 +312,7 @@ class CodebaseMemoryImpactProvider:
         direction: str,
         max_depth: int,
         target_path: str = "",
+        target_owner: str = "",
         max_nodes: int = 100,
         max_edges: int = 200,
         timeout_ms: int = 30_000,
@@ -299,7 +321,7 @@ class CodebaseMemoryImpactProvider:
             raise ValueError(f"unsupported direction: {direction}")
         self._invalidate_if_index_changed()
         cache_key = (
-            symbol, direction, max_depth, target_path,
+            symbol, direction, max_depth, target_path, target_owner,
             max_nodes, max_edges, timeout_ms,
         )
         cached = self._impact_cache.get(cache_key)
@@ -315,11 +337,14 @@ class CodebaseMemoryImpactProvider:
             return value
 
         try:
-            definition_key = (symbol, target_path)
+            definition_key = (symbol, target_path, target_owner)
             seeds = self._definition_cache.get(definition_key)
             if seeds is None:
                 seeds = self._search_name(
-                    symbol, target_path=target_path, timeout_seconds=remaining()
+                    symbol,
+                    target_path=target_path,
+                    target_owner=target_owner,
+                    timeout_seconds=remaining(),
                 )
                 self._definition_cache[definition_key] = seeds
         except TimeoutError:

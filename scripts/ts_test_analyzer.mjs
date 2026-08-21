@@ -131,6 +131,7 @@ function main() {
   const repository = path.resolve(args.repo ?? '');
   const query = args.symbol ?? '';
   const targetPath = args['target-path'] ?? '';
+  const targetOwner = args['target-owner'] ?? '';
   if (!query || !fs.statSync(repository).isDirectory()) {
     throw new Error('--repo must be a directory and --symbol is required');
   }
@@ -146,7 +147,14 @@ function main() {
     if (targetPath && relativePath !== targetPath) continue;
     function findDeclarations(node) {
       const name = declarationName(node);
-      if (name?.text === query) {
+      let owner = '';
+      for (let parent = node.parent; parent; parent = parent.parent) {
+        if ((ts.isClassDeclaration(parent) || ts.isClassExpression(parent) || ts.isInterfaceDeclaration(parent)) && parent.name) {
+          owner = parent.name.text;
+          break;
+        }
+      }
+      if (name?.text === query && (!targetOwner || owner === targetOwner)) {
         const symbol = canonicalSymbol(checker, checker.getSymbolAtLocation(name));
         if (symbol && !targetSymbols.has(symbol)) {
           targetSymbols.add(symbol);
@@ -160,7 +168,7 @@ function main() {
 
   if (targetDeclarations.length !== 1) {
     throw new Error(
-      `expected one declaration for ${query}${targetPath ? ` in ${targetPath}` : ''}, found ${targetDeclarations.length}`,
+      `expected one declaration for ${targetOwner ? `${targetOwner}.` : ''}${query}${targetPath ? ` in ${targetPath}` : ''}, found ${targetDeclarations.length}`,
     );
   }
 

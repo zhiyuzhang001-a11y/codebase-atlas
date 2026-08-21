@@ -133,13 +133,23 @@ class SerenaSemanticProvider:
             raise RuntimeError(f"Serena runner did not become ready: {response}")
         self.startup_ms = float(response.get("startup_ms", 0.0))
 
-    def query(self, query_type: str, symbol: str, *, target_path: str = "") -> tuple[Node, ...]:
+    def query(
+        self,
+        query_type: str,
+        symbol: str,
+        *,
+        target_path: str = "",
+        target_owner: str = "",
+    ) -> tuple[Node, ...]:
         if query_type not in {"definition", "references"}:
             raise ValueError(f"unsupported Serena query: {query_type}")
         if self._process is None or self._process.stdin is None:
             raise RuntimeError("Serena provider must be started before query")
         self._process.stdin.write(json.dumps({
-            "query_type": query_type, "query": symbol, "target_path": target_path,
+            "query_type": query_type,
+            "query": symbol,
+            "target_path": target_path,
+            "target_owner": target_owner,
         }) + "\n")
         self._process.stdin.flush()
         response = self._read()

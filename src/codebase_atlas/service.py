@@ -34,6 +34,10 @@ class QueryRequest:
             raise ValueError(f"unsupported query type: {self.query_type}")
         if not self.symbol:
             raise ValueError("query symbol is required")
+        for name in ("target_path", "target_owner"):
+            value = self.parameters.get(name, "")
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
         for name, default, maximum in (
             ("max_nodes", DEFAULT_MAX_NODES, 10_000),
             ("max_edges", DEFAULT_MAX_EDGES, 20_000),
@@ -134,6 +138,7 @@ class AtlasService:
                 tuple(self.structural_provider.definitions(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
                 )),
                 (),
                 limits,
@@ -148,6 +153,7 @@ class AtlasService:
                 tuple(self.semantic_provider.query(
                     "references", request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
                 )),
                 (),
                 limits,
@@ -172,6 +178,7 @@ class AtlasService:
                 method(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
                     max_nodes=limits["max_nodes"],
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
@@ -188,6 +195,7 @@ class AtlasService:
                     repository,
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
                 )
                 return self._bounded_response(
                     query_type=request.query_type,
@@ -213,6 +221,7 @@ class AtlasService:
                 self.structural_provider.related_tests(
                     request.symbol,
                     target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
                     max_nodes=limits["max_nodes"],
                     max_edges=limits["max_edges"],
                     timeout_ms=remaining_timeout,
@@ -237,6 +246,7 @@ class AtlasService:
             direction=str(request.parameters.get("direction", "upstream")),
             max_depth=int(request.parameters.get("depth", 1)),
             target_path=str(request.parameters.get("target_path", "")),
+            target_owner=str(request.parameters.get("target_owner", "")),
             max_nodes=limits["max_nodes"],
             max_edges=limits["max_edges"],
             timeout_ms=remaining_timeout,
@@ -252,6 +262,7 @@ class AtlasService:
                 repository,
                 request.symbol,
                 target_path=str(request.parameters.get("target_path", "")),
+                target_owner=str(request.parameters.get("target_owner", "")),
             )
             existing_ids = {hit.node.id for hit in hits_list}
             for node, edge in test_results:

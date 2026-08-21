@@ -34,6 +34,7 @@ class TypeScriptTestProvider:
         symbol: str,
         *,
         target_path: str = "",
+        target_owner: str = "",
     ) -> tuple[tuple[Node, Edge], ...]:
         command = [
             str(self.node),
@@ -45,6 +46,8 @@ class TypeScriptTestProvider:
         ]
         if target_path:
             command.extend(("--target-path", target_path))
+        if target_owner:
+            command.extend(("--target-owner", target_owner))
         if self.tsconfig is not None:
             command.extend(("--tsconfig", str(self.tsconfig)))
         completed = subprocess.run(command, check=False, capture_output=True, text=True)

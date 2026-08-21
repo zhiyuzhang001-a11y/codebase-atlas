@@ -58,6 +58,17 @@ class TypeScriptTestProviderTests(unittest.TestCase):
             "handles whitespace",
         ])
 
+    def test_owner_disambiguates_same_file_members(self) -> None:
+        results = self.provider.related_tests(
+            ROOT / "fixtures/ts-tests",
+            "run",
+            target_path="src/members.ts",
+            target_owner="PrimaryWorker",
+        )
+        self.assertEqual([node.name for node, _edge in results], [
+            "runs the primary worker",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,7 +21,12 @@ def emit(value: dict[str, Any]) -> None:
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 
-def definitions(tool: FindSymbolTool, query: str, target_path: str = "") -> list[dict[str, Any]]:
+def definitions(
+    tool: FindSymbolTool,
+    query: str,
+    target_path: str = "",
+    target_owner: str = "",
+) -> list[dict[str, Any]]:
     rows = json.loads(tool.apply(name_path_pattern=query))
     if not isinstance(rows, list):
         raise ValueError("Serena find_symbol returned a non-list result")
@@ -31,13 +36,26 @@ def definitions(tool: FindSymbolTool, query: str, target_path: str = "") -> list
         if isinstance(row, dict)
         and isinstance(row.get("name_path"), str)
         and row["name_path"].split("/")[-1] == query
+        and (
+            not target_owner
+            or len(row["name_path"].split("/")) >= 2
+            and row["name_path"].split("/")[-2] == target_owner
+        )
         and isinstance(row.get("relative_path"), str)
         and (not target_path or row["relative_path"] == target_path)
     ]
 
 
-def query(agent: SerenaAgent, query_type: str, symbol: str, target_path: str = "") -> list[dict[str, Any]]:
-    matches = definitions(agent.get_tool(FindSymbolTool), symbol, target_path)
+def query(
+    agent: SerenaAgent,
+    query_type: str,
+    symbol: str,
+    target_path: str = "",
+    target_owner: str = "",
+) -> list[dict[str, Any]]:
+    matches = definitions(
+        agent.get_tool(FindSymbolTool), symbol, target_path, target_owner
+    )
     if query_type == "definition":
         return [
             {
@@ -139,6 +157,7 @@ def main() -> int:
                 results = query(
                     agent, request["query_type"], request["query"],
                     str(request.get("target_path", "")),
+                    str(request.get("target_owner", "")),
                 )
                 emit(
                     {
