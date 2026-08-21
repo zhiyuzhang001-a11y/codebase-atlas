@@ -88,12 +88,16 @@ class AtlasService:
             return
         self.started = True
 
-    def _ensure_structural(self) -> None:
+    def _ensure_structural(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
         if self._structural_started:
-            return
+            return True
         if self.lifecycle is not None:
-            self.lifecycle.start()
+            try:
+                self.lifecycle.start(timeout_seconds=timeout_ms / 1000.0)
+            except TimeoutError:
+                return False
         self._structural_started = True
+        return True
 
     def _ensure_semantic(self) -> None:
         if self._semantic_started:
@@ -123,7 +127,8 @@ class AtlasService:
         if request.query_type == "definition":
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
-            self._ensure_structural()
+            if not self._ensure_structural(limits["timeout_ms"]):
+                return self._time_budget_response(request.query_type, limits, started)
             return self._bounded_response(
                 request.query_type,
                 tuple(self.structural_provider.definitions(
@@ -151,7 +156,8 @@ class AtlasService:
         if request.query_type in {"callers", "callees"}:
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
-            self._ensure_structural()
+            if not self._ensure_structural(limits["timeout_ms"]):
+                return self._time_budget_response(request.query_type, limits, started)
             method = getattr(self.structural_provider, request.query_type)
             remaining_timeout = self._remaining_timeout(limits, started)
             if remaining_timeout is None:
@@ -192,7 +198,8 @@ class AtlasService:
                 )
             if self.structural_provider is None:
                 raise RuntimeError("related-tests provider is not configured")
-            self._ensure_structural()
+            if not self._ensure_structural(limits["timeout_ms"]):
+                return self._time_budget_response(request.query_type, limits, started)
             remaining_timeout = self._remaining_timeout(limits, started)
             if remaining_timeout is None:
                 return self._impact_response(
@@ -215,7 +222,8 @@ class AtlasService:
             )
         if self.impact_provider is None:
             raise RuntimeError("impact provider is not configured")
-        self._ensure_structural()
+        if not self._ensure_structural(limits["timeout_ms"]):
+            return self._time_budget_response(request.query_type, limits, started)
         remaining_timeout = self._remaining_timeout(limits, started)
         if remaining_timeout is None:
             return self._impact_response(
@@ -286,6 +294,24 @@ class AtlasService:
     def _remaining_timeout(limits: dict[str, int], started: float) -> int | None:
         remaining = limits["timeout_ms"] - int((monotonic() - started) * 1000.0)
         return remaining if remaining >= 1 else None
+
+    @classmethod
+    def _time_budget_response(
+        cls, query_type: str, limits: dict[str, int], started: float
+    ) -> QueryResponse:
+        elapsed_ms = (monotonic() - started) * 1000.0
+        truncation = cls._truncation(
+            ["time_budget_exceeded"],
+            limits,
+            observed_nodes=0,
+            observed_edges=0,
+            returned_nodes=0,
+            returned_edges=0,
+            elapsed_ms=elapsed_ms,
+        )
+        return QueryResponse(
+            query_type, (), (), truncated=True, truncation=truncation
+        )
 
     @staticmethod
     def _truncation(

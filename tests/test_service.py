@@ -16,7 +16,7 @@ class FakeLifecycle:
         self.starts = 0
         self.closes = 0
 
-    def start(self) -> None:
+    def start(self, *, timeout_seconds=None) -> None:
         self.starts += 1
 
     def close(self) -> None:

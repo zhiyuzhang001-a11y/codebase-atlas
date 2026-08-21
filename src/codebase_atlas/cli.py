@@ -13,7 +13,7 @@ import subprocess
 
 from . import __version__
 from .config import AtlasConfig, CONFIG_NAME, diagnose
-from .lifecycle import CodebaseMemoryDaemon
+from .lifecycle import CodebaseMemoryDaemon, GlobalCbmLock
 from .mcp import McpServer, run_stdio
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .service import AtlasService, QueryRequest
@@ -175,15 +175,17 @@ def main(argv: list[str] | None = None) -> int:
             args.cache_dir,
             args.project,
         )
-        hits = provider.impact(
-            args.symbol,
-            direction=args.direction,
-            max_depth=args.depth,
-            target_path=args.target_path,
-            max_nodes=args.max_nodes,
-            max_edges=args.max_edges,
-            timeout_ms=args.timeout_ms,
-        )
+        lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
+        with lifecycle:
+            hits = provider.impact(
+                args.symbol,
+                direction=args.direction,
+                max_depth=args.depth,
+                target_path=args.target_path,
+                max_nodes=args.max_nodes,
+                max_edges=args.max_edges,
+                timeout_ms=args.timeout_ms,
+            )
         print(
             json.dumps(
                 {
@@ -318,13 +320,14 @@ def _index_repository(config: AtlasConfig, mode: str) -> str:
     environment = os.environ.copy()
     environment["CBM_CACHE_DIR"] = str(config.cache_dir)
     environment["CBM_ALLOWED_ROOT"] = str(config.repository.parent)
-    completed = subprocess.run(
-        [
-            str(config.cbm_binary), "cli", "--json", "index_repository",
-            "--repo-path", str(config.repository), "--mode", mode,
-        ],
-        check=False, capture_output=True, text=True, env=environment,
-    )
+    with GlobalCbmLock(timeout_seconds=300.0):
+        completed = subprocess.run(
+            [
+                str(config.cbm_binary), "cli", "--json", "index_repository",
+                "--repo-path", str(config.repository), "--mode", mode,
+            ],
+            check=False, capture_output=True, text=True, env=environment,
+        )
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "Codebase Memory indexing failed")
     envelope = json.loads(completed.stdout)

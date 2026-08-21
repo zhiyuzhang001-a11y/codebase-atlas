@@ -115,6 +115,14 @@ CBM trace/identity work. The cache is cleared automatically when the configured
 CBM index database's modification fingerprint changes; time-truncated traversals
 are never cached.
 
+Atlas serializes CBM use across local Atlas processes because the upstream Provider
+supports only one global daemon at a time, even when repositories use different
+cache directories. A second query waits for the first session to release the lock;
+that wait counts against `timeout_ms` and returns explicit time truncation if the
+budget expires. The per-user lock lives in `XDG_RUNTIME_DIR` or the system temporary
+directory. Set `ATLAS_RUNTIME_DIR` only when a different runtime directory is
+required. Atlas does not stop a daemon it did not start.
+
 Use `--config /path/to/config.toml` when running outside the repository. The
 long-lived JSON-lines interface is `codebase-atlas query-batch`; the read-only MCP
 server is `codebase-atlas mcp`.
