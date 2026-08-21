@@ -52,6 +52,15 @@ codebase-atlas update
 codebase-atlas doctor
 ```
 
+When the recorded source fingerprint and index mode already match and the
+Provider database is present, `update` returns `status=current` without starting
+the Provider. To bypass this Atlas fast path for diagnosis or Provider-level
+maintenance, run:
+
+```bash
+codebase-atlas update --force-provider
+```
+
 `doctor` reports the index as `fresh`, `stale`, `unknown`, or
 `rebuild_required`. For Git repositories, Atlas fingerprints the commit plus
 the exact contents of changed and untracked files, so repeated edits to an
@@ -66,6 +75,22 @@ a successful index. If indexing fails, or the repository changes during the
 operation, the previous state marker is preserved and another `update` is
 required. Non-Git repositories remain queryable but freshness is reported as
 `unknown`.
+
+Configured queries expose the current index state. The default `warn` policy
+returns results plus a machine-readable `index_not_current` warning when the
+source is stale. Use the strict policy when stale results must never enter an
+automation, or explicitly ignore warnings for compatibility:
+
+```bash
+codebase-atlas query definition MyClass --stale-policy error
+codebase-atlas query-batch --stale-policy warn
+codebase-atlas mcp --stale-policy ignore
+```
+
+Long-lived batch and MCP sessions expose the state captured at session startup
+without adding Git work to every warm query. Restart the session after editing,
+or run `doctor`/`update` first. Query commands never update the index
+automatically.
 
 Otherwise provide the runtime locations once:
 

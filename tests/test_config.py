@@ -27,6 +27,8 @@ class ConfigTests(unittest.TestCase):
             config.write(path)
             loaded = AtlasConfig.load(path)
             record_index_state(loaded.data_dir, loaded.repository, loaded.project, "fast")
+            loaded.cache_dir.mkdir(parents=True, exist_ok=True)
+            (loaded.cache_dir / f"{loaded.project}.db").write_bytes(b"database")
             self.assertEqual(loaded, config)
             self.assertEqual(loaded.cache_dir, (root / "data/codebase-memory").resolve())
             self.assertTrue(all(item["ok"] for item in diagnose(loaded)))

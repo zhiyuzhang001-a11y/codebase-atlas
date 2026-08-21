@@ -93,6 +93,28 @@ class McpTests(unittest.TestCase):
         )
         self.assertTrue(response["result"]["isError"])
 
+    def test_warns_or_refuses_stale_index_by_policy(self) -> None:
+        stale = {"status": "stale", "ok": False, "reason": "repository_changed"}
+        warning_server = McpServer(self.service, stale, "warn")
+        warning = warning_server.handle({
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "target"}},
+        })
+        self.assertFalse(warning["result"]["isError"])
+        self.assertEqual(
+            warning["result"]["structuredContent"]["warnings"][0]["code"],
+            "index_not_current",
+        )
+
+        strict_server = McpServer(self.service, stale, "error")
+        refused = strict_server.handle({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "target"}},
+        })
+        self.assertTrue(refused["result"]["isError"])
+        self.assertEqual(refused["result"]["structuredContent"]["index"], stale)
+
+
 
 if __name__ == "__main__":
     unittest.main()

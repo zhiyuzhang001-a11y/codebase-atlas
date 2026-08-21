@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codebase_atlas.index_state import index_freshness, record_index_state, state_path
+from codebase_atlas.index_state import (
+    index_freshness,
+    provider_database_health,
+    record_index_state,
+    state_path,
+)
 
 
 def git(repository: Path, *args: str) -> None:
@@ -80,6 +85,16 @@ class IndexStateTests(unittest.TestCase):
             result = index_freshness(data, repository, "project")
             self.assertEqual(result["status"], "unknown")
             self.assertTrue(result["ok"])
+
+    def test_provider_database_health_requires_nonempty_safe_database(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            self.assertEqual(provider_database_health(cache, "project")["status"], "missing")
+            (cache / "project.db").touch()
+            self.assertEqual(provider_database_health(cache, "project")["reason"], "provider_database_empty")
+            (cache / "project.db").write_bytes(b"database")
+            self.assertTrue(provider_database_health(cache, "project")["ok"])
+            self.assertEqual(provider_database_health(cache, "../outside")["status"], "invalid")
 
 
 if __name__ == "__main__":

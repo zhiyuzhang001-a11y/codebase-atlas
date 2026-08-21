@@ -2,7 +2,7 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.9.0**, promoted for local daily use after validation on
+Current release: **0.10.0**, promoted for local daily use after validation on
 FastAPI, Home Assistant, NestJS, VS Code, and the product repository itself.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
@@ -37,6 +37,11 @@ codebase-atlas doctor
 codebase-atlas update
 codebase-atlas doctor
 ```
+
+When source and Provider storage are already current, `update` takes an
+Atlas-owned fast path without starting the Provider. Configured queries expose
+index status and default to a warning when evidence may be stale; use
+`--stale-policy error` for strict automation.
 
 The structural Provider chooses an incremental, no-op, or safe full-rebuild
 route. Atlas records freshness only after successful publication and preserves

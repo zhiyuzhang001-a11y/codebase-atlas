@@ -8,6 +8,10 @@ import sys
 from typing import Any, TextIO
 
 from . import __version__
+from .operations import (
+    attach_operational_status,
+    stale_policy_error,
+)
 from .service import AtlasService, QueryRequest, QueryResponse
 
 
@@ -30,8 +34,14 @@ def _structured(response: QueryResponse) -> dict[str, Any]:
     }
 
 
-def _tool_result(response: QueryResponse) -> dict[str, Any]:
-    structured = _structured(response)
+def _tool_result(
+    response: QueryResponse,
+    index_status: dict[str, Any] | None = None,
+    stale_policy: str = "ignore",
+) -> dict[str, Any]:
+    structured = attach_operational_status(
+        _structured(response), index_status, stale_policy
+    )
     return {
         "content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}],
         "structuredContent": structured,
@@ -123,8 +133,15 @@ TOOLS = [
 
 
 class McpServer:
-    def __init__(self, service: AtlasService) -> None:
+    def __init__(
+        self,
+        service: AtlasService,
+        index_status: dict[str, Any] | None = None,
+        stale_policy: str = "ignore",
+    ) -> None:
         self.service = service
+        self.index_status = index_status
+        self.stale_policy = stale_policy
 
     @staticmethod
     def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -164,6 +181,11 @@ class McpServer:
         if not isinstance(arguments, dict):
             return self._error(request_id, -32602, "Tool arguments must be an object")
         try:
+            policy_error = stale_policy_error(
+                self.index_status or {"ok": True}, self.stale_policy
+            )
+            if policy_error:
+                raise RuntimeError(policy_error)
             symbol = arguments.get("symbol")
             if not isinstance(symbol, str) or not symbol:
                 raise ValueError("symbol must be a non-empty string")
@@ -213,10 +235,16 @@ class McpServer:
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": _tool_result(self.service.query(request)),
+                "result": _tool_result(
+                    self.service.query(request),
+                    self.index_status,
+                    self.stale_policy,
+                ),
             }
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
-            failure = {"error": str(exc)}
+            failure = attach_operational_status(
+                {"error": str(exc)}, self.index_status, self.stale_policy
+            )
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,

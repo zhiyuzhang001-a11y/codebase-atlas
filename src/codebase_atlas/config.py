@@ -154,9 +154,10 @@ class AtlasConfig:
 
 
 def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
-    from .index_state import index_freshness
+    from .index_state import index_freshness, provider_database_health
 
     freshness = index_freshness(config.data_dir, config.repository, config.project)
+    provider_database = provider_database_health(config.cache_dir, config.project)
     checks = [
         ("python_version", sys.version_info >= (3, 11), f"{sys.version_info.major}.{sys.version_info.minor}"),
         ("repository", config.repository.is_dir(), str(config.repository)),
@@ -171,6 +172,11 @@ def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
             "index_freshness",
             bool(freshness["ok"]),
             f"{freshness['status']}: {freshness['reason']}",
+        ),
+        (
+            "provider_database",
+            bool(provider_database["ok"]),
+            f"{provider_database['status']}: {provider_database['reason']}",
         ),
     ]
     if config.language == "typescript":

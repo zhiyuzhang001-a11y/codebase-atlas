@@ -34,6 +34,20 @@ class CliOperationTests(unittest.TestCase):
         config.write(path)
         return config, path
 
+    def make_git_repository(self, repository: Path) -> None:
+        (repository / "sample.py").write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.email", "atlas@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repository), "config", "user.name", "Atlas Test"], check=True)
+        subprocess.run(["git", "-C", str(repository), "add", "sample.py"], check=True)
+        subprocess.run(["git", "-C", str(repository), "commit", "-qm", "initial"], check=True)
+
+    def prepare_fast_path(self, config: AtlasConfig) -> None:
+        self.make_git_repository(config.repository)
+        record_index_state(config.data_dir, config.repository, config.project, "fast")
+        config.cache_dir.mkdir(parents=True, exist_ok=True)
+        (config.cache_dir / f"{config.project}.db").write_bytes(b"database")
+
     def test_update_records_state_only_after_provider_success(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             config, path = self.config(Path(raw))
@@ -57,16 +71,44 @@ class CliOperationTests(unittest.TestCase):
                     main(["update", "--config", str(path)])
             self.assertEqual(state_path(config.data_dir).read_bytes(), before)
 
+    def test_fresh_update_skips_provider_unless_forced(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config, path = self.config(Path(raw))
+            self.prepare_fast_path(config)
+            output = StringIO()
+            with patch("codebase_atlas.cli._index_repository") as provider:
+                with redirect_stdout(output):
+                    self.assertEqual(main(["update", "--config", str(path)]), 0)
+            provider.assert_not_called()
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "current")
+            self.assertEqual(result["provider"]["route"], "atlas_source_current")
+
+            payload = {"project": "project", "status": "indexed", "nodes": 4, "edges": 7}
+            with patch("codebase_atlas.cli._index_repository", return_value=payload) as provider:
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(
+                        main(["update", "--config", str(path), "--force-provider"]),
+                        0,
+                    )
+            provider.assert_called_once()
+
+    def test_missing_database_disables_fast_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config, path = self.config(Path(raw))
+            self.make_git_repository(config.repository)
+            record_index_state(config.data_dir, config.repository, config.project, "fast")
+            payload = {"project": "project", "status": "indexed", "nodes": 4, "edges": 7}
+            with patch("codebase_atlas.cli._index_repository", return_value=payload) as provider:
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(main(["update", "--config", str(path)]), 0)
+            provider.assert_called_once()
+
     def test_first_index_with_default_repository_config_is_immediately_fresh(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             config, old_path = self.config(root)
-            (config.repository / "sample.py").write_text("value = 1\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(config.repository), "init", "-q"], check=True)
-            subprocess.run(["git", "-C", str(config.repository), "config", "user.email", "atlas@example.invalid"], check=True)
-            subprocess.run(["git", "-C", str(config.repository), "config", "user.name", "Atlas Test"], check=True)
-            subprocess.run(["git", "-C", str(config.repository), "add", "sample.py"], check=True)
-            subprocess.run(["git", "-C", str(config.repository), "commit", "-qm", "initial"], check=True)
+            self.make_git_repository(config.repository)
             config = config.with_project("")
             path = config.repository / ".codebase-atlas.toml"
             config.write(path)
@@ -75,6 +117,9 @@ class CliOperationTests(unittest.TestCase):
             with patch("codebase_atlas.cli._index_repository", return_value=payload):
                 with redirect_stdout(StringIO()):
                     self.assertEqual(main(["index", "--config", str(path)]), 0)
+            config = AtlasConfig.load(path)
+            config.cache_dir.mkdir(parents=True, exist_ok=True)
+            (config.cache_dir / f"{config.project}.db").write_bytes(b"database")
             output = StringIO()
             with redirect_stdout(output):
                 self.assertEqual(main(["doctor", "--config", str(path)]), 0)

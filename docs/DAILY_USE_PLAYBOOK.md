@@ -2,6 +2,19 @@
 
 ## Start with a narrow identity
 
+Check operational state first. A source-current update uses the Atlas fast path
+and does not start the structural Provider:
+
+```bash
+codebase-atlas update
+codebase-atlas doctor
+```
+
+Configured queries default to `--stale-policy warn`. Use
+`--stale-policy error` in CI or other workflows where stale evidence must be
+rejected. Batch and MCP sessions capture state at startup to preserve warm-query
+latency; restart them after editing. They do not update the index automatically.
+
 Use the repository configuration and ask for a definition first:
 
 ```bash

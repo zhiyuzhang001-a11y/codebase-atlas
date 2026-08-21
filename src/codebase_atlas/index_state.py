@@ -46,6 +46,27 @@ def state_path(data_dir: Path) -> Path:
     return data_dir / "index-state.json"
 
 
+def provider_database_health(cache_dir: Path, project: str) -> dict[str, str | bool | int]:
+    if not project:
+        return {"status": "missing", "ok": False, "reason": "project_not_configured"}
+    root = cache_dir.resolve()
+    database = (root / f"{project}.db").resolve()
+    if database.parent != root:
+        return {"status": "invalid", "ok": False, "reason": "project_name_is_not_safe"}
+    try:
+        size = database.stat().st_size
+    except OSError:
+        return {"status": "missing", "ok": False, "reason": "provider_database_missing"}
+    if size <= 0:
+        return {"status": "invalid", "ok": False, "reason": "provider_database_empty", "size": size}
+    return {
+        "status": "ready",
+        "ok": True,
+        "reason": "provider_database_present",
+        "size": size,
+    }
+
+
 def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["git", "-C", str(repository), *args],
@@ -180,6 +201,7 @@ def index_freshness(data_dir: Path, repository: Path, project: str) -> dict[str,
             "reason": "repository_changed",
             "head": snapshot.head,
             "changed_paths": snapshot.changed_paths,
+            "mode": value.get("mode"),
         }
     return {
         "status": "fresh",
@@ -187,4 +209,6 @@ def index_freshness(data_dir: Path, repository: Path, project: str) -> dict[str,
         "reason": "repository_matches_index_state",
         "head": snapshot.head,
         "changed_paths": snapshot.changed_paths,
+        "mode": value.get("mode"),
+        "source_fingerprint": snapshot.fingerprint,
     }

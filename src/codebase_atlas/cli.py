@@ -13,9 +13,21 @@ import subprocess
 
 from . import __version__
 from .config import AtlasConfig, CONFIG_NAME, diagnose
-from .index_state import index_freshness, record_index_state, repository_snapshot
+from .index_state import (
+    index_freshness,
+    provider_database_health,
+    record_index_state,
+    repository_snapshot,
+)
 from .lifecycle import CodebaseMemoryDaemon, GlobalCbmLock
 from .mcp import McpServer, run_stdio
+from .operations import (
+    STALE_POLICIES,
+    attach_operational_status,
+    operational_index_status,
+    stale_policy_error,
+    unknown_operational_status,
+)
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .service import AtlasService, QueryRequest
 
@@ -42,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     update = commands.add_parser("update", help="safely update a configured structural index")
     update.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     update.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
+    update.add_argument(
+        "--force-provider",
+        action="store_true",
+        help="run the Provider even when Atlas source state is already current",
+    )
     related = commands.add_parser("related-tests")
     related.add_argument("--repo", type=Path, required=True)
     related.add_argument("--symbol", required=True)
@@ -82,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--language", choices=("python", "typescript"))
     mcp.add_argument("--node-bin-dir", type=Path)
     mcp.add_argument("--tsconfig", type=Path)
+    mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
     query = commands.add_parser("query", help="run one query through the shared product service")
     query.add_argument("query_type", choices=("definition", "references", "callers", "callees", "related_tests", "impact"))
     query.add_argument("symbol")
@@ -106,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--max-nodes", type=int, default=100)
     query.add_argument("--max-edges", type=int, default=200)
     query.add_argument("--timeout-ms", type=int, default=30_000)
+    query.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
     batch = commands.add_parser(
         "query-batch", help="run JSON-lines queries through one long-lived product service"
     )
@@ -148,8 +167,35 @@ def main(argv: list[str] | None = None) -> int:
             checks = diagnose(config)
             ok = all(bool(item["ok"]) for item in checks)
             freshness = index_freshness(config.data_dir, config.repository, config.project)
-            print(json.dumps({"status": "ready" if ok else "incomplete", "index": freshness, "checks": checks}, indent=2))
+            provider_database = provider_database_health(config.cache_dir, config.project)
+            print(json.dumps({
+                "status": "ready" if ok else "incomplete",
+                "index": freshness,
+                "provider_database": provider_database,
+                "checks": checks,
+            }, indent=2))
             return 0 if ok else 2
+        if args.command == "update" and not args.force_provider:
+            freshness = index_freshness(config.data_dir, config.repository, config.project)
+            provider_database = provider_database_health(config.cache_dir, config.project)
+            if (
+                freshness["status"] == "fresh"
+                and freshness.get("mode") == args.mode
+                and bool(provider_database["ok"])
+            ):
+                print(json.dumps({
+                    "status": "current",
+                    "project": config.project,
+                    "config": str(args.config),
+                    "index_state": str(config.data_dir / "index-state.json"),
+                    "source_fingerprint": freshness.get("source_fingerprint"),
+                    "provider": {
+                        "route": "atlas_source_current",
+                        "status": "not_started",
+                        "database": provider_database,
+                    },
+                }, indent=2))
+                return 0
         source_before = repository_snapshot(config.repository)
         payload = _index_repository(config, args.mode)
         source_after = repository_snapshot(config.repository)
@@ -255,6 +301,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command in {"mcp", "query", "query-batch"}:
         _apply_project_config(args)
+        if args.command == "query":
+            policy_error = stale_policy_error(args.index_status, args.stale_policy)
+            if policy_error:
+                print(json.dumps(attach_operational_status(
+                    {"status": "error", "message": policy_error},
+                    args.index_status,
+                    args.stale_policy,
+                ), ensure_ascii=False, indent=2))
+                return 3
         lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
         structural = CodebaseMemoryImpactProvider(
             args.binary,
@@ -280,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         with service:
             if args.command == "mcp":
-                run_stdio(McpServer(service))
+                run_stdio(McpServer(service, args.index_status, args.stale_policy))
             elif args.command == "query":
                 response = service.query(
                     QueryRequest(
@@ -297,16 +352,20 @@ def main(argv: list[str] | None = None) -> int:
                         },
                     )
                 )
-                print(json.dumps(_response_payload(response), ensure_ascii=False, indent=2))
+                print(json.dumps(
+                    _response_payload(response, args.index_status, args.stale_policy),
+                    ensure_ascii=False,
+                    indent=2,
+                ))
             else:
-                _run_query_batch(service)
+                _run_query_batch(service, args.index_status, args.stale_policy)
         return 0
     parser.print_help()
     return 0
 
 
-def _response_payload(response) -> dict:
-    return {
+def _response_payload(response, index_status=None, stale_policy: str = "ignore") -> dict:
+    return attach_operational_status({
         "schema_version": 1,
         "query_type": response.query_type,
         "nodes": [asdict(node) for node in response.nodes],
@@ -318,7 +377,7 @@ def _response_payload(response) -> dict:
         },
         "truncated": response.truncated,
         "truncation": response.truncation,
-    }
+    }, index_status, stale_policy)
 
 
 def _apply_project_config(args) -> None:
@@ -342,6 +401,14 @@ def _apply_project_config(args) -> None:
         args.language = config.language
         args.node_bin_dir = config.node_bin_dir
         args.tsconfig = config.tsconfig
+        args.index_status = operational_index_status(
+            config.data_dir,
+            config.repository,
+            config.cache_dir,
+            config.project,
+        )
+    else:
+        args.index_status = unknown_operational_status()
     required = {
         "repo": args.repo, "node": args.node, "binary": args.binary,
         "cache_dir": args.cache_dir, "project": args.project,
@@ -381,8 +448,14 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     return payload
 
 
-def _run_query_batch(service: AtlasService) -> None:
-    print(json.dumps({"status": "ready"}), flush=True)
+def _run_query_batch(
+    service: AtlasService,
+    index_status=None,
+    stale_policy: str = "ignore",
+) -> None:
+    print(json.dumps(attach_operational_status(
+        {"status": "ready"}, index_status, stale_policy
+    )), flush=True)
     for line in sys.stdin:
         if not line.strip():
             continue
@@ -392,10 +465,15 @@ def _run_query_batch(service: AtlasService) -> None:
             if value.get("command") == "shutdown":
                 print(json.dumps({"status": "closed"}), flush=True)
                 return
+            policy_error = stale_policy_error(index_status or {}, stale_policy)
+            if policy_error:
+                raise RuntimeError(policy_error)
             request = QueryRequest(
                 value["query_type"], value["symbol"], dict(value.get("parameters", {}))
             )
-            payload = _response_payload(service.query(request))
+            payload = _response_payload(
+                service.query(request), index_status, stale_policy
+            )
             payload.update(
                 status="ok", duration_ms=(time.perf_counter() - started) * 1000.0
             )
@@ -405,6 +483,7 @@ def _run_query_batch(service: AtlasService) -> None:
                 "message": str(exc),
                 "duration_ms": (time.perf_counter() - started) * 1000.0,
             }
+            attach_operational_status(payload, index_status, stale_policy)
         print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
