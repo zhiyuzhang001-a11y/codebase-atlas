@@ -13,6 +13,7 @@ import subprocess
 
 from . import __version__
 from .config import AtlasConfig, CONFIG_NAME, diagnose
+from .index_state import index_freshness, record_index_state, repository_snapshot
 from .lifecycle import CodebaseMemoryDaemon, GlobalCbmLock
 from .mcp import McpServer, run_stdio
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
@@ -38,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     index = commands.add_parser("index", help="build the configured structural index")
     index.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     index.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
+    update = commands.add_parser("update", help="safely update a configured structural index")
+    update.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    update.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
     related = commands.add_parser("related-tests")
     related.add_argument("--repo", type=Path, required=True)
     related.add_argument("--symbol", required=True)
@@ -138,16 +142,47 @@ def main(argv: list[str] | None = None) -> int:
         config.write(config_path)
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
         return 0
-    if args.command in {"doctor", "index"}:
+    if args.command in {"doctor", "index", "update"}:
         config = AtlasConfig.load(args.config)
         if args.command == "doctor":
             checks = diagnose(config)
             ok = all(bool(item["ok"]) for item in checks)
-            print(json.dumps({"status": "ready" if ok else "incomplete", "checks": checks}, indent=2))
+            freshness = index_freshness(config.data_dir, config.repository, config.project)
+            print(json.dumps({"status": "ready" if ok else "incomplete", "index": freshness, "checks": checks}, indent=2))
             return 0 if ok else 2
-        project = _index_repository(config, args.mode)
+        source_before = repository_snapshot(config.repository)
+        payload = _index_repository(config, args.mode)
+        source_after = repository_snapshot(config.repository)
+        if (
+            source_before.kind == "git"
+            and source_after.kind == "git"
+            and source_before.fingerprint != source_after.fingerprint
+        ):
+            raise RuntimeError(
+                "repository changed while indexing; the previous Atlas state was preserved; run update again"
+            )
+        project = str(payload["project"])
         config.with_project(project).write(args.config)
-        print(json.dumps({"status": "indexed", "project": project, "config": str(args.config)}, indent=2))
+        state = record_index_state(
+            config.data_dir,
+            config.repository,
+            project,
+            args.mode,
+            snapshot=source_after,
+        )
+        print(json.dumps({
+            "status": "indexed" if args.command == "index" else "updated",
+            "project": project,
+            "config": str(args.config),
+            "index_state": str(config.data_dir / "index-state.json"),
+            "source_fingerprint": state.source_fingerprint,
+            "provider": {
+                "route": "provider_managed",
+                "status": payload.get("status"),
+                "nodes": payload.get("nodes"),
+                "edges": payload.get("edges"),
+            },
+        }, indent=2))
         return 0
     if args.command == "related-tests":
         provider = TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig)
@@ -321,7 +356,7 @@ def _apply_project_config(args) -> None:
         )
 
 
-def _index_repository(config: AtlasConfig, mode: str) -> str:
+def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     config.cache_dir.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["CBM_CACHE_DIR"] = str(config.cache_dir)
@@ -341,7 +376,9 @@ def _index_repository(config: AtlasConfig, mode: str) -> str:
     project = payload.get("project")
     if envelope.get("isError") or not isinstance(project, str) or not project:
         raise RuntimeError(str(payload.get("error", "index result lacks project")))
-    return project
+    if payload.get("status") != "indexed":
+        raise RuntimeError(str(payload.get("hint", f"index status is {payload.get('status', 'unknown')}")))
+    return payload
 
 
 def _run_query_batch(service: AtlasService) -> None:

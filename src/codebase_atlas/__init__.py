@@ -14,4 +14,4 @@ __all__ = [
     "QueryResponse",
     "SourceRange",
 ]
-__version__ = "0.8.2"
+__version__ = "0.9.0"

@@ -44,6 +44,29 @@ codebase-atlas index
 codebase-atlas doctor
 ```
 
+After the first build, use the explicit daily update flow:
+
+```bash
+codebase-atlas doctor
+codebase-atlas update
+codebase-atlas doctor
+```
+
+`doctor` reports the index as `fresh`, `stale`, `unknown`, or
+`rebuild_required`. For Git repositories, Atlas fingerprints the commit plus
+the exact contents of changed and untracked files, so repeated edits to an
+already-dirty file are still detected. `update` delegates to Codebase Memory's
+staged manifest-based router, which can take an incremental, no-op, or safe
+full-rebuild path. Atlas deliberately reports this as `provider_managed`
+because the Provider does not expose the selected internal route in its public
+response.
+
+The Atlas state marker is written atomically only after the Provider publishes
+a successful index. If indexing fails, or the repository changes during the
+operation, the previous state marker is preserved and another `update` is
+required. Non-Git repositories remain queryable but freshness is reported as
+`unknown`.
+
 Otherwise provide the runtime locations once:
 
 ```bash

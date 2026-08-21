@@ -154,6 +154,9 @@ class AtlasConfig:
 
 
 def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
+    from .index_state import index_freshness
+
+    freshness = index_freshness(config.data_dir, config.repository, config.project)
     checks = [
         ("python_version", sys.version_info >= (3, 11), f"{sys.version_info.major}.{sys.version_info.minor}"),
         ("repository", config.repository.is_dir(), str(config.repository)),
@@ -164,6 +167,11 @@ def diagnose(config: AtlasConfig) -> list[dict[str, str | bool]]:
         ("ts_analyzer", config.analyzer.is_file(), str(config.analyzer)),
         ("serena_runner", config.serena_runner.is_file(), str(config.serena_runner)),
         ("indexed_project", bool(config.project), config.project or "run codebase-atlas index"),
+        (
+            "index_freshness",
+            bool(freshness["ok"]),
+            f"{freshness['status']}: {freshness['reason']}",
+        ),
     ]
     if config.language == "typescript":
         selected = config.repository / (config.tsconfig or Path("tsconfig.json"))

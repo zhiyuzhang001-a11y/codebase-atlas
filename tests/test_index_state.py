@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from codebase_atlas.index_state import index_freshness, record_index_state, state_path
+
+
+def git(repository: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True)
+
+
+class IndexStateTests(unittest.TestCase):
+    def make_repository(self, root: Path) -> Path:
+        repository = root / "repo"
+        repository.mkdir()
+        git(repository, "init", "-q")
+        git(repository, "config", "user.email", "atlas@example.invalid")
+        git(repository, "config", "user.name", "Atlas Test")
+        (repository / "sample.py").write_text("def value():\n    return 1\n", encoding="utf-8")
+        git(repository, "add", "sample.py")
+        git(repository, "commit", "-qm", "initial")
+        return repository
+
+    def test_fresh_then_modified_then_refreshed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            data = root / "data"
+            record_index_state(data, repository, "project", "fast")
+            self.assertEqual(index_freshness(data, repository, "project")["status"], "fresh")
+            (repository / "sample.py").write_text("def value():\n    return 3\n", encoding="utf-8")
+            self.assertEqual(index_freshness(data, repository, "project")["status"], "stale")
+            (repository / "sample.py").write_text("def value():\n    return 2\n", encoding="utf-8")
+            self.assertEqual(index_freshness(data, repository, "project")["status"], "stale")
+            record_index_state(data, repository, "project", "fast")
+            self.assertEqual(index_freshness(data, repository, "project")["status"], "fresh")
+
+    def test_add_delete_and_rename_are_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            data = root / "data"
+            for mutate in (
+                lambda: (repository / "new.py").write_text("x = 1\n", encoding="utf-8"),
+                lambda: (repository / "sample.py").unlink(),
+                lambda: (repository / "sample.py").rename(repository / "renamed.py"),
+            ):
+                git(repository, "reset", "--hard", "-q", "HEAD")
+                (repository / "new.py").unlink(missing_ok=True)
+                record_index_state(data, repository, "project", "fast")
+                mutate()
+                self.assertEqual(index_freshness(data, repository, "project")["status"], "stale")
+
+    def test_invalid_or_mismatched_state_requires_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            data = root / "data"
+            self.assertEqual(index_freshness(data, repository, "project")["status"], "rebuild_required")
+            state_path(data).parent.mkdir(parents=True)
+            state_path(data).write_text("not json", encoding="utf-8")
+            self.assertEqual(index_freshness(data, repository, "project")["reason"], "index_state_invalid")
+            record_index_state(data, repository, "project", "fast")
+            value = json.loads(state_path(data).read_text(encoding="utf-8"))
+            value["project"] = "other"
+            state_path(data).write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(index_freshness(data, repository, "project")["reason"], "index_state_identity_mismatch")
+
+    def test_non_git_state_is_unknown_but_usable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            data = root / "data"
+            record_index_state(data, repository, "project", "fast")
+            result = index_freshness(data, repository, "project")
+            self.assertEqual(result["status"], "unknown")
+            self.assertTrue(result["ok"])
+
+
+if __name__ == "__main__":
+    unittest.main()

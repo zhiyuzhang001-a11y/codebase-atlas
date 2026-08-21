@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from codebase_atlas.config import AtlasConfig, default_data_dir, diagnose
+from codebase_atlas.index_state import record_index_state
 
 
 class ConfigTests(unittest.TestCase):
@@ -25,6 +26,7 @@ class ConfigTests(unittest.TestCase):
             path = repo / ".codebase-atlas.toml"
             config.write(path)
             loaded = AtlasConfig.load(path)
+            record_index_state(loaded.data_dir, loaded.repository, loaded.project, "fast")
             self.assertEqual(loaded, config)
             self.assertEqual(loaded.cache_dir, (root / "data/codebase-memory").resolve())
             self.assertTrue(all(item["ok"] for item in diagnose(loaded)))
