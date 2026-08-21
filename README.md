@@ -25,3 +25,6 @@ The product service supports `definition`, `references`, `callers`, `callees`,
 `query-batch --help` for a reusable JSON-lines session, or `mcp --help` for the
 read-only stdio MCP server. All three interfaces share `AtlasService` and stop
 only provider processes they started themselves.
+
+For installation, project initialization, indexing, MCP configuration, upgrade,
+and removal, see [`docs/LOCAL_USAGE.md`](docs/LOCAL_USAGE.md).

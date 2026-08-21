@@ -8,8 +8,11 @@ import json
 from pathlib import Path
 import sys
 import time
+import os
+import subprocess
 
 from . import __version__
+from .config import AtlasConfig, CONFIG_NAME, diagnose
 from .lifecycle import CodebaseMemoryDaemon
 from .mcp import McpServer, run_stdio
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
@@ -20,6 +23,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codebase-atlas")
     parser.add_argument("--version", action="store_true")
     commands = parser.add_subparsers(dest="command")
+    initialize = commands.add_parser("init", help="create a project-local Atlas configuration")
+    initialize.add_argument("--repo", type=Path, default=Path.cwd())
+    initialize.add_argument("--config", type=Path)
+    initialize.add_argument("--language", choices=("python", "typescript"))
+    initialize.add_argument("--node", type=Path)
+    initialize.add_argument("--cbm-binary", type=Path)
+    initialize.add_argument("--serena-python", type=Path)
+    initialize.add_argument("--data-dir", type=Path)
+    doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
+    doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    index = commands.add_parser("index", help="build the configured structural index")
+    index.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    index.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
     related = commands.add_parser("related-tests")
     related.add_argument("--repo", type=Path, required=True)
     related.add_argument("--symbol", required=True)
@@ -39,32 +55,34 @@ def main(argv: list[str] | None = None) -> int:
     impact.add_argument("--cache-dir", type=Path, required=True)
     impact.add_argument("--project", required=True)
     mcp = commands.add_parser("mcp", help="run the read-only MCP server over stdio")
-    mcp.add_argument("--repo", type=Path, required=True)
-    mcp.add_argument("--node", type=Path, required=True)
+    mcp.add_argument("--config", type=Path)
+    mcp.add_argument("--repo", type=Path)
+    mcp.add_argument("--node", type=Path)
     mcp.add_argument("--analyzer", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/ts_test_analyzer.mjs")
-    mcp.add_argument("--binary", type=Path, required=True)
-    mcp.add_argument("--cache-dir", type=Path, required=True)
-    mcp.add_argument("--project", required=True)
-    mcp.add_argument("--serena-python", type=Path, required=True)
+    mcp.add_argument("--binary", type=Path)
+    mcp.add_argument("--cache-dir", type=Path)
+    mcp.add_argument("--project")
+    mcp.add_argument("--serena-python", type=Path)
     mcp.add_argument("--serena-runner", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/serena_runner.py")
-    mcp.add_argument("--serena-home", type=Path, required=True)
-    mcp.add_argument("--metadata-root", type=Path, required=True)
-    mcp.add_argument("--language", choices=("python", "typescript"), required=True)
+    mcp.add_argument("--serena-home", type=Path)
+    mcp.add_argument("--metadata-root", type=Path)
+    mcp.add_argument("--language", choices=("python", "typescript"))
     mcp.add_argument("--node-bin-dir", type=Path)
     query = commands.add_parser("query", help="run one query through the shared product service")
     query.add_argument("query_type", choices=("definition", "references", "callers", "callees", "related_tests", "impact"))
     query.add_argument("symbol")
-    query.add_argument("--repo", type=Path, required=True)
-    query.add_argument("--node", type=Path, required=True)
+    query.add_argument("--config", type=Path)
+    query.add_argument("--repo", type=Path)
+    query.add_argument("--node", type=Path)
     query.add_argument("--analyzer", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/ts_test_analyzer.mjs")
-    query.add_argument("--binary", type=Path, required=True)
-    query.add_argument("--cache-dir", type=Path, required=True)
-    query.add_argument("--project", required=True)
-    query.add_argument("--serena-python", type=Path, required=True)
+    query.add_argument("--binary", type=Path)
+    query.add_argument("--cache-dir", type=Path)
+    query.add_argument("--project")
+    query.add_argument("--serena-python", type=Path)
     query.add_argument("--serena-runner", type=Path, default=Path(__file__).resolve().parents[2] / "scripts/serena_runner.py")
-    query.add_argument("--serena-home", type=Path, required=True)
-    query.add_argument("--metadata-root", type=Path, required=True)
-    query.add_argument("--language", choices=("python", "typescript"), required=True)
+    query.add_argument("--serena-home", type=Path)
+    query.add_argument("--metadata-root", type=Path)
+    query.add_argument("--language", choices=("python", "typescript"))
     query.add_argument("--node-bin-dir", type=Path)
     query.add_argument("--target-path", default="")
     query.add_argument("--direction", choices=("upstream", "downstream"), default="upstream")
@@ -89,6 +107,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
+        return 0
+    if args.command == "init":
+        config_path = (args.config or args.repo / CONFIG_NAME).resolve()
+        config = AtlasConfig.discover(
+            args.repo, language=args.language, node=args.node,
+            cbm_binary=args.cbm_binary, serena_python=args.serena_python,
+            data_dir=args.data_dir,
+        )
+        config.write(config_path)
+        print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
+        return 0
+    if args.command in {"doctor", "index"}:
+        config = AtlasConfig.load(args.config)
+        if args.command == "doctor":
+            checks = diagnose(config)
+            ok = all(bool(item["ok"]) for item in checks)
+            print(json.dumps({"status": "ready" if ok else "incomplete", "checks": checks}, indent=2))
+            return 0 if ok else 2
+        project = _index_repository(config, args.mode)
+        config.with_project(project).write(args.config)
+        print(json.dumps({"status": "indexed", "project": project, "config": str(args.config)}, indent=2))
         return 0
     if args.command == "related-tests":
         provider = TypeScriptTestProvider(args.node, args.analyzer)
@@ -140,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command in {"mcp", "query", "query-batch"}:
+        _apply_project_config(args)
         lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
         structural = CodebaseMemoryImpactProvider(
             args.binary,
@@ -198,6 +238,62 @@ def _response_payload(response) -> dict:
             for node_id, path in response.paths.items()
         },
     }
+
+
+def _apply_project_config(args) -> None:
+    candidate = args.config
+    if candidate is None:
+        base = args.repo if args.repo is not None else Path.cwd()
+        local = base / CONFIG_NAME
+        candidate = local if local.is_file() else None
+    if candidate is not None:
+        config = AtlasConfig.load(candidate)
+        args.repo = config.repository
+        args.node = config.node
+        args.analyzer = config.analyzer
+        args.binary = config.cbm_binary
+        args.cache_dir = config.cache_dir
+        args.project = config.project
+        args.serena_python = config.serena_python
+        args.serena_runner = config.serena_runner
+        args.serena_home = config.serena_home
+        args.metadata_root = config.metadata_root
+        args.language = config.language
+        args.node_bin_dir = config.node_bin_dir
+    required = {
+        "repo": args.repo, "node": args.node, "binary": args.binary,
+        "cache_dir": args.cache_dir, "project": args.project,
+        "serena_python": args.serena_python, "serena_home": args.serena_home,
+        "metadata_root": args.metadata_root, "language": args.language,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise SystemExit(
+            "missing runtime configuration: " + ", ".join(missing)
+            + f"; run 'codebase-atlas init' and 'codebase-atlas index'"
+        )
+
+
+def _index_repository(config: AtlasConfig, mode: str) -> str:
+    config.cache_dir.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["CBM_CACHE_DIR"] = str(config.cache_dir)
+    environment["CBM_ALLOWED_ROOT"] = str(config.repository.parent)
+    completed = subprocess.run(
+        [
+            str(config.cbm_binary), "cli", "--json", "index_repository",
+            "--repo-path", str(config.repository), "--mode", mode,
+        ],
+        check=False, capture_output=True, text=True, env=environment,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "Codebase Memory indexing failed")
+    envelope = json.loads(completed.stdout)
+    payload = envelope.get("structuredContent", {})
+    project = payload.get("project")
+    if envelope.get("isError") or not isinstance(project, str) or not project:
+        raise RuntimeError(str(payload.get("error", "index result lacks project")))
+    return project
 
 
 def _run_query_batch(service: AtlasService) -> None:
