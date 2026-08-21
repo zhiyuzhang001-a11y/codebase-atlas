@@ -1,8 +1,15 @@
 # Changelog
 
-All notable private-release changes are recorded here. The package uses semantic
-versions; until a public compatibility policy is approved, pre-public 0.x minor
-versions may refine interfaces.
+All notable release changes are recorded here. The package uses semantic versions;
+0.x minor versions may still refine interfaces within the documented support
+boundary.
+
+## 0.12.2 — 2026-08-21
+
+- Publish Codebase Atlas under Apache License 2.0 with the license included in
+  source and wheel distributions.
+- Add public security, privacy, support, contribution, governance, conduct,
+  changelog, issue/PR, and automated publication-readiness policies.
 
 ## 0.12.1 — 2026-08-21
 

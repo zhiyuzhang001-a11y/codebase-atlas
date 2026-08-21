@@ -2,9 +2,8 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current private release: **0.12.1**, retaining the 0.12.0 maintenance features and
-adding an M17 TypeScript semantic-runtime preflight fix after independent
-validation on Django, Flask, Vite, and Zod, plus established regressions.
+Current release: **0.12.2**, adding an Apache-2.0 public distribution boundary to
+the independently validated 0.12.1 product.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -41,12 +40,12 @@ support boundary.
 - [Support and compatibility](SUPPORT.md)
 - [Contributing](CONTRIBUTING.md) and [code of conduct](CODE_OF_CONDUCT.md)
 - [Governance](GOVERNANCE.md), [changelog](CHANGELOG.md), and
-  [private release process](docs/RELEASING.md)
+  [release process](docs/RELEASING.md)
 - [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md)
 
-The product license and public repository decision remain pending. No public-use,
-copying, modification, or redistribution rights should be inferred from source
-availability or the third-party notices.
+Codebase Atlas is licensed under the [Apache License 2.0](LICENSE). Bundled and
+separately installed dependencies retain their own licenses; see
+[third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Daily workflow
 

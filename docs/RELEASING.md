@@ -1,37 +1,34 @@
-# Private release process
+# Release process
 
-Codebase Atlas currently releases only from its private GitHub repository. No
-public product license has been selected.
+Codebase Atlas releases from its public GitHub repository under Apache License
+2.0. It is not currently published to PyPI.
 
 ## Preconditions
 
 1. `pyproject.toml` and `codebase_atlas.__version__` contain the same version.
 2. Product tests pass on the supported Python/OS matrix.
 3. The package lifecycle job passes install, upgrade, downgrade, and uninstall.
-4. The wheel contains both bridge scripts, TypeScript 5.9.3, its license, and the
-   third-party notice.
+4. The wheel contains the product license, both bridge scripts, TypeScript 5.9.3,
+   its license, and the third-party notice.
 5. The tag is exactly `v<version>`.
-6. `scripts/check_publication_readiness.py --mode pre-public` passes. Before a
-   public launch, the explicit license/visibility decisions are recorded and the
-   same gate passes with `--mode public`.
+6. `scripts/check_publication_readiness.py --mode public` passes.
 
 ## Release
 
 ```bash
 python scripts/verify_release.py
-git tag -a v0.12.1 -m "Codebase Atlas 0.12.1"
-git push origin main v0.12.1
+git tag -a v0.12.2 -m "Codebase Atlas 0.12.2"
+git push origin main v0.12.2
 ```
 
 The tag workflow rebuilds the wheel, rejects version/tag or packaged-asset
-mismatches, writes `SHA256SUMS.txt`, and creates a release in the private
-repository. It does not publish to PyPI or make the repository public.
+mismatches, writes `SHA256SUMS.txt`, and creates a GitHub release. It does not
+publish to PyPI.
 Release builds set a fixed `SOURCE_DATE_EPOCH`; rebuilding identical tagged
 source therefore produces identical wheel bytes and SHA-256.
 
 ## License boundary
 
-The TypeScript runtime license and third-party notices are distributed with the
-wheel. Serena and Codebase Memory remain separately installed and separately
-licensed. Choosing a public Codebase Atlas license is a user decision reserved
-for the public-release readiness gate.
+The Apache License 2.0 product license, TypeScript runtime license, and third-party
+notices are distributed with the wheel. Serena and Codebase Memory remain
+separately installed and separately licensed.

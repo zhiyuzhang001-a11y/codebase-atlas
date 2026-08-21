@@ -19,6 +19,7 @@ STANDARD_FILES = {
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
     "GOVERNANCE.md",
+    "LICENSE",
     "PRIVACY.md",
     "SECURITY.md",
     "SUPPORT.md",
@@ -112,6 +113,8 @@ def main() -> int:
             errors.append("public mode requires an explicit product LICENSE file")
         if "remain pending" in readme:
             errors.append("public mode still contains a pending-decision statement")
+        if project.get("license") != "Apache-2.0":
+            errors.append("public mode requires the selected Apache-2.0 package license")
 
     if errors:
         for error in errors:

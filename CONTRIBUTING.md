@@ -1,9 +1,9 @@
 # Contributing
 
-Codebase Atlas is currently a private, single-maintainer project. External
-contribution terms are not open while the product license is unresolved. This
-guide records technical validation expectations; it does not grant a license to
-use, copy, modify, or redistribute the project.
+Codebase Atlas is a public, single-maintainer project. Issues and focused pull
+requests are welcome. By submitting a contribution, you represent that you have
+the right to submit it and agree that it is licensed under the project's Apache
+License 2.0 without additional terms.
 
 ## Change principles
 
@@ -27,7 +27,7 @@ ATLAS_NODE=/absolute/path/to/node PYTHONPATH=src \
   python -m unittest discover -s tests -v
 python -m pip wheel . --no-deps --wheel-dir dist-current
 python scripts/verify_release.py --wheel dist-current/codebase_atlas-*.whl
-python scripts/check_publication_readiness.py --mode pre-public
+python scripts/check_publication_readiness.py --mode public
 ```
 
 Packaging changes must also run `scripts/lifecycle_acceptance.py`. Query changes

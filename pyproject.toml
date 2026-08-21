@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codebase-atlas"
-version = "0.12.1"
+version = "0.12.2"
 description = "Local, explainable code intelligence with provider-neutral provenance"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = []
-license-files = ["THIRD_PARTY_NOTICES.md"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 
 [project.urls]
 Repository = "https://github.com/zhiyuzhang001-a11y/codebase-atlas"

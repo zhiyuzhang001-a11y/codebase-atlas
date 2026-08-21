@@ -44,6 +44,6 @@ jobs:
           python-version: "3.13"
       - run: python -m pip wheel . --no-deps --wheel-dir dist-current
       - run: python scripts/verify_release.py --wheel dist-current/codebase_atlas-*.whl
-      - run: python scripts/check_publication_readiness.py --mode pre-public
+      - run: python scripts/check_publication_readiness.py --mode public
       - run: python scripts/build_previous_wheel.py --current v$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])") --output dist-previous
       - run: python scripts/lifecycle_acceptance.py --previous-wheel dist-previous/codebase_atlas-*.whl --current-wheel dist-current/codebase_atlas-*.whl

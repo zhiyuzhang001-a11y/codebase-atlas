@@ -34,6 +34,7 @@ def verify_wheel(path: Path, version: str) -> str:
         "share/codebase-atlas/ts_test_analyzer.mjs",
         "share/codebase-atlas/node_modules/typescript/LICENSE.txt",
         "share/codebase-atlas/node_modules/typescript/lib/typescript.js",
+        "LICENSE",
         "THIRD_PARTY_NOTICES.md",
     }
     with zipfile.ZipFile(path) as archive:

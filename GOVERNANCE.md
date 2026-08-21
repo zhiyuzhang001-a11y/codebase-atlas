@@ -5,7 +5,7 @@ controls releases, roadmap, scope, security handling, and contribution decisions
 There is no foundation, elected body, formal voting process, or guaranteed
 succession policy.
 
-Product license, repository visibility, external contribution terms, security
-reporting channel, and support commitments must be explicitly chosen and recorded
-before public launch. Technical changes follow `CONTRIBUTING.md` and
-`docs/RELEASING.md`. This document does not grant source-code rights.
+The repository is public under Apache License 2.0. External contribution terms,
+private security/conduct reporting, and best-effort support boundaries are recorded
+in the linked policy files. Technical changes follow `CONTRIBUTING.md` and
+`docs/RELEASING.md`.

@@ -9,6 +9,7 @@ source or vulnerability details, plagiarism, and knowingly misleading test or
 provenance claims are not acceptable.
 
 Maintainers may edit, reject, or remove contributions and participation that
-violate these expectations. Security or privacy matters should use the private
-process in `SECURITY.md`, not a public conduct thread. This policy does not create
-a service-level response commitment.
+violate these expectations. Sensitive conduct, security, or privacy reports may
+use the private reporting process in `SECURITY.md` and should be labelled clearly,
+not posted in a public thread. This policy does not create a service-level response
+commitment.

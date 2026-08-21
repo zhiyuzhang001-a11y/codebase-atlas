@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security report
-    url: https://github.com/zhiyuzhang001-a11y/codebase-atlas/blob/main/SECURITY.md
-    about: Read the private-reporting instructions; do not disclose sensitive details in an issue.
+    url: https://github.com/zhiyuzhang001-a11y/codebase-atlas/security/advisories/new
+    about: Report vulnerabilities privately; do not disclose sensitive details in an issue.

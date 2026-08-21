@@ -7,7 +7,7 @@ that must not be inferred or automated.
 
 - [x] Independent M17 validation covered Django, Flask, Vite, and Zod.
 - [x] Supported-platform CI, package verification, and install/upgrade/downgrade/
-  uninstall acceptance pass for 0.12.1.
+  uninstall acceptance pass for 0.12.2.
 - [x] Product scope, known limits, privacy/data flow, security boundaries,
   support, governance, contribution expectations, and release procedure are
   documented.
@@ -15,15 +15,15 @@ that must not be inferred or automated.
 - [x] The pre-public repository hygiene gate checks standard files, local links,
   package URLs, generated paths, and common secret/path signatures.
 
-## Owner decisions required before public visibility
+## Public launch gates
 
-- [ ] Select and add the product license after confirming third-party
-  compatibility; update package metadata and all pending-license statements.
-- [ ] Approve changing the GitHub repository from private to public.
+- [x] Select Apache License 2.0, add it to source and package metadata, retain
+  third-party notices, and include all license material in the wheel.
+- [x] Approve changing the GitHub repository from private to public.
 - [ ] Enable and verify an appropriate private vulnerability-reporting channel,
   then update `SECURITY.md` with the exact contact route.
-- [ ] Confirm public contribution terms and a private code-of-conduct enforcement
-  contact.
+- [x] Confirm Apache-2.0 contribution terms and use the private reporting channel
+  for sensitive code-of-conduct enforcement reports.
 - [ ] Run `python scripts/check_publication_readiness.py --mode public`, the full
   test suite, wheel verification, lifecycle acceptance, and GitHub CI on the
   final public candidate.

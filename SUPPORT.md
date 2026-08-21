@@ -1,7 +1,7 @@
 # Support and compatibility
 
-Codebase Atlas is currently a private, pre-public product maintained on a
-best-effort basis with no response-time or long-term-support guarantee.
+Codebase Atlas is maintained on a best-effort basis with no response-time or
+long-term-support guarantee.
 
 ## Tested scope
 
@@ -12,7 +12,7 @@ best-effort basis with no response-time or long-term-support guarantee.
 - local CLI, JSON-lines batch, and read-only stdio MCP use;
 - explicitly configured Codebase Memory and Serena runtimes.
 
-Only the latest private release is the primary support target. A passing setup
+Only the latest release is the primary support target. A passing setup
 check verifies discoverable capabilities, not every Provider/repository version.
 
 ## Known limits
