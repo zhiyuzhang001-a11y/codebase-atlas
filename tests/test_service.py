@@ -349,6 +349,31 @@ class ServiceTests(unittest.TestCase):
             "registration_index_unavailable", response.truncation["reasons"]
         )
 
+    def test_scoped_registration_answer_keeps_result_budgets(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "routes.py").write_text(
+                "from flask import Flask\napp = Flask(__name__)\n\n"
+                "def view():\n    pass\n\n"
+                "app.add_url_rule('/one', view_func=view)\n"
+                "app.add_url_rule('/two', view_func=view)\n"
+            )
+            service = AtlasService(
+                registration_index=self._registration_index(repository)
+            )
+            with service:
+                response = service.query(QueryRequest(
+                    "callers", "view", {
+                        "target_path": "routes.py",
+                        "relation": "registers",
+                        "max_nodes": 1,
+                        "max_edges": 1,
+                    }
+                ))
+        self.assertEqual(len(response.nodes), 1)
+        self.assertTrue(response.truncated)
+        self.assertIn("node_budget_exceeded", response.truncation["reasons"])
+
     def test_python_exact_scan_timeout_preserves_semantic_callers(self) -> None:
         class EmptyStructural(FakeImpactProvider):
             project = "p"

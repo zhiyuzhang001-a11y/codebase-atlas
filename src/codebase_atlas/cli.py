@@ -34,7 +34,7 @@ from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .python_registration_store import (
     RegistrationIndexError,
-    load_registration_index,
+    load_registration_index_state,
     registration_index_health,
     stage_registration_index,
 )
@@ -695,20 +695,26 @@ def main(argv: list[str] | None = None) -> int:
             source_fingerprint = args.index_status.get("source", {}).get(
                 "source_fingerprint"
             )
-            registration_health = registration_index_health(
-                args.data_dir, args.repo, args.project, source_fingerprint
-            )
-            args.index_status["python_registrations"] = registration_health
-            if registration_health["ok"]:
+            if source_fingerprint:
                 try:
-                    registration_index = load_registration_index(
+                    registration_index, registration_health = load_registration_index_state(
                         args.data_dir,
                         args.repo,
                         args.project,
                         source_fingerprint,
                     )
-                except RegistrationIndexError:
+                except RegistrationIndexError as exc:
                     registration_index = None
+                    registration_health = {
+                        "status": "rebuild_required",
+                        "ok": False,
+                        "reason": str(exc),
+                    }
+            else:
+                registration_health = registration_index_health(
+                    args.data_dir, args.repo, args.project, source_fingerprint
+                )
+            args.index_status["python_registrations"] = registration_health
         service = AtlasService(
             repository=args.repo,
             structural_provider=structural,

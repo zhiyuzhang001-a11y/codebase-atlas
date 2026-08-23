@@ -451,9 +451,28 @@ def load_registration_index(
     project: str,
     source_fingerprint: str,
 ) -> RegistrationIndex:
-    return _load_document(
+    return load_registration_index_state(
+        data_dir, repository, project, source_fingerprint
+    )[0]
+
+
+def load_registration_index_state(
+    data_dir: Path,
+    repository: Path,
+    project: str,
+    source_fingerprint: str,
+) -> tuple[RegistrationIndex, dict[str, Any]]:
+    value, index = _load_document(
         registration_index_path(data_dir), repository, project, source_fingerprint
-    )[1]
+    )
+    return index, {
+        "status": "ready",
+        "ok": True,
+        "reason": "registration_index_valid",
+        "generation_hash": value["generation_hash"],
+        "files": len(value["files"]),
+        "registrations": len(index.registrations),
+    }
 
 
 def registration_index_health(
@@ -465,16 +484,9 @@ def registration_index_health(
     if not source_fingerprint:
         return {"status": "rebuild_required", "ok": False, "reason": "source_fingerprint_missing"}
     try:
-        value, index = _load_document(
-            registration_index_path(data_dir), repository, project, source_fingerprint
+        _index, health = load_registration_index_state(
+            data_dir, repository, project, source_fingerprint
         )
     except RegistrationIndexError as exc:
         return {"status": "rebuild_required", "ok": False, "reason": str(exc)}
-    return {
-        "status": "ready",
-        "ok": True,
-        "reason": "registration_index_valid",
-        "generation_hash": value["generation_hash"],
-        "files": len(value["files"]),
-        "registrations": len(index.registrations),
-    }
+    return health
