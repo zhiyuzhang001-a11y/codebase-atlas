@@ -223,6 +223,7 @@ def index_freshness(data_dir: Path, repository: Path, project: str) -> dict[str,
             "head": snapshot.head,
             "changed_paths": snapshot.changed_paths,
             "mode": value.get("mode"),
+            "indexed_source_fingerprint": value.get("source_fingerprint"),
         }
     return {
         "status": "fresh",

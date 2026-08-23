@@ -32,6 +32,12 @@ from .operations import (
 )
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
+from .python_registration_store import (
+    RegistrationIndexError,
+    load_registration_index,
+    registration_index_health,
+    stage_registration_index,
+)
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
 
@@ -295,10 +301,53 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }, ensure_ascii=False, indent=2))
             return 0 if before["ok"] else 2
+        if plan["action"] == "registration_sidecar_rebuild":
+            freshness = index_freshness(
+                config.data_dir, config.repository, config.project
+            )
+            source_fingerprint = freshness.get("source_fingerprint")
+            if freshness.get("status") != "fresh" or not source_fingerprint:
+                raise RuntimeError(
+                    "Python registration repair requires a fresh source index"
+                )
+            with stage_registration_index(
+                config.data_dir,
+                config.repository,
+                config.project,
+                source_fingerprint,
+            ) as staged:
+                staged.publish()
+            after = inspect_installation(config)
+            print(json.dumps({
+                "status": "repaired" if after["ok"] else "repair_incomplete",
+                "mode": "applied",
+                "plan": plan,
+                "project": config.project,
+                "provider": {
+                    "route": "atlas_source_current",
+                    "status": "not_started",
+                },
+                "inspection": after,
+            }, ensure_ascii=False, indent=2))
+            return 0 if after["ok"] else 2
         source_before = repository_snapshot(config.repository)
+        staged_registrations = None
+        if config.language == "python" and config.project and source_before.fingerprint:
+            previous_fingerprint = before.get("index", {}).get(
+                "source_fingerprint"
+            ) or before.get("index", {}).get("indexed_source_fingerprint")
+            staged_registrations = stage_registration_index(
+                config.data_dir,
+                config.repository,
+                config.project,
+                source_before.fingerprint,
+                previous_source_fingerprint=previous_fingerprint,
+            )
         try:
             payload = _index_repository(config, args.mode)
         except RuntimeError as exc:
+            if staged_registrations is not None:
+                staged_registrations.close()
             print(json.dumps({
                 "status": "failed",
                 "mode": "applied",
@@ -314,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
             and source_after.kind == "git"
             and source_before.fingerprint != source_after.fingerprint
         ):
+            if staged_registrations is not None:
+                staged_registrations.close()
             print(json.dumps({
                 "status": "failed",
                 "mode": "applied",
@@ -323,10 +374,31 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2))
             return 2
         project = str(payload["project"])
-        config.with_project(project).write(args.config)
-        state = record_index_state(
-            config.data_dir, config.repository, project, args.mode, snapshot=source_after
-        )
+        if config.language == "python" and source_after.fingerprint:
+            if staged_registrations is None:
+                staged_registrations = stage_registration_index(
+                    config.data_dir,
+                    config.repository,
+                    project,
+                    source_after.fingerprint,
+                )
+            elif project != config.project:
+                staged_registrations.close()
+                raise RuntimeError("Provider project identity changed during repair")
+            staged_registrations.publish()
+        try:
+            config.with_project(project).write(args.config)
+            state = record_index_state(
+                config.data_dir, config.repository, project, args.mode, snapshot=source_after
+            )
+        except BaseException:
+            if staged_registrations is not None:
+                staged_registrations.rollback()
+            if project != config.project:
+                config.write(args.config)
+            raise
+        if staged_registrations is not None:
+            staged_registrations.commit()
         after = inspect_installation(config.with_project(project))
         print(json.dumps({
             "status": "repaired" if after["ok"] else "repair_incomplete",
@@ -372,10 +444,52 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "update" and not args.force_provider:
             freshness = index_freshness(config.data_dir, config.repository, config.project)
             provider_database = provider_database_health(config.cache_dir, config.project)
-            if (
+            registration_health = registration_index_health(
+                config.data_dir,
+                config.repository,
+                config.project,
+                freshness.get("source_fingerprint"),
+            ) if config.language == "python" else {"status": "not_applicable", "ok": True}
+            source_and_provider_current = (
                 freshness["status"] == "fresh"
                 and freshness.get("mode") == args.mode
                 and bool(provider_database["ok"])
+            )
+            if source_and_provider_current and not bool(registration_health["ok"]):
+                source_fingerprint = freshness.get("source_fingerprint")
+                if config.language == "python" and source_fingerprint:
+                    with stage_registration_index(
+                        config.data_dir,
+                        config.repository,
+                        config.project,
+                        source_fingerprint,
+                    ) as staged:
+                        staged.publish()
+                    registration_health = registration_index_health(
+                        config.data_dir,
+                        config.repository,
+                        config.project,
+                        source_fingerprint,
+                    )
+                    print(json.dumps({
+                        "status": "current",
+                        "project": config.project,
+                        "config": str(args.config),
+                        "index_state": str(config.data_dir / "index-state.json"),
+                        "source_fingerprint": source_fingerprint,
+                        "provider": {
+                            "route": "atlas_source_current",
+                            "status": "not_started",
+                            "database": provider_database,
+                        },
+                        "python_registrations": registration_health | {
+                            "action": "rebuilt"
+                        },
+                    }, indent=2))
+                    return 0
+            if (
+                source_and_provider_current
+                and bool(registration_health["ok"])
             ):
                 print(json.dumps({
                     "status": "current",
@@ -388,28 +502,82 @@ def main(argv: list[str] | None = None) -> int:
                         "status": "not_started",
                         "database": provider_database,
                     },
+                    "python_registrations": registration_health,
                 }, indent=2))
                 return 0
         source_before = repository_snapshot(config.repository)
-        payload = _index_repository(config, args.mode)
+        staged_registrations = None
+        if (
+            config.language == "python"
+            and config.project
+            and source_before.fingerprint
+        ):
+            prior_freshness = (
+                index_freshness(
+                    config.data_dir, config.repository, config.project
+                )
+                if args.command == "update"
+                else {}
+            )
+            staged_registrations = stage_registration_index(
+                config.data_dir,
+                config.repository,
+                config.project,
+                source_before.fingerprint,
+                previous_source_fingerprint=(
+                    prior_freshness.get("source_fingerprint")
+                    or prior_freshness.get("indexed_source_fingerprint")
+                ),
+            )
+        try:
+            payload = _index_repository(config, args.mode)
+        except BaseException:
+            if staged_registrations is not None:
+                staged_registrations.close()
+            raise
         source_after = repository_snapshot(config.repository)
         if (
             source_before.kind == "git"
             and source_after.kind == "git"
             and source_before.fingerprint != source_after.fingerprint
         ):
+            if staged_registrations is not None:
+                staged_registrations.close()
             raise RuntimeError(
                 "repository changed while indexing; the previous Atlas state was preserved; run update again"
             )
         project = str(payload["project"])
-        config.with_project(project).write(args.config)
-        state = record_index_state(
-            config.data_dir,
-            config.repository,
-            project,
-            args.mode,
-            snapshot=source_after,
-        )
+        if config.language == "python" and source_after.fingerprint:
+            if staged_registrations is None:
+                staged_registrations = stage_registration_index(
+                    config.data_dir,
+                    config.repository,
+                    project,
+                    source_after.fingerprint,
+                )
+            elif project != config.project:
+                staged_registrations.close()
+                raise RuntimeError(
+                    "Provider project identity changed; the previous Atlas state was preserved"
+                )
+            staged_registrations.publish()
+        try:
+            config.with_project(project).write(args.config)
+            state = record_index_state(
+                config.data_dir,
+                config.repository,
+                project,
+                args.mode,
+                snapshot=source_after,
+            )
+        except BaseException:
+            if staged_registrations is not None:
+                staged_registrations.rollback()
+            if project != config.project:
+                config.write(args.config)
+            raise
+        if staged_registrations is not None:
+            staged_registrations.commit()
         print(json.dumps({
             "status": "indexed" if args.command == "index" else "updated",
             "project": project,
@@ -422,6 +590,16 @@ def main(argv: list[str] | None = None) -> int:
                 "nodes": payload.get("nodes"),
                 "edges": payload.get("edges"),
             },
+            "python_registrations": (
+                registration_index_health(
+                    config.data_dir,
+                    config.repository,
+                    project,
+                    source_after.fingerprint,
+                ) if config.language == "python" else {
+                    "status": "not_applicable", "ok": True
+                }
+            ),
         }, indent=2))
         return 0
     if args.command == "related-tests":
@@ -511,6 +689,25 @@ def main(argv: list[str] | None = None) -> int:
             args.cache_dir,
             args.project,
         )
+        registration_index = None
+        if args.language == "python" and getattr(args, "data_dir", None) is not None:
+            source_fingerprint = args.index_status.get("source", {}).get(
+                "source_fingerprint"
+            )
+            registration_health = registration_index_health(
+                args.data_dir, args.repo, args.project, source_fingerprint
+            )
+            args.index_status["python_registrations"] = registration_health
+            if registration_health["ok"]:
+                try:
+                    registration_index = load_registration_index(
+                        args.data_dir,
+                        args.repo,
+                        args.project,
+                        source_fingerprint,
+                    )
+                except RegistrationIndexError:
+                    registration_index = None
         service = AtlasService(
             repository=args.repo,
             structural_provider=structural,
@@ -526,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
             impact_provider=structural,
             lifecycle=lifecycle,
+            registration_index=registration_index,
         )
         with service:
             if args.command == "mcp":
@@ -601,8 +799,10 @@ def _apply_project_config(args) -> None:
             config.cache_dir,
             config.project,
         )
+        args.data_dir = config.data_dir
     else:
         args.index_status = unknown_operational_status()
+        args.data_dir = None
     required = {
         "repo": args.repo, "node": args.node, "binary": args.binary,
         "cache_dir": args.cache_dir, "project": args.project,

@@ -9,6 +9,7 @@ from unittest.mock import patch
 from codebase_atlas.contracts import Edge, Node, SourceRange
 from codebase_atlas.graph import ImpactHit, ImpactTraversal
 from codebase_atlas.providers.python_references import PythonExactReferenceProvider
+from codebase_atlas.providers.python_registrations import PythonRegistrationProvider
 from codebase_atlas.service import AtlasService, QueryRequest
 
 
@@ -108,6 +109,10 @@ class FakeTestProvider:
 
 class ServiceTests(unittest.TestCase):
     @staticmethod
+    def _registration_index(repository: Path):
+        return PythonRegistrationProvider(repository, "p").scan()
+
+    @staticmethod
     def _registration_structural(definitions):
         class RegistrationStructural(FakeImpactProvider):
             project = "p"
@@ -147,6 +152,7 @@ class ServiceTests(unittest.TestCase):
                 repository=repository,
                 structural_provider=structural,
                 impact_provider=structural,
+                registration_index=self._registration_index(repository),
             )
             with service:
                 callers = service.query(QueryRequest(
@@ -181,6 +187,7 @@ class ServiceTests(unittest.TestCase):
                 repository=repository,
                 structural_provider=structural,
                 impact_provider=structural,
+                registration_index=self._registration_index(repository),
             )
             with service:
                 response = service.query(QueryRequest(
@@ -207,6 +214,7 @@ class ServiceTests(unittest.TestCase):
                 repository=repository,
                 structural_provider=structural,
                 impact_provider=structural,
+                registration_index=self._registration_index(repository),
             )
             request = {"target_path": "tests/test_routes.py", "target_owner": "test_register.callback"}
             with service:
@@ -216,7 +224,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual([edge.relation for edge in related.edges], ["registers"])
         self.assertEqual([node.name for node in impact.nodes], ["test_register"])
 
-    def test_registration_cache_invalidates_on_source_change_and_clears(self) -> None:
+    def test_registration_query_uses_only_injected_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository = Path(raw)
             source = repository / "routes.py"
@@ -230,21 +238,17 @@ class ServiceTests(unittest.TestCase):
                 repository=repository,
                 structural_provider=structural,
                 impact_provider=structural,
+                registration_index=self._registration_index(repository),
             )
             request = QueryRequest("callers", "view", {"target_path": "routes.py"})
             with service:
                 first = service.query(request)
                 source.write_text(source.read_text() + "app.add_url_rule('/two', view_func=view)\n")
                 second = service.query(request)
-                self.assertEqual(len(service._python_registration_cache), 2)
-                self.assertEqual(len(service._python_registration_signature_cache), 2)
-            self.assertEqual(len(service._python_registration_cache), 0)
-            self.assertEqual(len(service._python_registration_signature_cache), 0)
-            self.assertEqual(len(service._python_registration_provider_cache), 0)
         self.assertEqual(len(first.edges), 1)
-        self.assertEqual(len(second.edges), 2)
+        self.assertEqual(len(second.edges), 1)
 
-    def test_registration_timeout_preserves_structural_result(self) -> None:
+    def test_missing_registration_snapshot_preserves_structural_result(self) -> None:
         structural = FakeImpactProvider()
         structural.project = "p"
         service = AtlasService(
@@ -252,39 +256,32 @@ class ServiceTests(unittest.TestCase):
             structural_provider=structural,
             impact_provider=structural,
         )
-        with patch(
-            "codebase_atlas.service.PythonRegistrationProvider.source_fingerprint",
-            side_effect=TimeoutError("budget"),
-        ):
+        with service:
+            response = service.query(QueryRequest(
+                "callers", "target", {"target_path": "src/x.py"}
+            ))
+        self.assertEqual([node.name for node in response.nodes], ["caller"])
+        self.assertFalse(response.truncated)
+
+    def test_registration_query_never_invokes_source_scanner(self) -> None:
+        structural = FakeImpactProvider()
+        structural.project = "p"
+        service = AtlasService(
+            repository=Path(__file__).resolve().parent,
+            structural_provider=structural,
+            impact_provider=structural,
+        )
+        with patch.object(
+            PythonRegistrationProvider,
+            "scan",
+            side_effect=AssertionError("query-time scan"),
+        ) as scan:
             with service:
                 response = service.query(QueryRequest(
                     "callers", "target", {"target_path": "src/x.py"}
                 ))
+        scan.assert_not_called()
         self.assertEqual([node.name for node in response.nodes], ["caller"])
-        self.assertTrue(response.truncated)
-        self.assertIn("time_budget_exceeded", response.truncation["reasons"])
-
-    def test_registration_scan_error_is_not_cached(self) -> None:
-        structural = FakeImpactProvider()
-        structural.project = "p"
-        service = AtlasService(
-            repository=Path(__file__).resolve().parent,
-            structural_provider=structural,
-            impact_provider=structural,
-        )
-        with patch(
-            "codebase_atlas.service.PythonRegistrationProvider.scan",
-            side_effect=RuntimeError("scan failed"),
-        ):
-            with service:
-                with self.assertRaisesRegex(RuntimeError, "scan failed"):
-                    service.query(QueryRequest(
-                        "callers", "target", {"target_path": "src/x.py"}
-                    ))
-                self.assertEqual(len(service._python_registration_cache), 0)
-                self.assertEqual(
-                    len(service._python_registration_signature_cache), 0
-                )
 
     def test_python_exact_scan_timeout_preserves_semantic_callers(self) -> None:
         class EmptyStructural(FakeImpactProvider):
@@ -967,17 +964,9 @@ class ServiceTests(unittest.TestCase):
                 (),
             )
         self.assertEqual(len(service._python_complete_reference_cache), 128)
-        for index in range(129):
-            service._cache_put(
-                service._python_registration_cache,
-                (Path("/repo"), "p", f"fingerprint-{index}"),
-                (),
-            )
-        self.assertEqual(len(service._python_registration_cache), 128)
         service.started = True
         service.close()
         self.assertEqual(len(service._python_complete_reference_cache), 0)
-        self.assertEqual(len(service._python_registration_cache), 0)
 
     def test_requires_started_service(self) -> None:
         service = AtlasService(impact_provider=FakeImpactProvider())

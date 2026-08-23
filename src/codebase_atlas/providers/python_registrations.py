@@ -168,6 +168,10 @@ class PythonRegistrationProvider:
         ) or ()
         return self._known_files
 
+    def source_files(self) -> tuple[Path, ...]:
+        """Return the deterministic Python source inventory used by this provider."""
+        return self._files()
+
     @staticmethod
     def _module_name(path: Path) -> str:
         parts: list[str] = [] if path.name == "__init__.py" else [path.stem]
@@ -239,9 +243,34 @@ class PythonRegistrationProvider:
         return digest.hexdigest()
 
     def scan(self, *, timeout_ms: int | None = None) -> RegistrationIndex:
+        return self._scan_files(self._files(), timeout_ms=timeout_ms)
+
+    def scan_files(
+        self,
+        relative_paths: set[str],
+        *,
+        known_nodes: tuple[Node, ...] = (),
+        timeout_ms: int | None = None,
+    ) -> RegistrationIndex:
+        """Analyze selected files while reusing exact dependency identities."""
+        selected = tuple(
+            path for path in self._files()
+            if path.relative_to(self.repository).as_posix() in relative_paths
+        )
+        return self._scan_files(
+            selected, known_nodes=known_nodes, timeout_ms=timeout_ms
+        )
+
+    def _scan_files(
+        self,
+        files: tuple[Path, ...],
+        *,
+        known_nodes: tuple[Node, ...] = (),
+        timeout_ms: int | None = None,
+    ) -> RegistrationIndex:
         deadline = self._deadline(timeout_ms)
         modules: list[_Module] = []
-        for path in self._files():
+        for path in files:
             self._check(deadline)
             try:
                 text = path.read_text(encoding="utf-8")
@@ -253,7 +282,9 @@ class PythonRegistrationProvider:
                 self._module_name(path), text, tree,
             ))
 
-        definitions: dict[str, Node] = {}
+        definitions: dict[str, Node] = {
+            self._node_identity(node): node for node in known_nodes
+        }
         nodes_by_ast: dict[int, Node] = {}
         for module in modules:
             self._collect_definitions(

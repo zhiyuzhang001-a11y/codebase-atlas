@@ -12,6 +12,7 @@ from pathlib import Path
 from codebase_atlas.cli import main
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.index_state import record_index_state, state_path
+from codebase_atlas.python_registration_store import registration_index_path
 
 
 class CliOperationTests(unittest.TestCase):
@@ -83,6 +84,14 @@ class CliOperationTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertEqual(result["status"], "current")
             self.assertEqual(result["provider"]["route"], "atlas_source_current")
+            self.assertEqual(result["python_registrations"]["action"], "rebuilt")
+            sidecar = registration_index_path(config.data_dir)
+            before = sidecar.stat().st_mtime_ns
+            with patch("codebase_atlas.cli._index_repository") as provider:
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(main(["update", "--config", str(path)]), 0)
+            provider.assert_not_called()
+            self.assertEqual(sidecar.stat().st_mtime_ns, before)
 
             payload = {"project": "project", "status": "indexed", "nodes": 4, "edges": 7}
             with patch("codebase_atlas.cli._index_repository", return_value=payload) as provider:

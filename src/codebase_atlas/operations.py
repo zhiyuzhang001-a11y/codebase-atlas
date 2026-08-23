@@ -58,16 +58,29 @@ def stale_policy_error(status: dict[str, Any], policy: str) -> str | None:
 def index_warnings(status: dict[str, Any], policy: str) -> list[dict[str, str]]:
     if policy not in STALE_POLICIES:
         raise ValueError(f"unsupported stale policy: {policy}")
-    if policy == "ignore" or bool(status.get("ok")):
+    if policy == "ignore":
         return []
+    warnings: list[dict[str, str]] = []
+    registrations = status.get("python_registrations")
+    if isinstance(registrations, dict) and not bool(registrations.get("ok")):
+        reason = str(registrations.get("reason", "registration_index_unavailable"))
+        warnings.append({
+            "code": "python_registration_index_unavailable",
+            "status": str(registrations.get("status", "rebuild_required")),
+            "reason": reason,
+            "message": "Python registration evidence is unavailable. Run codebase-atlas update or repair.",
+        })
+    if bool(status.get("ok")):
+        return warnings
     state = str(status.get("status", "unknown"))
     reason = str(status.get("reason", "index_not_ready"))
-    return [{
+    warnings.append({
         "code": "index_not_current",
         "status": state,
         "reason": reason,
         "message": f"Index is {state}; results may be stale. Run codebase-atlas update.",
-    }]
+    })
+    return warnings
 
 
 def attach_operational_status(

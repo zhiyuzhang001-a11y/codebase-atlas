@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from .config import AtlasConfig
 from .index_state import index_freshness
+from .python_registration_store import registration_index_health
 
 
 def _tree_size(path: Path) -> tuple[int, int]:
@@ -193,13 +194,29 @@ def inspect_installation(config: AtlasConfig, *, deep: bool = False) -> dict[str
     """Return a stable, JSON-serializable, read-only maintenance report."""
     database = inspect_provider_database(config, deep=deep)
     freshness = index_freshness(config.data_dir, config.repository, config.project)
+    registrations = (
+        registration_index_health(
+            config.data_dir,
+            config.repository,
+            config.project,
+            freshness.get("source_fingerprint"),
+        )
+        if config.language == "python"
+        else {"status": "not_applicable", "ok": True}
+    )
     findings = _residue(config)
-    core_ok = bool(database["ok"]) and bool(freshness["ok"])
+    core_ok = (
+        bool(database["ok"])
+        and bool(freshness["ok"])
+        and bool(registrations["ok"])
+    )
     remediation: list[str] = []
     if not database["ok"]:
         remediation.append("run 'codebase-atlas index' to publish a new Provider generation")
     elif not freshness["ok"]:
         remediation.append("run 'codebase-atlas update' to refresh the index safely")
+    elif not registrations["ok"]:
+        remediation.append("run 'codebase-atlas repair --apply' to rebuild the Python registration index")
     if any(item["severity"] == "warning" for item in findings):
         remediation.append("review detected residue before using a future cleanup command")
     return {
@@ -212,6 +229,7 @@ def inspect_installation(config: AtlasConfig, *, deep: bool = False) -> dict[str
         "project": config.project,
         "index": freshness,
         "provider_database": database,
+        "python_registrations": registrations,
         "storage": _storage(config),
         "findings": findings,
         "remediation": remediation,
@@ -222,7 +240,10 @@ def repair_plan(report: dict[str, object]) -> dict[str, object]:
     """Choose a non-mutating recovery route from an inspection report."""
     database = report["provider_database"]
     index = report["index"]
-    assert isinstance(database, dict) and isinstance(index, dict)
+    registrations = report.get(
+        "python_registrations", {"status": "not_applicable", "ok": True}
+    )
+    assert isinstance(database, dict) and isinstance(index, dict) and isinstance(registrations, dict)
     database_status = str(database["status"])
     index_status = str(index["status"])
     if database_status == "unavailable":
@@ -240,6 +261,11 @@ def repair_plan(report: dict[str, object]) -> dict[str, object]:
             "action": "safe_update", "applicable": True,
             "reason": f"atlas_index_{index_status}",
         }
+    if not bool(registrations["ok"]):
+        return {
+            "action": "registration_sidecar_rebuild", "applicable": True,
+            "reason": f"python_registrations_{registrations['status']}",
+        }
     return {
         "action": "none", "applicable": False,
         "reason": "index_and_provider_database_are_usable",
@@ -256,6 +282,12 @@ def cleanup_plan(config: AtlasConfig) -> dict[str, object]:
 
     for path in config.data_dir.glob(".index-state-*.json"):
         proposed[path] = "atlas_state_temporary"
+    for pattern, kind in (
+        (".python-registrations-*.json", "registration_index_temporary"),
+        (".python-registrations-backup-*.json", "registration_index_backup"),
+    ):
+        for path in config.data_dir.glob(pattern):
+            proposed[path] = kind
     if database is not None:
         for path in config.cache_dir.glob(database.name + ".stage.*"):
             proposed[path] = "provider_staging"

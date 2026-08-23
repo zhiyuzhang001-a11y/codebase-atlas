@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -19,12 +20,20 @@ from codebase_atlas.maintenance import (
     inspect_provider_database,
     repair_plan,
 )
+from codebase_atlas.python_registration_store import stage_registration_index
 
 
 class MaintenanceTests(unittest.TestCase):
     def _fixture(self, root: Path) -> tuple[AtlasConfig, Path]:
         repository = root / "repo"
         repository.mkdir()
+        (repository / "sample.py").write_text("value = 1\n")
+        subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(repository), "add", "sample.py"], check=True)
+        subprocess.run([
+            "git", "-C", str(repository), "-c", "user.name=Atlas Test",
+            "-c", "user.email=atlas@example.invalid", "commit", "-qm", "initial",
+        ], check=True)
         for executable in ("node", "cbm", "serena"):
             (root / executable).touch()
         config = AtlasConfig(
@@ -46,6 +55,19 @@ class MaintenanceTests(unittest.TestCase):
         connection.commit()
         connection.close()
         return config, database
+
+    def _record_ready(self, config: AtlasConfig) -> None:
+        state = record_index_state(
+            config.data_dir, config.repository, config.project, "fast"
+        )
+        assert state.source_fingerprint
+        with stage_registration_index(
+            config.data_dir,
+            config.repository,
+            config.project,
+            state.source_fingerprint,
+        ) as staged:
+            staged.publish()
 
     def test_shallow_and_deep_database_inspection_are_healthy(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -90,7 +112,7 @@ class MaintenanceTests(unittest.TestCase):
     def test_report_finds_staging_quarantine_and_temporary_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             config, database = self._fixture(Path(raw))
-            record_index_state(config.data_dir, config.repository, config.project, "fast")
+            self._record_ready(config)
             Path(str(database) + ".stage.abcd").write_bytes(b"stage")
             Path(str(database) + ".corrupt.1").write_bytes(b"old")
             (config.data_dir / ".index-state-leftover.json").write_text("{}")
@@ -106,7 +128,7 @@ class MaintenanceTests(unittest.TestCase):
     def test_cli_inspect_emits_json_and_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             config, _database = self._fixture(Path(raw))
-            record_index_state(config.data_dir, config.repository, config.project, "fast")
+            self._record_ready(config)
             path = config.repository / ".codebase-atlas.toml"
             config.write(path)
             output = StringIO()

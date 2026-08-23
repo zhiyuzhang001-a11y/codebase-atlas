@@ -14,10 +14,7 @@ from .contracts import Edge, Node
 from .graph import ImpactHit, ImpactTraversal
 from .providers.python_callers import PythonExactCallerProvider
 from .providers.python_references import PythonExactReferenceProvider
-from .providers.python_registrations import (
-    PythonRegistrationProvider,
-    RegistrationIndex,
-)
+from .providers.python_registrations import RegistrationIndex
 
 if TYPE_CHECKING:
     from .lifecycle import CodebaseMemoryDaemon
@@ -92,6 +89,7 @@ class AtlasService:
         test_provider: TypeScriptTestProvider | None = None,
         impact_provider: CodebaseMemoryImpactProvider | None = None,
         lifecycle: CodebaseMemoryDaemon | None = None,
+        registration_index: RegistrationIndex | None = None,
     ) -> None:
         self.repository = repository.resolve() if repository is not None else None
         self.structural_provider = structural_provider or impact_provider
@@ -99,6 +97,7 @@ class AtlasService:
         self.test_provider = test_provider
         self.impact_provider = impact_provider
         self.lifecycle = lifecycle
+        self.registration_index = registration_index
         self.started = False
         self._structural_started = False
         self._semantic_started = False
@@ -110,15 +109,6 @@ class AtlasService:
         ] = OrderedDict()
         self._python_caller_cache: OrderedDict[
             tuple[Path, str, str, str, str], ImpactTraversal
-        ] = OrderedDict()
-        self._python_registration_cache: OrderedDict[
-            tuple[Path, str, str], RegistrationIndex
-        ] = OrderedDict()
-        self._python_registration_signature_cache: OrderedDict[
-            tuple[Path, str, str], str
-        ] = OrderedDict()
-        self._python_registration_provider_cache: OrderedDict[
-            tuple[Path, str], PythonRegistrationProvider
         ] = OrderedDict()
 
     def start(self) -> None:
@@ -162,9 +152,6 @@ class AtlasService:
         self._python_reference_cache.clear()
         self._python_complete_reference_cache.clear()
         self._python_caller_cache.clear()
-        self._python_registration_cache.clear()
-        self._python_registration_signature_cache.clear()
-        self._python_registration_provider_cache.clear()
         self.started = False
 
     def query(self, request: QueryRequest) -> QueryResponse:
@@ -598,78 +585,17 @@ class AtlasService:
         context = self._python_caller_context(request)
         if context is None:
             return structural
-        repository, project, target_path, _caller_cache_key = context
-        provider_key = (repository, project)
-        provider = self._cache_get(
-            self._python_registration_provider_cache, provider_key
-        )
-        if provider is None:
-            provider = PythonRegistrationProvider(repository, project)
-            self._cache_put(
-                self._python_registration_provider_cache, provider_key, provider
-            )
-        timed_out = False
-        registration_index: RegistrationIndex | None = None
-        remaining = self._remaining_timeout(limits, started)
-        if remaining is None:
-            timed_out = True
-        else:
-            try:
-                signature = provider.source_signature(timeout_ms=remaining)
-            except TimeoutError:
-                timed_out = True
-            else:
-                signature_key = (repository, project, signature)
-                fingerprint = self._cache_get(
-                    self._python_registration_signature_cache, signature_key
-                )
-                if fingerprint is None:
-                    remaining = self._remaining_timeout(limits, started)
-                    if remaining is None:
-                        timed_out = True
-                    else:
-                        try:
-                            fingerprint = provider.source_fingerprint(
-                                timeout_ms=remaining
-                            )
-                        except TimeoutError:
-                            timed_out = True
-                if fingerprint is not None:
-                    cache_key = (repository, project, fingerprint)
-                    registration_index = self._cache_get(
-                        self._python_registration_cache, cache_key
-                    )
-                    if registration_index is None:
-                        remaining = self._remaining_timeout(limits, started)
-                        if remaining is None:
-                            timed_out = True
-                        else:
-                            try:
-                                registration_index = provider.scan(timeout_ms=remaining)
-                            except TimeoutError:
-                                timed_out = True
-                            else:
-                                self._cache_put(
-                                    self._python_registration_cache,
-                                    cache_key,
-                                    registration_index,
-                                )
-                    if registration_index is not None:
-                        self._cache_put(
-                            self._python_registration_signature_cache,
-                            signature_key,
-                            fingerprint,
-                        )
+        _repository, _project, target_path, _caller_cache_key = context
         registration = ImpactTraversal(())
-        if registration_index is not None:
+        if self.registration_index is not None:
             if request.query_type == "callees":
-                registration = registration_index.callees(
+                registration = self.registration_index.callees(
                     request.symbol,
                     target_path=target_path,
                     target_owner=str(request.parameters.get("target_owner", "")),
                 )
             else:
-                registration = registration_index.callers_for(
+                registration = self.registration_index.callers_for(
                     request.symbol,
                     target_path=target_path,
                     target_owner=str(request.parameters.get("target_owner", "")),
@@ -678,7 +604,6 @@ class AtlasService:
             structural,
             registration,
             only_tests=only_tests,
-            evidence_timed_out=timed_out,
         )
 
     def _merge_python_registration_evidence(
