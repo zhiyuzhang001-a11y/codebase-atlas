@@ -34,6 +34,34 @@ runtime or changes project, editor, or MCP configuration. Once a project config
 exists, `codebase-atlas setup --config /path/to/.codebase-atlas.toml` validates
 the exact recorded paths.
 
+## Guided onboarding
+
+For a single ordered first-project plan, use `onboard`. Without `--apply` it is
+strictly read-only: it creates no configuration or data, starts no Provider, and
+never installs Node or external Providers.
+
+```bash
+codebase-atlas onboard --repo /path/to/repository
+```
+
+It reports missing local prerequisites and the exact apply command. When all
+required runtimes are discoverable or explicitly supplied, apply only the shown
+plan:
+
+```bash
+codebase-atlas onboard --repo /path/to/repository --apply
+```
+
+`--apply` may create the visible project configuration and Atlas-owned index
+state, then runs the existing index/doctor flow. It never overwrites a differing
+configuration; rerunning a fresh project reports `current` without Provider work.
+For TypeScript monorepos, provide the project boundary explicitly:
+
+```bash
+codebase-atlas onboard --repo /path/to/repository --language typescript \
+  --tsconfig packages/app/tsconfig.json --apply
+```
+
 ## Install
 
 From a checkout:
@@ -281,5 +309,5 @@ Uninstalling the package does not remove project configuration or caches. After
 checking the path printed by `codebase-atlas doctor`, those can be removed
 separately if no longer needed.
 
-Private release mechanics, version/tag checks, checksums, and the unresolved
-public-license boundary are documented in `docs/RELEASING.md`.
+Release mechanics, version/tag checks, checksums, and the external CI boundary
+are documented in `docs/RELEASING.md`.

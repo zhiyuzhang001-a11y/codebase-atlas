@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +56,67 @@ class ConfigTests(unittest.TestCase):
         first = default_data_dir(Path("/tmp/example-a"))
         self.assertEqual(first, default_data_dir(Path("/tmp/example-a")))
         self.assertNotEqual(first, default_data_dir(Path("/tmp/example-b")))
+
+    def test_verified_write_restores_original_after_partial_io_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            path = repository / ".codebase-atlas.toml"
+            original = AtlasConfig(
+                repository, "python", root / "node", root / "cbm",
+                root / "serena", root / "data",
+            )
+            original.write(path)
+            original_bytes = path.read_bytes()
+            identity = (path.stat().st_dev, path.stat().st_ino)
+            updated = original.with_project("indexed")
+            real_fdopen = os.fdopen
+
+            class PartialFailureStream:
+                def __init__(self, stream):
+                    self.stream = stream
+                    self.fail_next_write = True
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    self.stream.close()
+
+                def fileno(self):
+                    return self.stream.fileno()
+
+                def read(self):
+                    return self.stream.read()
+
+                def seek(self, *args):
+                    return self.stream.seek(*args)
+
+                def truncate(self, *args):
+                    return self.stream.truncate(*args)
+
+                def flush(self):
+                    return self.stream.flush()
+
+                def write(self, value):
+                    if self.fail_next_write:
+                        self.fail_next_write = False
+                        self.stream.write(value[: max(1, len(value) // 2)])
+                        raise OSError("simulated partial publication failure")
+                    return self.stream.write(value)
+
+            with patch(
+                "codebase_atlas.config.os.fdopen",
+                side_effect=lambda descriptor, *args, **kwargs: PartialFailureStream(
+                    real_fdopen(descriptor, *args, **kwargs)
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "partial publication failure"):
+                    updated.write_verified(path, identity)
+
+            self.assertEqual(path.read_bytes(), original_bytes)
+            self.assertEqual((path.stat().st_dev, path.stat().st_ino), identity)
 
 
 if __name__ == "__main__":

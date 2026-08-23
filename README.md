@@ -2,8 +2,10 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release: **0.15.0**, reducing Python cold relationship latency through
-query-owned Provider scheduling without weakening the 0.14 correctness gate.
+Current local candidate: **0.16.0**, adding read-only-first guided onboarding,
+explicit apply/resume behavior, and identity-safe publication while preserving
+the 0.15 correctness and cold-start gates. External CI and release remain
+separate owner actions.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -49,6 +51,8 @@ separately installed dependencies retain their own licenses; see
 ## Daily workflow
 
 ```bash
+codebase-atlas onboard              # read-only first-project plan
+codebase-atlas onboard --apply      # explicit config/index/doctor workflow
 codebase-atlas setup
 codebase-atlas init
 codebase-atlas index

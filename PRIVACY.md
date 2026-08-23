@@ -23,6 +23,8 @@ network; normal Atlas query/index logic does not require an Atlas network servic
 
 Review configured Provider versions and policies before processing sensitive
 repositories. Atlas does not make an untrusted Provider safe.
+Guided `onboard` never downloads or installs Node.js or Provider dependencies;
+without `--apply` it also creates no project configuration or index data.
 
 ## Retention and removal
 

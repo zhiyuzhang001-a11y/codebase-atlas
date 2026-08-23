@@ -28,3 +28,6 @@ symlink errors in repair/cleanup, unsafe Provider/MCP/SQLite parsing, unintended
 source disclosure, surviving processes, and incomplete evidence presented as
 exact. Maintenance commands are dry-run or read-only by default where documented,
 but these controls are not a general sandbox.
+Guided onboarding rejects symlinked configuration/data paths and verifies the
+planned configuration's file identity before publishing indexed state. It does
+not make arbitrary executable paths or repositories trusted.

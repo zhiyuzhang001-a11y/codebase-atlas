@@ -6,10 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from codebase_atlas.config import AtlasConfig
 from codebase_atlas.index_state import (
     index_freshness,
     provider_database_health,
     record_index_state,
+    repository_snapshot,
     state_path,
 )
 
@@ -59,6 +61,48 @@ class IndexStateTests(unittest.TestCase):
                 record_index_state(data, repository, "project", "fast")
                 mutate()
                 self.assertEqual(index_freshness(data, repository, "project")["status"], "stale")
+
+    def test_custom_atlas_config_is_operational_but_other_toml_is_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            before = repository_snapshot(repository)
+            config = AtlasConfig(repository, "python", root / "node", root / "cbm", root / "serena", root / "data", project="indexed")
+            config.write(repository / "atlas.toml")
+            self.assertEqual(repository_snapshot(repository).fingerprint, before.fingerprint)
+            (repository / "source.toml").write_text("value = 1\n", encoding="utf-8")
+            self.assertNotEqual(repository_snapshot(repository).fingerprint, before.fingerprint)
+
+    def test_foreign_atlas_config_is_source_even_at_default_name(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            before = repository_snapshot(repository)
+            config = AtlasConfig(foreign, "python", root / "node", root / "cbm", root / "serena", root / "data", project="foreign")
+            config.write(repository / ".codebase-atlas.toml")
+            after = repository_snapshot(repository)
+            self.assertNotEqual(after.fingerprint, before.fingerprint)
+            self.assertEqual(after.changed_paths, 1)
+
+    def test_invalid_default_config_and_symlink_are_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            before = repository_snapshot(repository)
+            config_path = repository / ".codebase-atlas.toml"
+
+            config_path.write_text("malformed = true\n", encoding="utf-8")
+            malformed = repository_snapshot(repository)
+            self.assertNotEqual(malformed.fingerprint, before.fingerprint)
+            self.assertEqual(malformed.changed_paths, 1)
+
+            config_path.unlink()
+            config_path.symlink_to(repository / "sample.py")
+            linked = repository_snapshot(repository)
+            self.assertNotEqual(linked.fingerprint, before.fingerprint)
+            self.assertEqual(linked.changed_paths, 1)
 
     def test_invalid_or_mismatched_state_requires_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

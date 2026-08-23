@@ -4,6 +4,17 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.16.0 — 2026-08-23
+
+- Add a read-only-first `onboard` plan and an explicit `--apply` workflow that
+  composes runtime checks, visible project configuration, indexing, readiness,
+  next-query guidance, MCP guidance, repair, and removal instructions.
+- Preserve existing or conflicting configuration, reject unsafe path and file
+  identity changes, and publish freshness state only for the exact indexed
+  source generation.
+- Add deterministic interruption-and-resume coverage plus real installed Flask,
+  Vite, and custom-configuration acceptance flows.
+
 ## 0.15.0 — 2026-08-21
 
 - Run the Python structural path concurrently with semantic/exact-reference

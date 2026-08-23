@@ -8,6 +8,7 @@ import io
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 
@@ -44,7 +45,10 @@ def main() -> int:
         vendored = Path(__file__).resolve().parents[1] / "vendor" / "typescript"
         shutil.copytree(vendored, checkout / "node_modules" / "typescript")
         subprocess.run(
-            ["python", "-m", "pip", "wheel", str(checkout), "--no-deps", "--wheel-dir", str(args.output)],
+            [
+                sys.executable, "-m", "pip", "wheel", str(checkout),
+                "--no-deps", "--no-build-isolation", "--wheel-dir", str(args.output),
+            ],
             check=True,
         )
     print(selected)

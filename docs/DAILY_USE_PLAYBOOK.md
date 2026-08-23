@@ -1,5 +1,13 @@
 # Codebase Atlas daily-use playbook
 
+## Start a new project safely
+
+Run `codebase-atlas onboard --repo /path/to/repository` first. The default is a
+read-only plan: it writes no configuration or index, starts no Provider, and
+does not install Node.js or Provider dependencies. Review its checks and exact
+actions, then rerun the reported command with `--apply` when ready. A completed
+project can be rerun safely; current state returns without Provider work.
+
 ## Start with a narrow identity
 
 Check operational state first. A source-current update uses the Atlas fast path

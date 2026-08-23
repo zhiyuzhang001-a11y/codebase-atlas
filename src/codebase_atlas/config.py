@@ -7,6 +7,7 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tomllib
 
@@ -134,11 +135,10 @@ class AtlasConfig:
     def with_project(self, project: str) -> "AtlasConfig":
         return replace(self, project=project)
 
-    def write(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def render(self) -> str:
         quote = lambda value: str(value).replace("\\", "\\\\").replace('"', '\\"')
         node_bin = quote(self.node_bin_dir) if self.node_bin_dir else ""
-        text = (
+        return (
             "schema_version = 1\n\n[project]\n"
             f'repository = "{quote(self.repository)}"\n'
             f'language = "{self.language}"\n'
@@ -150,7 +150,42 @@ class AtlasConfig:
             f'cbm_binary = "{quote(self.cbm_binary)}"\n'
             f'serena_python = "{quote(self.serena_python)}"\n'
         )
-        path.write_text(text, encoding="utf-8")
+    def write(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.render(), encoding="utf-8")
+
+    def write_exclusive(self, path: Path) -> None:
+        """Create a new config without replacing an existing path."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(self.render())
+
+    def write_verified(self, path: Path, expected_identity: tuple[int, int]) -> None:
+        """Rewrite one verified regular config file without following symlinks."""
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise ValueError("safe config publication requires O_NOFOLLOW support")
+        descriptor = os.open(path, os.O_RDWR | nofollow)
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
+            current = os.fstat(stream.fileno())
+            identity = (current.st_dev, current.st_ino)
+            if not stat.S_ISREG(current.st_mode) or identity != expected_identity:
+                raise ValueError("config identity changed before publication")
+            original = stream.read()
+            try:
+                stream.seek(0)
+                stream.truncate()
+                stream.write(self.render())
+                stream.flush()
+                os.fsync(stream.fileno())
+            except OSError:
+                stream.seek(0)
+                stream.truncate()
+                stream.write(original)
+                stream.flush()
+                os.fsync(stream.fileno())
+                raise
 
 
 def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:

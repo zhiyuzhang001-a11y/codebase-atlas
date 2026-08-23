@@ -30,6 +30,7 @@ from .operations import (
     stale_policy_error,
     unknown_operational_status,
 )
+from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
@@ -60,6 +61,18 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--serena-python", type=Path)
     setup.add_argument("--node-bin-dir", type=Path)
     setup.add_argument("--tsconfig", type=Path)
+    onboard = commands.add_parser("onboard", help="plan or explicitly apply a guided local onboarding flow")
+    onboard.add_argument("--repo", type=Path, default=Path.cwd())
+    onboard.add_argument("--config", type=Path)
+    onboard.add_argument("--language", choices=("python", "typescript"))
+    onboard.add_argument("--node", type=Path)
+    onboard.add_argument("--cbm-binary", type=Path)
+    onboard.add_argument("--serena-python", type=Path)
+    onboard.add_argument("--node-bin-dir", type=Path)
+    onboard.add_argument("--tsconfig", type=Path)
+    onboard.add_argument("--data-dir", type=Path)
+    onboard.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
+    onboard.add_argument("--apply", action="store_true")
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     inspect = commands.add_parser("inspect", help="inspect index health and storage without modifying it")
@@ -186,6 +199,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
         return 0
+    if args.command == "onboard":
+        config_path = args.config or args.repo / CONFIG_NAME
+        plan, config = build_plan(OnboardingInputs(
+            args.repo, config_path, args.language, args.node, args.cbm_binary,
+            args.serena_python, args.node_bin_dir, args.tsconfig, args.data_dir,
+            args.mode,
+        ))
+        if not args.apply:
+            print(json.dumps(plan, ensure_ascii=False, indent=2))
+            return 0 if plan["status"] == "planned" else 2
+        result, code = apply_plan(plan, config, indexer=_index_repository, mode=args.mode)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return code
     if args.command == "setup":
         candidate = args.config
         if candidate is None:

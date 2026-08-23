@@ -12,14 +12,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
+import tomllib
 
 
 STATE_SCHEMA_VERSION = 1
-ATLAS_CONFIG_NAME = ".codebase-atlas.toml"
-
-
 @dataclass(frozen=True)
 class RepositorySnapshot:
     kind: str
@@ -79,6 +78,28 @@ def _paths(output: bytes) -> list[str]:
     return [os.fsdecode(value) for value in output.split(b"\0") if value]
 
 
+def _is_atlas_runtime_config(repository: Path, relative: str) -> bool:
+    """Recognize only a regular Atlas config for this exact repository."""
+    try:
+        path = repository / relative
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+        value = tomllib.loads(path.read_text(encoding="utf-8"))
+        project = value.get("project")
+        runtime = value.get("runtime")
+        if value.get("schema_version") != 1 or not isinstance(project, dict) or not isinstance(runtime, dict):
+            return False
+        required_project = ("repository", "language", "data_dir", "cbm_project", "tsconfig")
+        required_runtime = ("node", "node_bin_dir", "cbm_binary", "serena_python")
+        if not all(isinstance(project.get(key), str) for key in required_project):
+            return False
+        if not all(isinstance(runtime.get(key), str) for key in required_runtime):
+            return False
+        return Path(project["repository"]).resolve() == repository
+    except (OSError, TypeError, ValueError, tomllib.TOMLDecodeError):
+        return False
+
+
 def _hash_path(digest: "hashlib._Hash", repository: Path, relative: str) -> None:
     digest.update(relative.encode("utf-8", errors="surrogateescape"))
     digest.update(b"\0")
@@ -121,13 +142,13 @@ def repository_snapshot(repository: Path) -> RepositorySnapshot:
     if tracked.returncode != 0 or untracked.returncode != 0:
         return RepositorySnapshot("unknown", None, head, None, "git_status_failed")
 
-    # Atlas updates its own project-local runtime configuration after the first
-    # successful index. It is operational metadata, not repository source, and
-    # including it would make a default `init; index; doctor` stale itself.
+    # Atlas updates its project-local runtime configuration after a successful
+    # index. Any valid Atlas config for this repository is operational metadata,
+    # not source; arbitrary TOML and foreign Atlas configs remain fingerprinted.
     changed = sorted(
         path
         for path in set(_paths(tracked.stdout) + _paths(untracked.stdout))
-        if path != ATLAS_CONFIG_NAME
+        if not _is_atlas_runtime_config(repository, path)
     )
     digest = hashlib.sha256()
     digest.update(b"codebase-atlas-source-v1\0")
