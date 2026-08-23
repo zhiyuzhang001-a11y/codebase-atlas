@@ -47,7 +47,7 @@ def main() -> int:
         subprocess.run(
             [
                 sys.executable, "-m", "pip", "wheel", str(checkout),
-                "--no-deps", "--no-build-isolation", "--wheel-dir", str(args.output),
+                "--no-deps", "--wheel-dir", str(args.output),
             ],
             check=True,
         )

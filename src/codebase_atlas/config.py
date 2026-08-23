@@ -15,6 +15,14 @@ import tomllib
 CONFIG_NAME = ".codebase-atlas.toml"
 
 
+def _require_regular_identity(path: Path, expected_identity: tuple[int, int]) -> None:
+    """Require the literal path to retain one expected regular-file identity."""
+    current = os.lstat(path)
+    identity = (current.st_dev, current.st_ino)
+    if not stat.S_ISREG(current.st_mode) or identity != expected_identity:
+        raise ValueError("config identity changed before publication")
+
+
 def _asset(name: str) -> Path:
     source = Path(__file__).resolve().parents[2] / "scripts" / name
     if source.is_file():
@@ -162,16 +170,24 @@ class AtlasConfig:
             stream.write(self.render())
 
     def write_verified(self, path: Path, expected_identity: tuple[int, int]) -> None:
-        """Rewrite one verified regular config file without following symlinks."""
+        """Rewrite only the already-approved regular file, on every supported OS."""
+        _require_regular_identity(path, expected_identity)
         nofollow = getattr(os, "O_NOFOLLOW", None)
-        if nofollow is None:
-            raise ValueError("safe config publication requires O_NOFOLLOW support")
-        descriptor = os.open(path, os.O_RDWR | nofollow)
-        with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
-            current = os.fstat(stream.fileno())
-            identity = (current.st_dev, current.st_ino)
-            if not stat.S_ISREG(current.st_mode) or identity != expected_identity:
+        flags = os.O_RDWR | (nofollow if isinstance(nofollow, int) else 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            opened_identity = (opened.st_dev, opened.st_ino)
+            if not stat.S_ISREG(opened.st_mode) or opened_identity != expected_identity:
                 raise ValueError("config identity changed before publication")
+            # Windows has no O_NOFOLLOW. Rechecking the literal path after open
+            # rejects a symlink or replacement race while all writes remain
+            # bound to the already-verified handle.
+            _require_regular_identity(path, expected_identity)
+        except (OSError, ValueError):
+            os.close(descriptor)
+            raise
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
             original = stream.read()
             try:
                 stream.seek(0)
@@ -179,7 +195,8 @@ class AtlasConfig:
                 stream.write(self.render())
                 stream.flush()
                 os.fsync(stream.fileno())
-            except OSError:
+                _require_regular_identity(path, expected_identity)
+            except (OSError, ValueError):
                 stream.seek(0)
                 stream.truncate()
                 stream.write(original)

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shlex
 import stat
+import subprocess
 from typing import Any, Callable
 
 from .config import AtlasConfig, default_data_dir, diagnose
@@ -73,6 +74,11 @@ def _matches_config(path: Path, fingerprint: str, identity: tuple[int, int]) -> 
 
 def _action(identifier: str, *, mutates: bool, target: Path | str, reason: str, command: str) -> dict[str, object]:
     return {"id": identifier, "mutates": mutates, "target": str(target), "reason": reason, "command": command}
+
+
+def _shell_command(values: list[str]) -> str:
+    """Render a replayable command for the host's native process syntax."""
+    return subprocess.list2cmdline(values) if os.name == "nt" else shlex.join(values)
 
 
 def _actions(repository: Path, config_path: Path, config: AtlasConfig, *, reusing: bool) -> list[dict[str, object]]:
@@ -154,7 +160,7 @@ def build_plan(inputs: OnboardingInputs) -> tuple[dict[str, object], AtlasConfig
                 options += [flag, str(value)]
         if inputs.mode != "fast":
             options += ["--mode", inputs.mode]
-        apply_command = " ".join(shlex.quote(value) for value in options)
+        apply_command = _shell_command(options)
     actions = _actions(repo, config_path, config, reusing=bool(configured)) if ready and config else [
         _action("check_runtime", mutates=False, target=repo, reason="verify local prerequisites", command="codebase-atlas setup")
     ]
@@ -168,7 +174,12 @@ def build_plan(inputs: OnboardingInputs) -> tuple[dict[str, object], AtlasConfig
         "config_fingerprint": _content_fingerprint(config_path) if configured and not path_error else "",
         "config_identity": list(_file_identity(config_path)) if configured and not path_error else [],
         "apply_command": apply_command,
-        "guidance": {"next_query": "codebase-atlas query definition <symbol> --config " + shlex.quote(str(config_path)), "mcp": "codebase-atlas mcp --config " + shlex.quote(str(config_path)), "repair": "codebase-atlas repair --config " + shlex.quote(str(config_path)), "remove": "codebase-atlas clean --config " + shlex.quote(str(config_path))},
+        "guidance": {
+            "next_query": _shell_command(["codebase-atlas", "query", "definition", "<symbol>", "--config", str(config_path)]),
+            "mcp": _shell_command(["codebase-atlas", "mcp", "--config", str(config_path)]),
+            "repair": _shell_command(["codebase-atlas", "repair", "--config", str(config_path)]),
+            "remove": _shell_command(["codebase-atlas", "clean", "--config", str(config_path)]),
+        },
     }, config)
 
 

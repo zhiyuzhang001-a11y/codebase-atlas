@@ -57,8 +57,10 @@ class OnboardingTests(unittest.TestCase):
             self.assertIsNotNone(discovered)
             self.assertFalse(config_path.exists())
             self.assertFalse(config.data_dir.exists())
-            self.assertIn("--node " + str(config.node), str(plan["apply_command"]))
-            self.assertIn("--data-dir " + str(config.data_dir), str(plan["apply_command"]))
+            self.assertIn("--node", str(plan["apply_command"]))
+            self.assertIn(str(config.node), str(plan["apply_command"]))
+            self.assertIn("--data-dir", str(plan["apply_command"]))
+            self.assertIn(str(config.data_dir), str(plan["apply_command"]))
 
     def test_symlinked_config_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

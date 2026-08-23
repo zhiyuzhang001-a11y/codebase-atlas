@@ -118,6 +118,53 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), original_bytes)
             self.assertEqual((path.stat().st_dev, path.stat().st_ino), identity)
 
+    def test_verified_write_without_nofollow_preserves_approved_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            path = repository / ".codebase-atlas.toml"
+            original = AtlasConfig(
+                repository, "python", root / "node", root / "cbm",
+                root / "serena", root / "data",
+            )
+            original.write(path)
+            identity = (path.stat().st_dev, path.stat().st_ino)
+
+            with patch("codebase_atlas.config.os.O_NOFOLLOW", None, create=True):
+                original.with_project("indexed").write_verified(path, identity)
+
+            self.assertEqual(AtlasConfig.load(path).project, "indexed")
+            self.assertEqual((path.stat().st_dev, path.stat().st_ino), identity)
+
+    def test_verified_write_without_nofollow_rejects_preopen_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            path = repository / ".codebase-atlas.toml"
+            replacement = repository / "replacement.toml"
+            original = AtlasConfig(
+                repository, "python", root / "node", root / "cbm",
+                root / "serena", root / "data",
+            )
+            original.write(path)
+            replacement.write_text("replacement", encoding="utf-8")
+            identity = (path.stat().st_dev, path.stat().st_ino)
+            real_open = os.open
+
+            def replace_before_open(target, flags, *args):
+                os.replace(replacement, path)
+                return real_open(target, flags, *args)
+
+            with patch("codebase_atlas.config.os.O_NOFOLLOW", None, create=True), patch(
+                "codebase_atlas.config.os.open", side_effect=replace_before_open
+            ):
+                with self.assertRaisesRegex(ValueError, "identity changed"):
+                    original.with_project("indexed").write_verified(path, identity)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "replacement")
+
 
 if __name__ == "__main__":
     unittest.main()
