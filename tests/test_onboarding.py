@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -12,7 +16,7 @@ from unittest.mock import patch
 
 from codebase_atlas.cli import main
 from codebase_atlas.config import AtlasConfig
-from codebase_atlas.onboarding import OnboardingInputs, apply_plan, build_plan
+from codebase_atlas.onboarding import OnboardingInputs, _shell_command, apply_plan, build_plan
 
 
 class OnboardingTests(unittest.TestCase):
@@ -39,7 +43,9 @@ class OnboardingTests(unittest.TestCase):
             result = json.loads(output.getvalue())
             self.assertEqual(result["status"], "blocked")
             self.assertEqual(result["mode"], "read_only")
+            self.assertEqual(result["apply_argv"], [])
             self.assertEqual(result["apply_command"], "")
+            self.assertEqual(result["command_shell"], "powershell" if os.name == "nt" else "posix")
             self.assertFalse((repo / ".codebase-atlas.toml").exists())
 
     def test_ready_plan_is_read_only_and_has_stable_actions(self) -> None:
@@ -57,10 +63,35 @@ class OnboardingTests(unittest.TestCase):
             self.assertIsNotNone(discovered)
             self.assertFalse(config_path.exists())
             self.assertFalse(config.data_dir.exists())
-            self.assertIn("--node", str(plan["apply_command"]))
-            self.assertIn(str(config.node), str(plan["apply_command"]))
-            self.assertIn("--data-dir", str(plan["apply_command"]))
-            self.assertIn(str(config.data_dir), str(plan["apply_command"]))
+            apply_argv = plan["apply_argv"]
+            self.assertIsInstance(apply_argv, list)
+            self.assertEqual(apply_argv[:7], ["codebase-atlas", "onboard", "--apply", "--repo", str(repo.resolve()), "--config", str(config_path.resolve())])
+            self.assertIn("--node", apply_argv)
+            self.assertIn(str(config.node), apply_argv)
+            self.assertIn("--data-dir", apply_argv)
+            self.assertIn(str(config.data_dir), apply_argv)
+            if os.name != "nt":
+                self.assertEqual(shlex.split(str(plan["apply_command"])), apply_argv)
+
+    def test_windows_powershell_command_quotes_every_argument(self) -> None:
+        values = ["codebase-atlas", "--config", r"C:\repo & tools\O'Brien\atlas.toml", "a|b", "(x)", "^", "%!", "$HOME", "tail\\"]
+        with patch("codebase_atlas.onboarding.os.name", "nt"):
+            command = _shell_command(values)
+        self.assertEqual(command, "& 'codebase-atlas' '--config' 'C:\\repo & tools\\O''Brien\\atlas.toml' 'a|b' '(x)' '^' '%!' '$HOME' 'tail\\'")
+
+    def test_windows_powershell_command_replays_metacharacters(self) -> None:
+        if os.name != "nt":
+            return
+        payload = ["with space", "a&b", "a|b", "(group)", "caret^", "percent%bang!", "$HOME", "O'Brien", "tail\\"]
+        values = [sys.executable, "-c", "import json, sys; print(json.dumps(sys.argv[1:]))", *payload]
+        completed = subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _shell_command(values)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout), payload)
 
     def test_symlinked_config_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -318,6 +349,9 @@ class OnboardingTests(unittest.TestCase):
             self.assertIn("next_query", result["guidance"])
             self.assertIn("mcp", result["guidance"])
             self.assertIn("remove", result["guidance"])
+            self.assertEqual(set(result["guidance"]), set(result["guidance_argv"]))
+            for name, argv in result["guidance_argv"].items():
+                self.assertEqual(result["guidance"][name], _shell_command(argv))
 
     def test_repository_local_custom_config_records_post_publication_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -403,7 +437,9 @@ class OnboardingTests(unittest.TestCase):
             with patch("codebase_atlas.onboarding.runtime_checks", return_value=checks):
                 plan, _ = build_plan(OnboardingInputs(repo, repo / ".codebase-atlas.toml", "typescript", root / "node", root / "cbm", root / "serena", root / "node-bin", Path("tsconfig.json"), root / "data", "fast"))
             self.assertEqual(plan["status"], "planned")
-            self.assertIn("--tsconfig tsconfig.json", str(plan["apply_command"]))
+            apply_argv = plan["apply_argv"]
+            tsconfig_index = apply_argv.index("--tsconfig")
+            self.assertEqual(apply_argv[tsconfig_index + 1], "tsconfig.json")
 
     def test_existing_setup_remains_structured_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

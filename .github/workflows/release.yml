@@ -21,7 +21,7 @@ jobs:
       - run: python scripts/verify_release.py --tag "${GITHUB_REF_NAME}" --wheel dist/codebase_atlas-*.whl
       - run: python scripts/check_publication_readiness.py --mode public
       - name: Write checksum
-        run: sha256sum dist/codebase_atlas-*.whl > dist/SHA256SUMS.txt
+        run: cd dist && sha256sum codebase_atlas-*.whl > SHA256SUMS.txt
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

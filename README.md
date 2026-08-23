@@ -2,9 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current local candidate: **0.16.0**, adding read-only-first guided onboarding,
-explicit apply/resume behavior, and identity-safe publication while preserving
-the 0.15 correctness and cold-start gates. External CI and release remain
+Current local candidate: **0.16.1**, retaining read-only-first guided onboarding
+while adding authoritative argument arrays, PowerShell-safe command replay, and
+flat-download-compatible release checksums. External CI and release remain
 separate owner actions.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact

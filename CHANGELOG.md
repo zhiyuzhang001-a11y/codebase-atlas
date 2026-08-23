@@ -4,6 +4,14 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.16.1 — 2026-08-23
+
+- Add authoritative argument arrays beside guided command strings so callers do
+  not need to parse display text before executing a plan.
+- Render Windows guidance as literal, replayable PowerShell commands, including
+  paths and arguments containing shell metacharacters or apostrophes.
+- Publish flat-download-compatible wheel checksums without a `dist/` prefix.
+
 ## 0.16.0 — 2026-08-23
 
 - Add a read-only-first `onboard` plan and an explicit `--apply` workflow that

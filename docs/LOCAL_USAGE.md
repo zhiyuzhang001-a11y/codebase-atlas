@@ -44,9 +44,14 @@ never installs Node or external Providers.
 codebase-atlas onboard --repo /path/to/repository
 ```
 
-It reports missing local prerequisites and the exact apply command. When all
-required runtimes are discoverable or explicitly supplied, apply only the shown
-plan:
+It reports missing local prerequisites and both an exact apply command and its
+authoritative `apply_argv` argument array. `command_shell` identifies the display
+syntax (`posix` or `powershell`); automation should execute `apply_argv` directly
+instead of parsing `apply_command`. The `guidance_argv` object provides the same
+structured form for subsequent query, MCP, repair, and removal commands. On
+Windows, displayed commands are PowerShell-safe and can be copied as shown.
+When all required runtimes are discoverable or explicitly supplied, apply only
+the shown plan:
 
 ```bash
 codebase-atlas onboard --repo /path/to/repository --apply
