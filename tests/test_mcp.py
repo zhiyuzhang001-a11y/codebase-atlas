@@ -35,6 +35,13 @@ class McpTests(unittest.TestCase):
             ["definition", "references", "callers", "callees", "related_tests", "impact"],
         )
         self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in listed["result"]["tools"]))
+        schemas = {
+            tool["name"]: tool["inputSchema"]["properties"]
+            for tool in listed["result"]["tools"]
+        }
+        self.assertEqual(schemas["callers"]["relation"]["enum"], ["registers"])
+        self.assertEqual(schemas["callees"]["relation"]["enum"], ["registers"])
+        self.assertNotIn("relation", schemas["definition"])
 
     def test_calls_tool_with_structured_and_text_content(self) -> None:
         response = self.server.handle(
@@ -75,6 +82,21 @@ class McpTests(unittest.TestCase):
             "Renderer",
         )
         self.assertEqual(self.service.last_request.parameters["max_nodes"], 25)
+
+    def test_forwards_exact_registration_scope(self) -> None:
+        response = self.server.handle({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "callers",
+                "arguments": {"symbol": "view", "relation": "registers"},
+            },
+        })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(
+            self.service.last_request.parameters["relation"], "registers"
+        )
 
     def test_stdio_emits_one_json_message_per_line(self) -> None:
         source = StringIO(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n")

@@ -131,6 +131,14 @@ TOOLS = [
     },
 ]
 
+for _tool in TOOLS:
+    if _tool["name"] in {"callers", "callees"}:
+        _tool["inputSchema"]["properties"]["relation"] = {
+            "type": "string",
+            "enum": ["registers"],
+            "description": "Restrict the answer to exact Python registration edges.",
+        }
+
 
 class McpServer:
     def __init__(
@@ -195,6 +203,9 @@ class McpServer:
             target_owner = arguments.get("target_owner", "")
             if not isinstance(target_owner, str):
                 raise ValueError("target_owner must be a string")
+            relation = arguments.get("relation", "")
+            if not isinstance(relation, str):
+                raise ValueError("relation must be a string")
             budget = {
                 name: arguments[name]
                 for name in ("max_nodes", "max_edges", "timeout_ms")
@@ -205,6 +216,7 @@ class McpServer:
                     name, symbol, {
                         "target_path": target_path,
                         "target_owner": target_owner,
+                        "relation": relation,
                         **budget,
                     }
                 )

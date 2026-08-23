@@ -51,6 +51,11 @@ class QueryRequest:
             value = self.parameters.get(name, "")
             if not isinstance(value, str):
                 raise ValueError(f"{name} must be a string")
+        relation = self.parameters.get("relation", "")
+        if not isinstance(relation, str) or relation not in {"", "registers"}:
+            raise ValueError("relation must be empty or 'registers'")
+        if relation and self.query_type not in {"callers", "callees"}:
+            raise ValueError("relation is supported only for callers and callees")
         for name, default, maximum in (
             ("max_nodes", DEFAULT_MAX_NODES, 10_000),
             ("max_edges", DEFAULT_MAX_EDGES, 20_000),
@@ -159,6 +164,34 @@ class AtlasService:
             raise RuntimeError("AtlasService.start() must be called before query()")
         started = monotonic()
         limits = self._limits(request)
+        if request.parameters.get("relation") == "registers":
+            if self.registration_index is None:
+                return self._impact_response(
+                    request.query_type,
+                    ImpactTraversal(
+                        (), True, ("registration_index_unavailable",)
+                    ),
+                    limits,
+                    started,
+                )
+            target_path = str(request.parameters.get("target_path", ""))
+            target_owner = str(request.parameters.get("target_owner", ""))
+            traversal = (
+                self.registration_index.callees(
+                    request.symbol,
+                    target_path=target_path,
+                    target_owner=target_owner,
+                )
+                if request.query_type == "callees"
+                else self.registration_index.callers_for(
+                    request.symbol,
+                    target_path=target_path,
+                    target_owner=target_owner,
+                )
+            )
+            return self._impact_response(
+                request.query_type, traversal, limits, started
+            )
         if request.query_type == "definition":
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")

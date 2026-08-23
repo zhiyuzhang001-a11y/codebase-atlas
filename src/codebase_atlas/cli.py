@@ -175,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--tsconfig", type=Path)
     query.add_argument("--target-path", default="")
     query.add_argument("--target-owner", default="")
+    query.add_argument("--relation", choices=("registers",), default="")
     query.add_argument("--direction", choices=("upstream", "downstream"), default="upstream")
     query.add_argument("--depth", type=int, default=1)
     query.add_argument("--max-nodes", type=int, default=100)
@@ -186,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     for action in query._actions:
         if action.dest in {
-            "help", "query_type", "symbol", "target_path", "target_owner", "direction", "depth",
+            "help", "query_type", "symbol", "target_path", "target_owner", "relation", "direction", "depth",
             "max_nodes", "max_edges", "timeout_ms",
         }:
             continue
@@ -736,6 +737,7 @@ def main(argv: list[str] | None = None) -> int:
                         {
                             "target_path": args.target_path,
                             "target_owner": args.target_owner,
+                            "relation": args.relation,
                             "direction": args.direction,
                             "depth": args.depth,
                             "max_nodes": args.max_nodes,

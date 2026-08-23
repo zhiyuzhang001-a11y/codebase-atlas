@@ -283,6 +283,72 @@ class ServiceTests(unittest.TestCase):
         scan.assert_not_called()
         self.assertEqual([node.name for node in response.nodes], ["caller"])
 
+    def test_scoped_registration_query_skips_structural_provider_and_lifecycle(self) -> None:
+        class ForbiddenStructural(FakeImpactProvider):
+            project = "p"
+
+            def callers(self, *args, **kwargs):
+                raise AssertionError("structural callers started")
+
+            def callees(self, *args, **kwargs):
+                raise AssertionError("structural callees started")
+
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "routes.py").write_text(
+                "from flask import Flask\napp = Flask(__name__)\n\n"
+                "def view():\n    pass\n\n"
+                "app.add_url_rule('/view', view_func=view)\n"
+            )
+            lifecycle = FakeLifecycle()
+            service = AtlasService(
+                repository=repository,
+                structural_provider=ForbiddenStructural(),
+                lifecycle=lifecycle,
+                registration_index=self._registration_index(repository),
+            )
+            with service:
+                callers = service.query(QueryRequest(
+                    "callers", "view", {
+                        "target_path": "routes.py", "relation": "registers"
+                    }
+                ))
+                callees = service.query(QueryRequest(
+                    "callees", "registration@7", {
+                        "target_path": "routes.py", "relation": "registers"
+                    }
+                ))
+                empty = service.query(QueryRequest(
+                    "callers", "absent", {"relation": "registers"}
+                ))
+            self.assertEqual(lifecycle.starts, 0)
+            self.assertEqual(lifecycle.closes, 0)
+            self.assertEqual([node.name for node in callers.nodes], ["registration@7"])
+            self.assertEqual([node.name for node in callees.nodes], ["view"])
+            self.assertFalse(empty.truncated)
+            self.assertEqual(empty.nodes, ())
+
+    def test_unavailable_scoped_registration_is_explicit_without_provider(self) -> None:
+        class ForbiddenStructural(FakeImpactProvider):
+            project = "p"
+
+            def callers(self, *args, **kwargs):
+                raise AssertionError("structural callers started")
+
+        lifecycle = FakeLifecycle()
+        service = AtlasService(
+            structural_provider=ForbiddenStructural(), lifecycle=lifecycle
+        )
+        with service:
+            response = service.query(QueryRequest(
+                "callers", "view", {"relation": "registers"}
+            ))
+        self.assertEqual(lifecycle.starts, 0)
+        self.assertTrue(response.truncated)
+        self.assertIn(
+            "registration_index_unavailable", response.truncation["reasons"]
+        )
+
     def test_python_exact_scan_timeout_preserves_semantic_callers(self) -> None:
         class EmptyStructural(FakeImpactProvider):
             project = "p"
@@ -1041,6 +1107,12 @@ class ServiceTests(unittest.TestCase):
     def test_rejects_non_string_owner_selector(self) -> None:
         with self.assertRaisesRegex(ValueError, "target_owner"):
             QueryRequest("definition", "target", {"target_owner": 42})
+
+    def test_rejects_invalid_relation_scope(self) -> None:
+        with self.assertRaisesRegex(ValueError, "relation"):
+            QueryRequest("callers", "target", {"relation": "calls"})
+        with self.assertRaisesRegex(ValueError, "only for callers"):
+            QueryRequest("impact", "target", {"relation": "registers"})
 
 
 if __name__ == "__main__":
