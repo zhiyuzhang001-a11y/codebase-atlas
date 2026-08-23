@@ -17,6 +17,7 @@ from unittest.mock import patch
 from codebase_atlas.cli import main
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.onboarding import OnboardingInputs, _shell_command, apply_plan, build_plan
+from codebase_atlas.python_registration_store import registration_index_path
 
 
 class OnboardingTests(unittest.TestCase):
@@ -224,7 +225,11 @@ class OnboardingTests(unittest.TestCase):
             with patch("codebase_atlas.onboarding.runtime_checks", return_value=self.ready_checks()):
                 resumed_plan, resumed_config = build_plan(OnboardingInputs(Path(str(plan["repository"])), Path(str(plan["config"])), None, None, None, None, None, None, None, "fast"))
             self.assertIsNotNone(resumed_config)
-            with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
+            resumed_snapshot = SimpleNamespace(
+                kind="plain", fingerprint="same", head=None,
+                changed_paths=0, reason="test_snapshot",
+            )
+            with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.repository_snapshot", return_value=resumed_snapshot), patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
                 result, exit_code = apply_plan(resumed_plan, resumed_config, indexer=lambda _config, _mode: {"project": "indexed"}, mode="fast")  # type: ignore[arg-type]
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["status"], "ready")
@@ -236,17 +241,19 @@ class OnboardingTests(unittest.TestCase):
             repo = root / "repo"
             repo.mkdir()
             config_path = repo / ".codebase-atlas.toml"
-            original = AtlasConfig(repo, "python", root / "node", root / "cbm", root / "serena", root / "data")
+            original = AtlasConfig(repo, "python", root / "node", root / "cbm", root / "serena", root / "data", "indexed")
             original.write(config_path)
             with patch("codebase_atlas.onboarding.runtime_checks", return_value=self.ready_checks()):
                 plan, config = build_plan(OnboardingInputs(repo, config_path, None, None, None, None, None, None, None, "fast"))
             self.assertIsNotNone(config)
             config = config  # type: ignore[assignment]
-            with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "fresh", "mode": "fast"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": True}):
+            with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "fresh", "mode": "fast", "source_fingerprint": "current"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": True}):
                 result, exit_code = apply_plan(plan, config, indexer=lambda _config, _mode: self.fail("indexer must not run"), mode="fast")
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["status"], "current")
             self.assertEqual(result["provider"], {"route": "atlas_source_current", "status": "not_started"})
+            self.assertEqual(result["python_registrations"]["action"], "rebuilt")
+            self.assertTrue(registration_index_path(config.data_dir).is_file())
 
     def test_apply_rejects_tampered_action_graph_without_writes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -336,6 +343,39 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual((config_path.stat().st_dev, config_path.stat().st_ino), original_identity)
             record_state.assert_not_called()
 
+    def test_state_failure_rolls_back_first_sidecar_and_exact_config_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            plan, config = self.planned(root)
+            config_path = Path(str(plan["config"]))
+            snapshot = SimpleNamespace(kind="git", fingerprint="same")
+            with patch(
+                "codebase_atlas.onboarding.index_freshness",
+                return_value={"status": "missing"},
+            ), patch(
+                "codebase_atlas.onboarding.provider_database_health",
+                return_value={"ok": False},
+            ), patch(
+                "codebase_atlas.onboarding.repository_snapshot",
+                return_value=snapshot,
+            ), patch(
+                "codebase_atlas.onboarding.record_index_state",
+                side_effect=OSError("state publication failed"),
+            ):
+                result, exit_code = apply_plan(
+                    plan,
+                    config,
+                    indexer=lambda _config, _mode: {"project": "indexed"},
+                    mode="fast",
+                )
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("state publication failed", str(result["error"]))
+            self.assertEqual(config_path.read_bytes(), config.render().encode())
+            self.assertEqual(AtlasConfig.load(config_path).project, "")
+            self.assertFalse(registration_index_path(config.data_dir).exists())
+
     def test_python_apply_reaches_ready_and_emits_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -375,7 +415,7 @@ class OnboardingTests(unittest.TestCase):
             with patch("codebase_atlas.onboarding.runtime_checks", return_value=self.ready_checks()):
                 current_plan, current_config = build_plan(OnboardingInputs(repo, config_path, None, None, None, None, None, None, None, "fast"))
             self.assertIsNotNone(current_config)
-            with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "fresh", "mode": "fast"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": True}), patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
+            with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "fresh", "mode": "fast", "source_fingerprint": "before"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": True}), patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
                 current, current_exit = apply_plan(current_plan, current_config, indexer=lambda _config, _mode: self.fail("indexer must not run"), mode="fast")
             self.assertEqual(current_exit, 0)
             self.assertEqual(current["status"], "current")

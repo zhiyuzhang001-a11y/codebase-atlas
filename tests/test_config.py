@@ -137,6 +137,27 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(AtlasConfig.load(path).project, "indexed")
             self.assertEqual((path.stat().st_dev, path.stat().st_ino), identity)
 
+    def test_verified_restore_preserves_exact_bytes_and_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            path = repository / ".codebase-atlas.toml"
+            original = AtlasConfig(
+                repository, "python", root / "node", root / "cbm",
+                root / "serena", root / "data",
+            )
+            original.write(path)
+            custom = path.read_bytes() + b"\n# retained comment\n"
+            path.write_bytes(custom)
+            identity = (path.stat().st_dev, path.stat().st_ino)
+            original.with_project("indexed").write_verified(path, identity)
+
+            AtlasConfig.restore_verified(path, identity, custom)
+
+            self.assertEqual(path.read_bytes(), custom)
+            self.assertEqual((path.stat().st_dev, path.stat().st_ino), identity)
+
     def test_verified_write_without_nofollow_rejects_preopen_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -12,6 +12,10 @@ from typing import Any, Callable
 
 from .config import AtlasConfig, default_data_dir, diagnose
 from .index_state import index_freshness, provider_database_health, record_index_state, repository_snapshot
+from .python_registration_store import (
+    registration_index_health,
+    stage_registration_index,
+)
 from .runtime import required_checks_ok, runtime_checks
 
 
@@ -223,33 +227,140 @@ def apply_plan(plan: dict[str, object], config: AtlasConfig | None, *, indexer: 
             created = True
             expected_fingerprint = _content_fingerprint(config_path)
             expected_identity = _file_identity(config_path)
+        original_config_bytes = config_path.read_bytes()
         freshness = index_freshness(config.data_dir, config.repository, config.project)
         database = provider_database_health(config.cache_dir, config.project)
-        current = freshness["status"] == "fresh" and freshness.get("mode") == mode and database["ok"]
+        registration_health = (
+            registration_index_health(
+                config.data_dir,
+                config.repository,
+                config.project,
+                freshness.get("source_fingerprint"),
+            )
+            if config.language == "python"
+            else {"status": "not_applicable", "ok": True}
+        )
+        source_and_provider_current = (
+            freshness["status"] == "fresh"
+            and freshness.get("mode") == mode
+            and database["ok"]
+        )
+        if (
+            source_and_provider_current
+            and config.language == "python"
+            and not registration_health["ok"]
+            and freshness.get("source_fingerprint")
+        ):
+            with stage_registration_index(
+                config.data_dir,
+                config.repository,
+                config.project,
+                str(freshness["source_fingerprint"]),
+            ) as staged:
+                staged.publish()
+            registration_health = registration_index_health(
+                config.data_dir,
+                config.repository,
+                config.project,
+                str(freshness["source_fingerprint"]),
+            ) | {"action": "rebuilt"}
+        current = source_and_provider_current and bool(registration_health["ok"])
         payload: dict[str, object] = {"route": "atlas_source_current", "status": "not_started"}
         indexed = config
         if not current:
             before = repository_snapshot(config.repository)
-            payload = indexer(config, mode)
+            staged_registrations = None
+            if (
+                config.language == "python"
+                and config.project
+                and before.fingerprint
+            ):
+                staged_registrations = stage_registration_index(
+                    config.data_dir,
+                    config.repository,
+                    config.project,
+                    before.fingerprint,
+                    previous_source_fingerprint=(
+                        freshness.get("source_fingerprint")
+                        or freshness.get("indexed_source_fingerprint")
+                    ),
+                )
+            try:
+                payload = indexer(config, mode)
+            except BaseException:
+                if staged_registrations is not None:
+                    staged_registrations.close()
+                raise
             after = repository_snapshot(config.repository)
             if before.kind == "git" and after.kind == "git" and before.fingerprint != after.fingerprint:
-                return plan | {"status": "failed", "mode": "applied", "config_created": created, "error": "repository changed while indexing; rerun onboard"}, 2
+                if staged_registrations is not None:
+                    staged_registrations.close()
+                raise RuntimeError("repository changed while indexing; rerun onboard")
             if _safe_path(config_path, label="config path", file_target=True, anchor=path_anchor) or not _matches_config(config_path, expected_fingerprint, expected_identity):
+                if staged_registrations is not None:
+                    staged_registrations.close()
                 return plan | {"status": "failed", "mode": "applied", "config_created": created, "error": "config changed while indexing; rerun onboard"}, 2
             indexed = config.with_project(str(payload["project"]))
-            indexed.write_verified(config_path, expected_identity)
-            if _file_identity(config_path) != expected_identity:
-                return plan | {"status": "failed", "mode": "applied", "config_created": created, "error": "config changed while publishing; rerun onboard"}, 2
-            # A custom config may live inside the repository. Record the final
-            # source view after Atlas has published its own project metadata.
-            # The snapshot routine excludes only a valid Atlas config for this
-            # repository, so any late source change remains observable here.
-            final_snapshot = repository_snapshot(indexed.repository)
-            if after.kind == "git" and final_snapshot.kind == "git" and after.fingerprint != final_snapshot.fingerprint:
-                return plan | {"status": "failed", "mode": "applied", "config_created": created, "error": "repository changed while publishing; rerun onboard"}, 2
-            record_index_state(indexed.data_dir, indexed.repository, indexed.project, mode, snapshot=final_snapshot)
+            if config.language == "python" and after.fingerprint:
+                if staged_registrations is None:
+                    staged_registrations = stage_registration_index(
+                        indexed.data_dir,
+                        indexed.repository,
+                        indexed.project,
+                        after.fingerprint,
+                    )
+                elif indexed.project != config.project:
+                    staged_registrations.close()
+                    raise RuntimeError("Provider project identity changed during onboarding")
+                staged_registrations.publish()
+            try:
+                indexed.write_verified(config_path, expected_identity)
+                if _file_identity(config_path) != expected_identity:
+                    raise RuntimeError("config changed while publishing; rerun onboard")
+                # A custom config may live inside the repository. Record the final
+                # source view after Atlas has published its own project metadata.
+                final_snapshot = repository_snapshot(indexed.repository)
+                if after.kind == "git" and final_snapshot.kind == "git" and after.fingerprint != final_snapshot.fingerprint:
+                    raise RuntimeError("repository changed while publishing; rerun onboard")
+                record_index_state(
+                    indexed.data_dir,
+                    indexed.repository,
+                    indexed.project,
+                    mode,
+                    snapshot=final_snapshot,
+                )
+            except BaseException:
+                if staged_registrations is not None:
+                    staged_registrations.rollback()
+                try:
+                    AtlasConfig.restore_verified(
+                        config_path, expected_identity, original_config_bytes
+                    )
+                except (OSError, ValueError):
+                    pass
+                raise
+            if staged_registrations is not None:
+                staged_registrations.commit()
+            registration_health = (
+                registration_index_health(
+                    indexed.data_dir,
+                    indexed.repository,
+                    indexed.project,
+                    final_snapshot.fingerprint,
+                )
+                if indexed.language == "python"
+                else {"status": "not_applicable", "ok": True}
+            )
         checks = diagnose(indexed)
-        status = "current" if current else "ready" if required_checks_ok(checks) else "incomplete"
-        return plan | {"status": status, "mode": "applied", "config_created": created, "doctor": checks, "provider": payload}, 0 if status in {"ready", "current"} else 2
+        ready = required_checks_ok(checks) and bool(registration_health["ok"])
+        status = "current" if current else "ready" if ready else "incomplete"
+        return plan | {
+            "status": status,
+            "mode": "applied",
+            "config_created": created,
+            "doctor": checks,
+            "provider": payload,
+            "python_registrations": registration_health,
+        }, 0 if status in {"ready", "current"} else 2
     except (OSError, RuntimeError, ValueError) as error:
         return plan | {"status": "failed", "mode": "applied", "config_created": created, "error": str(error), "resume": str(plan.get("apply_command", ""))}, 2

@@ -245,11 +245,17 @@ class StagedRegistrationIndex:
         finally:
             os.close(directory)
 
-    def commit(self) -> None:
-        if self.backup is not None:
+    def commit(self) -> bool:
+        """Best-effort cleanup after the generation is durably advertised."""
+        if self.backup is None:
+            return True
+        try:
             self.backup.unlink(missing_ok=True)
             self.backup = None
             self._sync_directory()
+        except OSError:
+            return False
+        return True
 
     def rollback(self) -> None:
         if not self.published:

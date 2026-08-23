@@ -204,6 +204,35 @@ class AtlasConfig:
                 os.fsync(stream.fileno())
                 raise
 
+    @staticmethod
+    def restore_verified(
+        path: Path, expected_identity: tuple[int, int], payload: bytes
+    ) -> None:
+        """Restore exact prior bytes only through the approved config file."""
+        _require_regular_identity(path, expected_identity)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        flags = os.O_RDWR | (nofollow if isinstance(nofollow, int) else 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != expected_identity
+            ):
+                raise ValueError("config identity changed before restoration")
+            _require_regular_identity(path, expected_identity)
+            with os.fdopen(descriptor, "r+b") as stream:
+                descriptor = -1
+                stream.seek(0)
+                stream.truncate()
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+                _require_regular_identity(path, expected_identity)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
 
 def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
     from .index_state import index_freshness, provider_database_health

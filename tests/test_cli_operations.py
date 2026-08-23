@@ -72,6 +72,36 @@ class CliOperationTests(unittest.TestCase):
                     main(["update", "--config", str(path)])
             self.assertEqual(state_path(config.data_dir).read_bytes(), before)
 
+    def test_state_failure_restores_prior_sidecar_config_and_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config, path = self.config(Path(raw))
+            self.prepare_fast_path(config)
+            with patch("codebase_atlas.cli._index_repository") as provider:
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(main(["update", "--config", str(path)]), 0)
+            provider.assert_not_called()
+            sidecar = registration_index_path(config.data_dir)
+            prior_sidecar = sidecar.read_bytes()
+            prior_state = state_path(config.data_dir).read_bytes()
+            prior_config = path.read_bytes()
+            (config.repository / "sample.py").write_text("value = 2\n")
+            payload = {
+                "project": config.project, "status": "indexed",
+                "nodes": 4, "edges": 7,
+            }
+            with patch(
+                "codebase_atlas.cli._index_repository", return_value=payload
+            ), patch(
+                "codebase_atlas.cli.record_index_state",
+                side_effect=OSError("state publication failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "state publication failed"):
+                    main(["update", "--config", str(path)])
+
+            self.assertEqual(sidecar.read_bytes(), prior_sidecar)
+            self.assertEqual(state_path(config.data_dir).read_bytes(), prior_state)
+            self.assertEqual(path.read_bytes(), prior_config)
+
     def test_fresh_update_skips_provider_unless_forced(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             config, path = self.config(Path(raw))
@@ -138,6 +168,33 @@ class CliOperationTests(unittest.TestCase):
                 with redirect_stdout(output):
                     self.assertEqual(main(["doctor", "--config", str(path)]), 0)
             self.assertEqual(json.loads(output.getvalue())["index"]["status"], "fresh")
+
+    def test_first_index_state_failure_restores_config_and_removes_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config, old_path = self.config(root)
+            self.make_git_repository(config.repository)
+            config = config.with_project("")
+            path = config.repository / ".codebase-atlas.toml"
+            config.write(path)
+            old_path.unlink()
+            original = path.read_bytes()
+            payload = {
+                "project": "project", "status": "indexed",
+                "nodes": 4, "edges": 7,
+            }
+            with patch(
+                "codebase_atlas.cli._index_repository", return_value=payload
+            ), patch(
+                "codebase_atlas.cli.record_index_state",
+                side_effect=OSError("state publication failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "state publication failed"):
+                    main(["index", "--config", str(path)])
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(AtlasConfig.load(path).project, "")
+            self.assertFalse(registration_index_path(config.data_dir).exists())
 
     def test_setup_reports_structured_read_only_result(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -7,6 +7,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import shlex
+import stat
 import sys
 import time
 import os
@@ -331,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
                 "inspection": after,
             }, ensure_ascii=False, indent=2))
             return 0 if after["ok"] else 2
+        config_identity, config_bytes = _config_publication_snapshot(args.config)
         source_before = repository_snapshot(config.repository)
         staged_registrations = None
         if config.language == "python" and config.project and source_before.fingerprint:
@@ -388,15 +390,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("Provider project identity changed during repair")
             staged_registrations.publish()
         try:
-            config.with_project(project).write(args.config)
+            config.with_project(project).write_verified(args.config, config_identity)
             state = record_index_state(
                 config.data_dir, config.repository, project, args.mode, snapshot=source_after
             )
         except BaseException:
             if staged_registrations is not None:
                 staged_registrations.rollback()
-            if project != config.project:
-                config.write(args.config)
+            try:
+                AtlasConfig.restore_verified(
+                    args.config, config_identity, config_bytes
+                )
+            except (OSError, ValueError):
+                pass
             raise
         if staged_registrations is not None:
             staged_registrations.commit()
@@ -442,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
                 "checks": checks,
             }, indent=2))
             return 0 if ok else 2
+        config_identity, config_bytes = _config_publication_snapshot(args.config)
         if args.command == "update" and not args.force_provider:
             freshness = index_freshness(config.data_dir, config.repository, config.project)
             provider_database = provider_database_health(config.cache_dir, config.project)
@@ -563,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             staged_registrations.publish()
         try:
-            config.with_project(project).write(args.config)
+            config.with_project(project).write_verified(args.config, config_identity)
             state = record_index_state(
                 config.data_dir,
                 config.repository,
@@ -574,8 +581,12 @@ def main(argv: list[str] | None = None) -> int:
         except BaseException:
             if staged_registrations is not None:
                 staged_registrations.rollback()
-            if project != config.project:
-                config.write(args.config)
+            try:
+                AtlasConfig.restore_verified(
+                    args.config, config_identity, config_bytes
+                )
+            except (OSError, ValueError):
+                pass
             raise
         if staged_registrations is not None:
             staged_registrations.commit()
@@ -778,6 +789,21 @@ def _response_payload(response, index_status=None, stale_policy: str = "ignore")
         "truncated": response.truncated,
         "truncation": response.truncation,
     }, index_status, stale_policy)
+
+
+def _config_publication_snapshot(path: Path) -> tuple[tuple[int, int], bytes]:
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError("Atlas config must remain a regular file")
+    identity = (metadata.st_dev, metadata.st_ino)
+    payload = path.read_bytes()
+    current = os.lstat(path)
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or (current.st_dev, current.st_ino) != identity
+    ):
+        raise RuntimeError("Atlas config changed before publication")
+    return identity, payload
 
 
 def _apply_project_config(args) -> None:
