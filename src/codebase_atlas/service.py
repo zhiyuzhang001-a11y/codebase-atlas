@@ -14,6 +14,10 @@ from .contracts import Edge, Node
 from .graph import ImpactHit, ImpactTraversal
 from .providers.python_callers import PythonExactCallerProvider
 from .providers.python_references import PythonExactReferenceProvider
+from .providers.python_registrations import (
+    PythonRegistrationProvider,
+    RegistrationIndex,
+)
 
 if TYPE_CHECKING:
     from .lifecycle import CodebaseMemoryDaemon
@@ -107,6 +111,15 @@ class AtlasService:
         self._python_caller_cache: OrderedDict[
             tuple[Path, str, str, str, str], ImpactTraversal
         ] = OrderedDict()
+        self._python_registration_cache: OrderedDict[
+            tuple[Path, str, str], RegistrationIndex
+        ] = OrderedDict()
+        self._python_registration_signature_cache: OrderedDict[
+            tuple[Path, str, str], str
+        ] = OrderedDict()
+        self._python_registration_provider_cache: OrderedDict[
+            tuple[Path, str], PythonRegistrationProvider
+        ] = OrderedDict()
 
     def start(self) -> None:
         if self.started:
@@ -149,6 +162,9 @@ class AtlasService:
         self._python_reference_cache.clear()
         self._python_complete_reference_cache.clear()
         self._python_caller_cache.clear()
+        self._python_registration_cache.clear()
+        self._python_registration_signature_cache.clear()
+        self._python_registration_provider_cache.clear()
         self.started = False
 
     def query(self, request: QueryRequest) -> QueryResponse:
@@ -324,6 +340,9 @@ class AtlasService:
                 )
             else:
                 traversal = structural_relation_query()
+            traversal = self._query_with_python_registration_supplement(
+                request, limits, started, traversal
+            )
             repository = request.parameters.get("repository", self.repository)
             if (
                 repository is not None
@@ -397,6 +416,9 @@ class AtlasService:
                 structural_test_query,
                 only_tests=True,
             )
+            traversal = self._query_with_python_registration_supplement(
+                request, limits, started, traversal, only_tests=True
+            )
             return self._impact_response(
                 request.query_type,
                 traversal,
@@ -430,6 +452,9 @@ class AtlasService:
         if request.parameters.get("direction", "upstream") == "upstream":
             traversal = self._query_with_python_caller_supplement(
                 request, limits, started, structural_impact_query
+            )
+            traversal = self._query_with_python_registration_supplement(
+                request, limits, started, traversal
             )
         else:
             traversal = structural_impact_query()
@@ -558,6 +583,141 @@ class AtlasService:
             str(request.parameters.get("target_owner", "")),
         )
         return repository, project, target_path, cache_key
+
+    def _query_with_python_registration_supplement(
+        self,
+        request: QueryRequest,
+        limits: dict[str, int],
+        started: float,
+        structural: ImpactTraversal,
+        *,
+        only_tests: bool = False,
+    ) -> ImpactTraversal:
+        if "time_budget_exceeded" in tuple(getattr(structural, "reasons", ())):
+            return structural
+        context = self._python_caller_context(request)
+        if context is None:
+            return structural
+        repository, project, target_path, _caller_cache_key = context
+        provider_key = (repository, project)
+        provider = self._cache_get(
+            self._python_registration_provider_cache, provider_key
+        )
+        if provider is None:
+            provider = PythonRegistrationProvider(repository, project)
+            self._cache_put(
+                self._python_registration_provider_cache, provider_key, provider
+            )
+        timed_out = False
+        registration_index: RegistrationIndex | None = None
+        remaining = self._remaining_timeout(limits, started)
+        if remaining is None:
+            timed_out = True
+        else:
+            try:
+                signature = provider.source_signature(timeout_ms=remaining)
+            except TimeoutError:
+                timed_out = True
+            else:
+                signature_key = (repository, project, signature)
+                fingerprint = self._cache_get(
+                    self._python_registration_signature_cache, signature_key
+                )
+                if fingerprint is None:
+                    remaining = self._remaining_timeout(limits, started)
+                    if remaining is None:
+                        timed_out = True
+                    else:
+                        try:
+                            fingerprint = provider.source_fingerprint(
+                                timeout_ms=remaining
+                            )
+                        except TimeoutError:
+                            timed_out = True
+                if fingerprint is not None:
+                    cache_key = (repository, project, fingerprint)
+                    registration_index = self._cache_get(
+                        self._python_registration_cache, cache_key
+                    )
+                    if registration_index is None:
+                        remaining = self._remaining_timeout(limits, started)
+                        if remaining is None:
+                            timed_out = True
+                        else:
+                            try:
+                                registration_index = provider.scan(timeout_ms=remaining)
+                            except TimeoutError:
+                                timed_out = True
+                            else:
+                                self._cache_put(
+                                    self._python_registration_cache,
+                                    cache_key,
+                                    registration_index,
+                                )
+                    if registration_index is not None:
+                        self._cache_put(
+                            self._python_registration_signature_cache,
+                            signature_key,
+                            fingerprint,
+                        )
+        registration = ImpactTraversal(())
+        if registration_index is not None:
+            if request.query_type == "callees":
+                registration = registration_index.callees(
+                    request.symbol,
+                    target_path=target_path,
+                    target_owner=str(request.parameters.get("target_owner", "")),
+                )
+            else:
+                registration = registration_index.callers_for(
+                    request.symbol,
+                    target_path=target_path,
+                    target_owner=str(request.parameters.get("target_owner", "")),
+                )
+        return self._merge_python_registration_evidence(
+            structural,
+            registration,
+            only_tests=only_tests,
+            evidence_timed_out=timed_out,
+        )
+
+    def _merge_python_registration_evidence(
+        self,
+        structural: ImpactTraversal,
+        registration: ImpactTraversal,
+        *,
+        only_tests: bool = False,
+        evidence_timed_out: bool = False,
+    ) -> ImpactTraversal:
+        merged = list(structural)
+        positions = {hit.node.id: index for index, hit in enumerate(merged)}
+        for hit in registration:
+            if only_tests and not self._is_python_test_node(hit.node):
+                continue
+            position = positions.get(hit.node.id)
+            if position is None:
+                positions[hit.node.id] = len(merged)
+                merged.append(hit)
+                continue
+            existing = merged[position]
+            combined_path = tuple(dict.fromkeys((*existing.path, *hit.path)))
+            merged[position] = ImpactHit(
+                existing.node, min(existing.depth, hit.depth), combined_path
+            )
+        observed_edges = len({
+            (edge.source_id, edge.target_id, edge.relation, edge.provider)
+            for hit in merged for edge in hit.path
+        })
+        return ImpactTraversal(
+            tuple(merged),
+            bool(getattr(structural, "truncated", False)) or evidence_timed_out,
+            tuple(dict.fromkeys((
+                *tuple(getattr(structural, "reasons", ())),
+                *(("time_budget_exceeded",) if evidence_timed_out else ()),
+            ))),
+            max(getattr(structural, "examined_nodes", 0), len(merged)),
+            max(getattr(structural, "examined_edges", 0), observed_edges),
+        )
 
     def _collect_python_reference_evidence(
         self,
