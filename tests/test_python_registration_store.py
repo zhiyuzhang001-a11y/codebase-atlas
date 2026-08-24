@@ -51,6 +51,22 @@ class PythonRegistrationStoreTests(unittest.TestCase):
             self.assertTrue(health["ok"])
             self.assertEqual((health["files"], health["registrations"]), (2, 1))
 
+    def test_windows_skips_unsupported_directory_fsync(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.repository(root)
+            with stage_registration_index(
+                root / "data", repository, "project", "a" * 64
+            ) as staged:
+                with patch(
+                    "codebase_atlas.python_registration_store._DIRECTORY_FSYNC_SUPPORTED",
+                    False,
+                ), patch(
+                    "codebase_atlas.python_registration_store.os.open"
+                ) as open_directory:
+                    staged.publish()
+                open_directory.assert_not_called()
+
     def test_generation_is_byte_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

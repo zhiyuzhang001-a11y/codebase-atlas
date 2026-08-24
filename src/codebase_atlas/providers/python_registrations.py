@@ -28,6 +28,7 @@ _CALL_SPECS = {
     "homeassistant.helpers.dispatcher.async_dispatcher_connect": (2, "target"),
 }
 _DECORATOR_APIS = {"flask.Flask.route"}
+_REUSE_FILE_INVENTORY = os.name != "nt"
 
 
 def _hash(value: Any) -> str:
@@ -140,7 +141,7 @@ class PythonRegistrationProvider:
         return tuple(state)
 
     def _files(self) -> tuple[Path, ...]:
-        if self._known_files is not None:
+        if self._known_files is not None and _REUSE_FILE_INVENTORY:
             current = self._directory_state(self._known_directories)
             if current == self._known_directory_state:
                 return self._known_files

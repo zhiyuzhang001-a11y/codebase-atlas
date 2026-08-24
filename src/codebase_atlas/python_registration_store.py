@@ -24,6 +24,7 @@ PROVIDER_VERSION = "atlas-python-registrations-v1"
 PROVIDER_NAME = PythonRegistrationProvider.name
 FILENAME = "python-registrations-v1.json"
 MAX_INDEX_BYTES = 100 * 1024 * 1024
+_DIRECTORY_FSYNC_SUPPORTED = os.name != "nt"
 
 
 class RegistrationIndexError(RuntimeError):
@@ -239,6 +240,11 @@ class StagedRegistrationIndex:
             raise
 
     def _sync_directory(self) -> None:
+        if not _DIRECTORY_FSYNC_SUPPORTED:
+            # Windows does not allow opening a directory with os.open, and has
+            # no Python directory-fsync equivalent. The file itself was synced
+            # before os.replace; replacement is the strongest portable step.
+            return
         directory = os.open(self.destination.parent, os.O_RDONLY)
         try:
             os.fsync(directory)
