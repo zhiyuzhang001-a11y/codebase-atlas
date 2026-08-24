@@ -348,6 +348,9 @@ class OnboardingTests(unittest.TestCase):
             root = Path(raw)
             plan, config = self.planned(root)
             config_path = Path(str(plan["config"]))
+            expected_path = root / "expected-initial-config.toml"
+            config.write_exclusive(expected_path)
+            expected_config_bytes = expected_path.read_bytes()
             snapshot = SimpleNamespace(kind="git", fingerprint="same")
             with patch(
                 "codebase_atlas.onboarding.index_freshness",
@@ -372,7 +375,7 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(exit_code, 2)
             self.assertEqual(result["status"], "failed")
             self.assertIn("state publication failed", str(result["error"]))
-            self.assertEqual(config_path.read_bytes(), config.render().encode())
+            self.assertEqual(config_path.read_bytes(), expected_config_bytes)
             self.assertEqual(AtlasConfig.load(config_path).project, "")
             self.assertFalse(registration_index_path(config.data_dir).exists())
 
