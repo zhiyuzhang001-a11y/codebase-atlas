@@ -21,6 +21,10 @@ check verifies discoverable capabilities, not every Provider/repository version.
   bindings, resolved TypeScript expression-assigned callers/direct callees, and
   resolved external-helper test suites; dynamic imports, runtime dispatch, and
   deeper framework-specific indirection can still be unsupported.
+- Python `registers` completeness applies only when callers/callees explicitly
+  request `relation=registers` and the validated sidecar is current. The exact
+  API set is documented in `docs/LOCAL_USAGE.md`; other framework APIs and
+  runtime-generated callbacks remain unsupported rather than guessed.
 - Broad TypeScript references/related-tests/impact can reach explicit node or
   time budgets. Truncated results are partial evidence, not completeness.
 - Large semantic references can use the full timeout; time-truncated results are

@@ -2,10 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current local candidate: **0.16.1**, retaining read-only-first guided onboarding
-while adding authoritative argument arrays, PowerShell-safe command replay, and
-flat-download-compatible release checksums. External CI and release remain
-separate owner actions.
+Current release line: **0.17.0**, adding exact Python registration relationships,
+a persistent/incremental registration sidecar, and transactional indexing and
+guided onboarding while retaining the 0.16 read-only-first workflow.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -23,6 +22,10 @@ query budgets, index freshness, and product interfaces.
 - explicit-depth impact traversal over stable identities;
 - bounded node, edge, and time budgets with explicit partial-result metadata;
 - Git-backed `fresh`/`stale` index diagnosis and safe Provider-managed updates;
+- exact source-proven Python `registers` edges with an explicit closed-relation
+  query scope;
+- deterministic persistent/incremental Python registration evidence published
+  transactionally with configuration and index state;
 - read-only index/storage inspection, explicit repair, and dry-run-first cleanup;
 - large-repository and monorepo subproject support;
 - one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
@@ -62,6 +65,10 @@ codebase-atlas doctor
 codebase-atlas update
 codebase-atlas doctor
 
+# Ask only for complete exact Python registration relationships:
+codebase-atlas query callers my_view --relation registers \
+  --target-path package/views.py --target-owner my_view
+
 # Diagnose or maintain Atlas-owned data:
 codebase-atlas inspect --deep
 codebase-atlas repair                 # plan only
@@ -82,6 +89,15 @@ index status and default to a warning when evidence may be stale; use
 The structural Provider chooses an incremental, no-op, or safe full-rebuild
 route. Atlas records freshness only after successful publication and preserves
 the previous state when an update fails or the repository changes mid-run.
+
+For Python repositories, `index`, stale/forced `update`, repair, and guided
+onboarding also build a source-bound registration sidecar. A scoped
+`--relation registers` callers/callees query treats that validated sidecar as
+complete for the documented exact API set and does not start the structural
+Provider. Generic callers/callees retain their normal merged behavior. If the
+sidecar is unavailable or stale, the scoped request returns explicit
+`registration_index_unavailable` truncation instead of scanning source or
+silently returning an incomplete answer.
 
 `inspect` validates Provider schema and identity without changing data; `--deep`
 adds SQLite `quick_check` and can take longer on large indexes. `repair` is

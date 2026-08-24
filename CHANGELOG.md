@@ -4,6 +4,25 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.17.0 — 2026-08-24
+
+- Add exact Python `registers` relationships for a closed, source-proven set of
+  Django, Flask, FastAPI, and Home Assistant registration APIs without executing
+  target code or using name/string heuristics.
+- Persist deterministic, source-bound registration evidence during
+  `index`/`update`, reuse unchanged per-file records incrementally, and expose
+  sidecar health and repair through existing maintenance commands.
+- Add explicit `--relation registers` scope to callers/callees across CLI,
+  JSON-lines, and MCP so a valid complete sidecar can answer without structural
+  Provider startup; missing/stale evidence remains explicitly truncated.
+- Publish the sidecar, verified project configuration, and Atlas index state as
+  one prior-generation-safe transaction during first index, update, repair, and
+  guided onboarding.
+- Reduce the frozen large-development scoped query from about 16.87 seconds to
+  about 82 milliseconds while preserving generic query behavior and budgets.
+- Pass the new Zulip/Flask-Admin independent catalog 10/10, M17 24/24, M19
+  147/147, M9–M12, reproducible packaging, and clean installed lifecycle gates.
+
 ## 0.16.1 — 2026-08-23
 
 - Add authoritative argument arrays beside guided command strings so callers do

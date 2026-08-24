@@ -249,6 +249,40 @@ codebase-atlas query callers fire \
 query remains compatible, but can intentionally return multiple definitions when
 the file itself is ambiguous.
 
+## Exact Python registration relationships
+
+For a closed answer containing only exact callable-registration edges, scope a
+Python callers or callees query to `registers`:
+
+```bash
+codebase-atlas query callers health_view --relation registers \
+  --target-path app/views.py --target-owner health_view
+codebase-atlas query callees registration@42 --relation registers \
+  --target-path app/urls.py
+```
+
+The supported source-proven API identities are `django.urls.path`,
+`django.urls.re_path`, `flask.Flask.route`, `flask.Flask.add_url_rule`,
+`fastapi.FastAPI.add_api_route`, and
+`homeassistant.helpers.dispatcher.async_dispatcher_connect`. Atlas resolves
+constructor/import/callback identity statically; it does not execute the target
+or infer relationships from strings or display names.
+
+Python `index`, stale/forced `update`, applied repair, and guided onboarding
+build `<data_dir>/python-registrations-v1.json`. The deterministic sidecar is
+bound to the exact repository/project/source generation and is published with
+verified configuration and Atlas state under one rollback boundary. `inspect`
+reports its status under `python_registrations`; a missing/corrupt sidecar on an
+otherwise current project can be rebuilt without starting the structural
+Provider.
+
+A validated sidecar is complete for explicit `relation=registers`, so that
+scope skips structural Provider startup and performs no query-time repository
+scan. Generic callers/callees continue to merge structural and registration
+evidence. If scoped evidence is missing, corrupt, incompatible, or stale, the
+response is explicitly truncated with `registration_index_unavailable`; it is
+never presented as a complete empty answer.
+
 For TypeScript projects, scoped `references` uses exact compiler-symbol
 occurrences (including test files excluded by a production tsconfig) as the
 authoritative answer for the selected project. The semantic Provider is started
