@@ -742,6 +742,7 @@ def main(argv: list[str] | None = None) -> int:
             impact_provider=structural,
             lifecycle=lifecycle,
             registration_index=registration_index,
+            session_continuations=args.command in {"mcp", "query-batch"},
         )
         with service:
             if args.command == "mcp":

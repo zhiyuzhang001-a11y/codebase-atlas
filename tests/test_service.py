@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from codebase_atlas.contracts import Edge, Node, SourceRange
 from codebase_atlas.graph import ImpactHit, ImpactTraversal
+from codebase_atlas.index_state import RepositorySnapshot
 from codebase_atlas.providers.python_references import PythonExactReferenceProvider
 from codebase_atlas.providers.python_registrations import PythonRegistrationProvider
 from codebase_atlas.service import AtlasService, QueryRequest
@@ -105,6 +106,42 @@ class FakeTestProvider:
         target = Node("target", "function", symbol, SourceRange(target_path or "src/x.ts", 1, 1), "fake", 1.0, HASH)
         test = Node("test", "test", "works", SourceRange("tests/x.test.ts", 4, 5), "tests", 1.0, HASH)
         return ((test, Edge("test", target.id, "calls", "tests", 1.0, HASH)),)
+
+
+class CountingTsReferences(FakeTestProvider):
+    tsconfig = Path("tsconfig.json")
+
+    def __init__(self, count: int = 5, *, timeout: bool = False) -> None:
+        self.count = count
+        self.timeout = timeout
+        self.reference_calls = 0
+
+    def references(self, _repository, symbol, **_options):
+        self.reference_calls += 1
+        if self.timeout:
+            raise TimeoutError("budget")
+        return tuple(
+            Node(
+                f"ts-reference-{index}",
+                "references",
+                symbol,
+                SourceRange(f"src/x{index}.ts", index + 1, index + 1),
+                "atlas-ts-references",
+                1.0,
+                HASH,
+            )
+            for index in range(self.count)
+        )
+
+
+def source_snapshot(fingerprint: str | None = "source-a") -> RepositorySnapshot:
+    return RepositorySnapshot(
+        "git" if fingerprint is not None else "unknown",
+        fingerprint,
+        "head",
+        0,
+        "snapshot_complete" if fingerprint is not None else "git_status_failed",
+    )
 
 
 class ServiceTests(unittest.TestCase):
@@ -946,6 +983,295 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual([node.provider for node in response.nodes], ["atlas-ts-references"])
         self.assertEqual(semantic.closes, 0)
 
+    def test_ts_continuation_pages_are_exact_replayable_and_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "tsconfig.json").write_text("{}")
+            provider = CountingTsReferences()
+            service = AtlasService(
+                repository=repository,
+                test_provider=provider,
+                session_continuations=True,
+            )
+            parameters = {
+                "target_path": "src/target.ts",
+                "target_owner": "Owner",
+                "max_nodes": 2,
+            }
+            with patch(
+                "codebase_atlas.service.repository_snapshot",
+                return_value=source_snapshot(),
+            ):
+                with service:
+                    first = service.query(QueryRequest(
+                        "references", "target", parameters
+                    ))
+                    second_token = first.truncation["continuation"]
+                    second = service.query(QueryRequest(
+                        "references", "target", {
+                            **parameters,
+                            "max_nodes": 1,
+                            "continuation": second_token,
+                        }
+                    ))
+                    replay = service.query(QueryRequest(
+                        "references", "target", {
+                            **parameters,
+                            "max_nodes": 1,
+                            "continuation": second_token,
+                        }
+                    ))
+                    final = service.query(QueryRequest(
+                        "references", "target", {
+                            **parameters,
+                            "max_nodes": 10,
+                            "continuation": second.truncation["continuation"],
+                        }
+                    ))
+                    wider_first = service.query(QueryRequest(
+                        "references", "target", {**parameters, "max_nodes": 3}
+                    ))
+            self.assertEqual(provider.reference_calls, 1)
+            self.assertEqual(
+                [node.id for node in (*first.nodes, *second.nodes, *final.nodes)],
+                [f"ts-reference-{index}" for index in range(5)],
+            )
+            self.assertEqual(second.nodes, replay.nodes)
+            self.assertEqual(
+                [node.id for node in wider_first.nodes],
+                ["ts-reference-0", "ts-reference-1", "ts-reference-2"],
+            )
+            self.assertEqual(first.truncation["page"], {
+                "offset": 0, "next_offset": 2, "total_nodes": 5,
+            })
+            self.assertFalse(final.truncated)
+            self.assertIsNone(final.truncation["continuation"])
+            self.assertFalse(final.truncation["resumable"])
+
+    def test_ts_continuation_is_disabled_by_default_and_skips_narrow_answers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "tsconfig.json").write_text("{}")
+            broad = CountingTsReferences()
+            service = AtlasService(repository=repository, test_provider=broad)
+            with service:
+                response = service.query(QueryRequest(
+                    "references", "target", {"max_nodes": 1}
+                ))
+            self.assertIsNone(response.truncation["continuation"])
+            self.assertFalse(response.truncation["resumable"])
+
+            narrow = CountingTsReferences(count=1)
+            service = AtlasService(
+                repository=repository,
+                test_provider=narrow,
+                session_continuations=True,
+            )
+            with patch(
+                "codebase_atlas.service.repository_snapshot",
+                return_value=source_snapshot(),
+            ):
+                with service:
+                    first = service.query(QueryRequest(
+                        "references", "target", {"max_nodes": 2}
+                    ))
+                    service.query(QueryRequest(
+                        "references", "target", {"max_nodes": 2}
+                    ))
+            self.assertFalse(first.truncated)
+            self.assertIsNone(first.truncation["continuation"])
+            self.assertEqual(narrow.reference_calls, 2)
+
+    def test_ts_continuation_rejects_tamper_mismatch_stale_and_prior_session(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "tsconfig.json").write_text("{}")
+            provider = CountingTsReferences()
+            service = AtlasService(
+                repository=repository,
+                test_provider=provider,
+                session_continuations=True,
+            )
+            fingerprint = ["source-a"]
+            with patch(
+                "codebase_atlas.service.repository_snapshot",
+                side_effect=lambda _repository: source_snapshot(fingerprint[0]),
+            ):
+                service.start()
+                first = service.query(QueryRequest(
+                    "references", "target", {"max_nodes": 1}
+                ))
+                token = first.truncation["continuation"]
+                replacement = "A" if token[-1] != "A" else "B"
+                with self.assertRaisesRegex(ValueError, "invalid_continuation"):
+                    service.query(QueryRequest(
+                        "references", "target", {
+                            "max_nodes": 1,
+                            "continuation": token[:-1] + replacement,
+                        },
+                    ))
+                with self.assertRaisesRegex(
+                    ValueError, "continuation_query_mismatch"
+                ):
+                    service.query(QueryRequest(
+                        "references", "different", {
+                            "max_nodes": 1, "continuation": token,
+                        },
+                    ))
+                fingerprint[0] = "source-b"
+                with self.assertRaisesRegex(ValueError, "continuation_stale"):
+                    service.query(QueryRequest(
+                        "references", "target", {
+                            "max_nodes": 1, "continuation": token,
+                        },
+                    ))
+                with self.assertRaisesRegex(ValueError, "continuation_unavailable"):
+                    service.query(QueryRequest(
+                        "references", "target", {
+                            "max_nodes": 1, "continuation": token,
+                        },
+                    ))
+                fingerprint[0] = "source-a"
+                replacement_first = service.query(QueryRequest(
+                    "references", "target", {"max_nodes": 1}
+                ))
+                prior_session_token = replacement_first.truncation["continuation"]
+                service.close()
+                service.start()
+                with self.assertRaisesRegex(ValueError, "invalid_continuation"):
+                    service.query(QueryRequest(
+                        "references", "target", {
+                            "max_nodes": 1,
+                            "continuation": prior_session_token,
+                        },
+                    ))
+                service.close()
+
+    def test_ts_continuation_source_unavailable_and_validation_timeout_are_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "tsconfig.json").write_text("{}")
+            service = AtlasService(
+                repository=repository,
+                test_provider=CountingTsReferences(),
+                session_continuations=True,
+            )
+            fingerprint = ["source-a"]
+            with patch(
+                "codebase_atlas.service.repository_snapshot",
+                side_effect=lambda _repository: source_snapshot(fingerprint[0]),
+            ):
+                with service:
+                    first = service.query(QueryRequest(
+                        "references", "target", {"max_nodes": 1}
+                    ))
+                    token = first.truncation["continuation"]
+                    with patch(
+                        "codebase_atlas.service.monotonic",
+                        side_effect=(0.0, 0.01, 0.011),
+                    ):
+                        timed = service.query(QueryRequest(
+                            "references", "target", {
+                                "max_nodes": 1,
+                                "timeout_ms": 1,
+                                "continuation": token,
+                            },
+                        ))
+                    self.assertEqual(timed.nodes, ())
+                    self.assertEqual(
+                        timed.truncation["reasons"], ("time_budget_exceeded",)
+                    )
+                    self.assertEqual(timed.truncation["continuation"], token)
+                    self.assertTrue(timed.truncation["resumable"])
+                    fingerprint[0] = None
+                    with self.assertRaisesRegex(
+                        ValueError, "continuation_unavailable"
+                    ):
+                        service.query(QueryRequest(
+                            "references", "target", {
+                                "max_nodes": 1, "continuation": token,
+                            },
+                        ))
+
+    def test_ts_continuation_memory_limits_lru_and_close_cleanup(self) -> None:
+        provider = CountingTsReferences(count=2)
+        service = AtlasService(
+            test_provider=provider, session_continuations=True
+        )
+        service.start()
+        nodes = provider.references(Path("/repo"), "target")
+        probe = service._store_ts_continuation(("probe",), "source", nodes)
+        self.assertIsNotNone(probe)
+        weight = probe.weight
+        service._clear_ts_continuations()
+        with patch("codebase_atlas.service.MAX_CONTINUATION_CACHE_ENTRIES", 2):
+            first = service._store_ts_continuation(("first",), "source", nodes)
+            second = service._store_ts_continuation(("second",), "source", nodes)
+            service._ts_continuation_cache.move_to_end(first.entry_id)
+            third = service._store_ts_continuation(("third",), "source", nodes)
+        self.assertIn(first.entry_id, service._ts_continuation_cache)
+        self.assertNotIn(second.entry_id, service._ts_continuation_cache)
+        self.assertIn(third.entry_id, service._ts_continuation_cache)
+        self.assertEqual(
+            service._ts_continuation_bytes,
+            sum(entry.weight for entry in service._ts_continuation_cache.values()),
+        )
+        service._clear_ts_continuations()
+        with patch(
+            "codebase_atlas.service.MAX_CONTINUATION_CACHE_BYTES",
+            weight * 2 - 1,
+        ):
+            service._store_ts_continuation(("first",), "source", nodes)
+            service._store_ts_continuation(("second",), "source", nodes)
+        self.assertEqual(len(service._ts_continuation_cache), 1)
+        service.close()
+        self.assertEqual(service._ts_continuation_bytes, 0)
+        self.assertEqual(service._ts_continuation_cache, {})
+        self.assertEqual(service._ts_continuation_queries, {})
+        self.assertIsNone(service._continuation_secret)
+
+    def test_ts_continuation_rejects_oversized_and_timed_out_answers(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = Path(raw)
+            (repository / "tsconfig.json").write_text("{}")
+            provider = CountingTsReferences()
+            service = AtlasService(
+                repository=repository,
+                test_provider=provider,
+                session_continuations=True,
+            )
+            with patch(
+                "codebase_atlas.service.repository_snapshot",
+                return_value=source_snapshot(),
+            ), patch("codebase_atlas.service.MAX_CONTINUATION_ENTRY_BYTES", 1):
+                with service:
+                    response = service.query(QueryRequest(
+                        "references", "target", {"max_nodes": 1}
+                    ))
+            self.assertIsNone(response.truncation["continuation"])
+            self.assertEqual(
+                response.truncation["continuation_unavailable_reason"],
+                "entry_too_large",
+            )
+
+            timeout_provider = CountingTsReferences(timeout=True)
+            service = AtlasService(
+                repository=repository,
+                test_provider=timeout_provider,
+                session_continuations=True,
+            )
+            with patch(
+                "codebase_atlas.service.repository_snapshot",
+                return_value=source_snapshot(),
+            ):
+                with service:
+                    timed = service.query(QueryRequest(
+                        "references", "target", {"max_nodes": 1}
+                    ))
+            self.assertTrue(timed.truncated)
+            self.assertIsNone(timed.truncation["continuation"])
+            self.assertEqual(service._ts_continuation_cache, {})
+
     def test_empty_ts_compiler_references_fall_back_to_semantic_provider(self) -> None:
         class EmptyTsReferences(FakeTestProvider):
             def references(self, _repository, _symbol, **_options):
@@ -1128,6 +1454,17 @@ class ServiceTests(unittest.TestCase):
     def test_rejects_invalid_query_budget(self) -> None:
         with self.assertRaisesRegex(ValueError, "max_nodes"):
             QueryRequest("impact", "target", {"max_nodes": 0})
+
+    def test_rejects_invalid_continuation_contract(self) -> None:
+        for query_type, value in (
+            ("definition", "token"),
+            ("references", ""),
+            ("references", 42),
+            ("references", "x" * 513),
+        ):
+            with self.subTest(query_type=query_type, value_type=type(value)):
+                with self.assertRaisesRegex(ValueError, "invalid_continuation"):
+                    QueryRequest(query_type, "target", {"continuation": value})
 
     def test_rejects_non_string_owner_selector(self) -> None:
         with self.assertRaisesRegex(ValueError, "target_owner"):

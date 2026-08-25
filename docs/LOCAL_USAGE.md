@@ -305,13 +305,26 @@ elapsed time, and whether continuation is available. The current graph provider
 cannot safely resume a partial traversal, so `continuation` is `null` and
 `resumable` is `false` rather than implying that omitted results can be recovered.
 
+Exact TypeScript `references` is the narrow exception in MCP and `query-batch`.
+When the compiler has completed the full ordered answer and the returned page is
+node-budget truncated, Atlas retains that tuple in a byte-bounded session cache
+and returns an opaque `continuation` with `resumable: true`. Send the token with
+the same symbol, `target_path`, and `target_owner`; a new `max_nodes` selects the
+next page size. Each page revalidates the Git source fingerprint without rerunning
+the compiler. The final page has a null continuation. Tokens are HMAC-protected,
+expire when the session closes, and report explicit invalid, unavailable,
+query-mismatch, or stale errors. One-shot `query`, Python references, partial or
+timed-out results, and graph traversals remain non-resumable.
+
 Within a long-lived JSON-lines or MCP session, Atlas caches exact definitions and
 completed graph traversals, plus successful Python exact-reference and caller
 supplements. Repeating the same query and budget avoids duplicate CBM,
 semantic-reference, and AST work. Python supplement caches live only for the
 read-only service session and are cleared on close; time-truncated supplements
 and traversals are never cached. Graph caches also clear when the configured CBM
-index database's modification fingerprint changes.
+index database's modification fingerprint changes. TypeScript continuation
+entries use a 16 MiB per-entry, 64 MiB total, 32-entry byte-weighted LRU and are
+also cleared on close.
 
 Atlas serializes CBM use across local Atlas processes because the upstream Provider
 supports only one global daemon at a time, even when repositories use different

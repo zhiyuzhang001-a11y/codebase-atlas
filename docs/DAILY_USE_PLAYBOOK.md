@@ -67,6 +67,11 @@ Treat `truncated: false` as complete within the requested scope. When
 whether the partial result is sufficient. A time- or node-budget result is usable
 evidence, but not proof that no additional callers or tests exist.
 
+For an exact TypeScript `references` result in MCP or `query-batch`, follow
+`truncation.continuation` while `resumable` is true. Repeat the same symbol,
+target path and owner; `max_nodes` controls the next page size. Tokens work only
+inside the session that created them.
+
 Only `resolution: exact` graph edges are returned by default. Low-confidence
 name-only Provider guesses are excluded rather than presented as facts.
 

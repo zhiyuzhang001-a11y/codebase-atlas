@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
+import hashlib
+import hmac
+import json
 from pathlib import Path
+import secrets
+import sys
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from .contracts import Edge, Node
+from .contracts import Edge, Node, repository_path
 from .graph import ImpactHit, ImpactTraversal
+from .index_state import repository_snapshot
 from .providers.python_callers import PythonExactCallerProvider
 from .providers.python_references import PythonExactReferenceProvider
 from .providers.python_registrations import RegistrationIndex
@@ -27,6 +34,21 @@ DEFAULT_MAX_NODES = 100
 DEFAULT_MAX_EDGES = 200
 DEFAULT_TIMEOUT_MS = 30_000
 MAX_SESSION_CACHE_ENTRIES = 128
+MAX_CONTINUATION_LENGTH = 512
+MAX_CONTINUATION_ENTRY_BYTES = 16 * 1024 * 1024
+MAX_CONTINUATION_CACHE_BYTES = 64 * 1024 * 1024
+MAX_CONTINUATION_CACHE_ENTRIES = 32
+CONTINUATION_PREFIX = "atlas-cont-v1"
+CONTINUATION_ORDER = "typescript-references-v1"
+
+
+@dataclass
+class _ContinuationEntry:
+    entry_id: str
+    query_key: tuple[str, ...]
+    source_fingerprint: str
+    nodes: tuple[Node, ...]
+    weight: int = 0
 
 
 @dataclass(frozen=True)
@@ -56,6 +78,15 @@ class QueryRequest:
             raise ValueError("relation must be empty or 'registers'")
         if relation and self.query_type not in {"callers", "callees"}:
             raise ValueError("relation is supported only for callers and callees")
+        if "continuation" in self.parameters:
+            continuation = self.parameters["continuation"]
+            if (
+                self.query_type != "references"
+                or not isinstance(continuation, str)
+                or not continuation
+                or len(continuation) > MAX_CONTINUATION_LENGTH
+            ):
+                raise ValueError("invalid_continuation")
         for name, default, maximum in (
             ("max_nodes", DEFAULT_MAX_NODES, 10_000),
             ("max_edges", DEFAULT_MAX_EDGES, 20_000),
@@ -95,6 +126,7 @@ class AtlasService:
         impact_provider: CodebaseMemoryImpactProvider | None = None,
         lifecycle: CodebaseMemoryDaemon | None = None,
         registration_index: RegistrationIndex | None = None,
+        session_continuations: bool = False,
     ) -> None:
         self.repository = repository.resolve() if repository is not None else None
         self.structural_provider = structural_provider or impact_provider
@@ -103,6 +135,7 @@ class AtlasService:
         self.impact_provider = impact_provider
         self.lifecycle = lifecycle
         self.registration_index = registration_index
+        self.session_continuations = session_continuations
         self.started = False
         self._structural_started = False
         self._semantic_started = False
@@ -115,10 +148,18 @@ class AtlasService:
         self._python_caller_cache: OrderedDict[
             tuple[Path, str, str, str, str], ImpactTraversal
         ] = OrderedDict()
+        self._continuation_secret: bytes | None = None
+        self._ts_continuation_cache: OrderedDict[
+            str, _ContinuationEntry
+        ] = OrderedDict()
+        self._ts_continuation_queries: dict[tuple[str, ...], str] = {}
+        self._ts_continuation_bytes = 0
 
     def start(self) -> None:
         if self.started:
             return
+        if self.session_continuations:
+            self._continuation_secret = secrets.token_bytes(32)
         self.started = True
 
     def _ensure_structural(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
@@ -147,17 +188,21 @@ class AtlasService:
         if not self.started:
             return
         try:
-            if self._semantic_started and self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
-                self.semantic_provider.close()
+            try:
+                if self._semantic_started and self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
+                    self.semantic_provider.close()
+            finally:
+                if self._structural_started and self.lifecycle is not None:
+                    self.lifecycle.close()
         finally:
-            if self._structural_started and self.lifecycle is not None:
-                self.lifecycle.close()
-        self._semantic_started = False
-        self._structural_started = False
-        self._python_reference_cache.clear()
-        self._python_complete_reference_cache.clear()
-        self._python_caller_cache.clear()
-        self.started = False
+            self._semantic_started = False
+            self._structural_started = False
+            self._python_reference_cache.clear()
+            self._python_complete_reference_cache.clear()
+            self._python_caller_cache.clear()
+            self._clear_ts_continuations()
+            self._continuation_secret = None
+            self.started = False
 
     def query(self, request: QueryRequest) -> QueryResponse:
         if not self.started:
@@ -209,9 +254,37 @@ class AtlasService:
                 started,
             )
         if request.query_type == "references":
-            repository = request.parameters.get("repository", self.repository)
+            repository_value = request.parameters.get("repository", self.repository)
+            repository = (
+                Path(repository_value).resolve()
+                if repository_value is not None else None
+            )
             nodes_list: list[Node] = []
             target_path = str(request.parameters.get("target_path", ""))
+            if "continuation" in request.parameters:
+                return self._query_ts_continuation(
+                    request, repository, limits, started
+                )
+            ts_query_key: tuple[str, ...] | None = None
+            ts_source_fingerprint: str | None = None
+            if (
+                self.session_continuations
+                and repository is not None
+                and Path(target_path).suffix != ".py"
+                and self._has_ts_project(repository)
+                and hasattr(self.test_provider, "references")
+            ):
+                ts_query_key = self._ts_query_key(request, repository)
+                ts_source_fingerprint = self._source_fingerprint(repository)
+                if ts_source_fingerprint is not None:
+                    cached_response = self._cached_ts_initial_response(
+                        ts_query_key,
+                        ts_source_fingerprint,
+                        limits,
+                        started,
+                    )
+                    if cached_response is not None:
+                        return cached_response
             python_cache_key: tuple[Path, str, str, str] | None = None
             if repository is not None and Path(target_path).suffix == ".py":
                 python_cache_key = (
@@ -265,8 +338,18 @@ class AtlasService:
                     return self._partial_time_response(
                         request.query_type, tuple(nodes_list), (), limits, started
                     )
+                pure_ts_answer = not nodes_list
                 nodes_list.extend(ts_nodes)
                 if ts_nodes:
+                    if pure_ts_answer and ts_query_key is not None:
+                        return self._cache_ts_initial_response(
+                            ts_query_key,
+                            ts_source_fingerprint,
+                            repository,
+                            tuple(nodes_list),
+                            limits,
+                            started,
+                        )
                     return self._bounded_response(
                         request.query_type, tuple(nodes_list), (), limits, started
                     )
@@ -805,6 +888,357 @@ class AtlasService:
         cache[key] = value
         while len(cache) > MAX_SESSION_CACHE_ENTRIES:
             cache.popitem(last=False)
+
+    @staticmethod
+    def _deep_size(value: Any, seen: set[int] | None = None) -> int:
+        seen = seen or set()
+        identity = id(value)
+        if identity in seen:
+            return 0
+        seen.add(identity)
+        size = sys.getsizeof(value)
+        if is_dataclass(value) and not isinstance(value, type):
+            size += sum(
+                AtlasService._deep_size(getattr(value, item.name), seen)
+                for item in fields(value)
+            )
+        elif isinstance(value, Mapping):
+            size += sum(
+                AtlasService._deep_size(key, seen)
+                + AtlasService._deep_size(item, seen)
+                for key, item in value.items()
+            )
+        elif isinstance(value, (tuple, list, set, frozenset)):
+            size += sum(AtlasService._deep_size(item, seen) for item in value)
+        return size
+
+    def _clear_ts_continuations(self) -> None:
+        self._ts_continuation_cache.clear()
+        self._ts_continuation_queries.clear()
+        self._ts_continuation_bytes = 0
+
+    def _remove_ts_continuation(self, entry_id: str) -> None:
+        entry = self._ts_continuation_cache.pop(entry_id, None)
+        if entry is None:
+            return
+        self._ts_continuation_bytes = max(
+            0, self._ts_continuation_bytes - entry.weight
+        )
+        if self._ts_continuation_queries.get(entry.query_key) == entry_id:
+            self._ts_continuation_queries.pop(entry.query_key, None)
+
+    def _ts_query_key(
+        self, request: QueryRequest, repository: Path
+    ) -> tuple[str, ...]:
+        repository = repository.resolve()
+        selected = getattr(self.test_provider, "tsconfig", None)
+        selected_path = Path(selected) if selected is not None else Path("tsconfig.json")
+        if not selected_path.is_absolute():
+            selected_path = repository / selected_path
+        target_path = str(request.parameters.get("target_path", ""))
+        normalized_target = repository_path(target_path) if target_path else ""
+        return (
+            str(repository),
+            str(selected_path.resolve()),
+            CONTINUATION_ORDER,
+            "references",
+            request.symbol,
+            normalized_target,
+            str(request.parameters.get("target_owner", "")),
+        )
+
+    @staticmethod
+    def _source_fingerprint(repository: Path) -> str | None:
+        snapshot = repository_snapshot(repository)
+        if snapshot.kind != "git" or snapshot.fingerprint is None:
+            return None
+        return snapshot.fingerprint
+
+    @staticmethod
+    def _urlsafe_encode(payload: bytes) -> str:
+        return base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+
+    @staticmethod
+    def _urlsafe_decode(value: str) -> bytes:
+        padding = "=" * (-len(value) % 4)
+        try:
+            decoded = base64.b64decode(
+                value + padding, altchars=b"-_", validate=True
+            )
+        except (ValueError, TypeError) as exc:
+            raise ValueError("invalid_continuation") from exc
+        if AtlasService._urlsafe_encode(decoded) != value:
+            raise ValueError("invalid_continuation")
+        return decoded
+
+    def _continuation_token(self, entry_id: str, offset: int) -> str:
+        if self._continuation_secret is None:
+            raise ValueError("invalid_continuation")
+        payload = json.dumps(
+            {"entry": entry_id, "offset": offset, "v": 1},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        signature = hmac.new(
+            self._continuation_secret, payload, hashlib.sha256
+        ).digest()
+        return ".".join((
+            CONTINUATION_PREFIX,
+            self._urlsafe_encode(payload),
+            self._urlsafe_encode(signature),
+        ))
+
+    def _parse_continuation(self, token: str) -> tuple[str, int]:
+        if self._continuation_secret is None:
+            raise ValueError("invalid_continuation")
+        parts = token.split(".")
+        if len(parts) != 3 or parts[0] != CONTINUATION_PREFIX:
+            raise ValueError("invalid_continuation")
+        payload = self._urlsafe_decode(parts[1])
+        signature = self._urlsafe_decode(parts[2])
+        expected = hmac.new(
+            self._continuation_secret, payload, hashlib.sha256
+        ).digest()
+        if len(signature) != len(expected) or not hmac.compare_digest(
+            signature, expected
+        ):
+            raise ValueError("invalid_continuation")
+        try:
+            value = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid_continuation") from exc
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"entry", "offset", "v"}
+            or value.get("v") != 1
+            or not isinstance(value.get("entry"), str)
+            or len(value["entry"]) != 32
+            or any(character not in "0123456789abcdef" for character in value["entry"])
+            or not isinstance(value.get("offset"), int)
+            or isinstance(value["offset"], bool)
+            or value["offset"] <= 0
+        ):
+            raise ValueError("invalid_continuation")
+        return value["entry"], value["offset"]
+
+    def _store_ts_continuation(
+        self,
+        query_key: tuple[str, ...],
+        source_fingerprint: str,
+        nodes: tuple[Node, ...],
+    ) -> _ContinuationEntry | None:
+        entry_id = secrets.token_hex(16)
+        while entry_id in self._ts_continuation_cache:
+            entry_id = secrets.token_hex(16)
+        entry = _ContinuationEntry(
+            entry_id, query_key, source_fingerprint, nodes
+        )
+        entry.weight = self._deep_size(entry)
+        if entry.weight > MAX_CONTINUATION_ENTRY_BYTES:
+            return None
+        previous_id = self._ts_continuation_queries.get(query_key)
+        if previous_id is not None:
+            self._remove_ts_continuation(previous_id)
+        while self._ts_continuation_cache and (
+            len(self._ts_continuation_cache) >= MAX_CONTINUATION_CACHE_ENTRIES
+            or self._ts_continuation_bytes + entry.weight
+            > MAX_CONTINUATION_CACHE_BYTES
+        ):
+            oldest_id = next(iter(self._ts_continuation_cache))
+            self._remove_ts_continuation(oldest_id)
+        if (
+            len(self._ts_continuation_cache) >= MAX_CONTINUATION_CACHE_ENTRIES
+            or self._ts_continuation_bytes + entry.weight
+            > MAX_CONTINUATION_CACHE_BYTES
+        ):
+            return None
+        self._ts_continuation_cache[entry.entry_id] = entry
+        self._ts_continuation_queries[query_key] = entry.entry_id
+        self._ts_continuation_bytes += entry.weight
+        return entry
+
+    def _continuation_timeout_response(
+        self,
+        entry: _ContinuationEntry,
+        offset: int,
+        token: str,
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        elapsed_ms = (monotonic() - started) * 1000.0
+        truncation = self._truncation(
+            ["time_budget_exceeded"],
+            limits,
+            observed_nodes=len(entry.nodes),
+            observed_edges=0,
+            returned_nodes=0,
+            returned_edges=0,
+            elapsed_ms=elapsed_ms,
+        )
+        truncation.update({
+            "continuation": token,
+            "resumable": True,
+            "page": {
+                "offset": offset,
+                "next_offset": offset,
+                "total_nodes": len(entry.nodes),
+            },
+        })
+        return QueryResponse(
+            "references", (), (), truncated=True, truncation=truncation
+        )
+
+    def _ts_continuation_page(
+        self,
+        entry: _ContinuationEntry,
+        offset: int,
+        limits: dict[str, int],
+        started: float,
+        *,
+        retry_token: str | None = None,
+    ) -> QueryResponse:
+        if (monotonic() - started) * 1000.0 > limits["timeout_ms"]:
+            if retry_token is not None:
+                return self._continuation_timeout_response(
+                    entry, offset, retry_token, limits, started
+                )
+            return self._time_budget_response("references", limits, started)
+        end = min(len(entry.nodes), offset + limits["max_nodes"])
+        nodes = entry.nodes[offset:end]
+        has_more = end < len(entry.nodes)
+        elapsed_ms = (monotonic() - started) * 1000.0
+        reasons = ["node_budget_exceeded"] if has_more else []
+        truncation = self._truncation(
+            reasons,
+            limits,
+            observed_nodes=len(entry.nodes),
+            observed_edges=0,
+            returned_nodes=len(nodes),
+            returned_edges=0,
+            elapsed_ms=elapsed_ms,
+        )
+        truncation.update({
+            "continuation": (
+                self._continuation_token(entry.entry_id, end)
+                if has_more else None
+            ),
+            "resumable": has_more,
+            "page": {
+                "offset": offset,
+                "next_offset": end if has_more else None,
+                "total_nodes": len(entry.nodes),
+            },
+        })
+        return QueryResponse(
+            "references", nodes, (), truncated=has_more, truncation=truncation
+        )
+
+    @staticmethod
+    def _continuation_unavailable(
+        response: QueryResponse, reason: str
+    ) -> QueryResponse:
+        truncation = dict(response.truncation)
+        truncation["continuation_unavailable_reason"] = reason
+        return QueryResponse(
+            response.query_type,
+            response.nodes,
+            response.edges,
+            response.depths,
+            response.paths,
+            response.truncated,
+            truncation,
+        )
+
+    def _query_ts_continuation(
+        self,
+        request: QueryRequest,
+        repository: Path | None,
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        if not self.session_continuations or repository is None:
+            raise ValueError("invalid_continuation")
+        token = str(request.parameters["continuation"])
+        entry_id, offset = self._parse_continuation(token)
+        entry = self._ts_continuation_cache.get(entry_id)
+        if entry is None:
+            raise ValueError("continuation_unavailable")
+        if offset >= len(entry.nodes):
+            raise ValueError("invalid_continuation")
+        query_key = self._ts_query_key(request, repository)
+        if query_key != entry.query_key:
+            raise ValueError("continuation_query_mismatch")
+        current_fingerprint = self._source_fingerprint(repository)
+        if current_fingerprint is None:
+            raise ValueError("continuation_unavailable")
+        if current_fingerprint != entry.source_fingerprint:
+            self._remove_ts_continuation(entry.entry_id)
+            raise ValueError("continuation_stale")
+        if (monotonic() - started) * 1000.0 > limits["timeout_ms"]:
+            return self._continuation_timeout_response(
+                entry, offset, token, limits, started
+            )
+        self._ts_continuation_cache.move_to_end(entry.entry_id)
+        return self._ts_continuation_page(
+            entry, offset, limits, started, retry_token=token
+        )
+
+    def _cached_ts_initial_response(
+        self,
+        query_key: tuple[str, ...],
+        source_fingerprint: str,
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse | None:
+        entry_id = self._ts_continuation_queries.get(query_key)
+        if entry_id is None:
+            return None
+        entry = self._ts_continuation_cache.get(entry_id)
+        if entry is None:
+            self._ts_continuation_queries.pop(query_key, None)
+            return None
+        if entry.source_fingerprint != source_fingerprint:
+            self._remove_ts_continuation(entry.entry_id)
+            return None
+        if (monotonic() - started) * 1000.0 > limits["timeout_ms"]:
+            return self._time_budget_response("references", limits, started)
+        self._ts_continuation_cache.move_to_end(entry.entry_id)
+        return self._ts_continuation_page(entry, 0, limits, started)
+
+    def _cache_ts_initial_response(
+        self,
+        query_key: tuple[str, ...],
+        source_fingerprint: str | None,
+        repository: Path,
+        nodes: tuple[Node, ...],
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        ordinary = self._bounded_response(
+            "references", nodes, (), limits, started
+        )
+        if (
+            source_fingerprint is None
+            or len(nodes) <= limits["max_nodes"]
+            or (monotonic() - started) * 1000.0 > limits["timeout_ms"]
+        ):
+            return ordinary
+        final_fingerprint = self._source_fingerprint(repository)
+        if (
+            final_fingerprint is None
+            or final_fingerprint != source_fingerprint
+            or (monotonic() - started) * 1000.0 > limits["timeout_ms"]
+        ):
+            return ordinary
+        entry = self._store_ts_continuation(
+            query_key, final_fingerprint, nodes
+        )
+        if entry is None:
+            return self._continuation_unavailable(ordinary, "entry_too_large")
+        if (monotonic() - started) * 1000.0 > limits["timeout_ms"]:
+            self._remove_ts_continuation(entry.entry_id)
+            return ordinary
+        return self._ts_continuation_page(entry, 0, limits, started)
 
     def _exact_ts_relation_supplement(
         self,

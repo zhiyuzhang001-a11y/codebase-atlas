@@ -138,6 +138,13 @@ for _tool in TOOLS:
             "enum": ["registers"],
             "description": "Restrict the answer to exact Python registration edges.",
         }
+    if _tool["name"] == "references":
+        _tool["inputSchema"]["properties"]["continuation"] = {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Opaque next-page token from this MCP session.",
+        }
 
 
 class McpServer:
@@ -212,12 +219,18 @@ class McpServer:
                 if name in arguments
             }
             if name in {"definition", "references", "callers", "callees"}:
+                continuation = (
+                    {"continuation": arguments["continuation"]}
+                    if name == "references" and "continuation" in arguments
+                    else {}
+                )
                 request = QueryRequest(
                     name, symbol, {
                         "target_path": target_path,
                         "target_owner": target_owner,
                         "relation": relation,
                         **budget,
+                        **continuation,
                     }
                 )
             elif name == "related_tests":

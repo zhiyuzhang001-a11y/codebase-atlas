@@ -42,6 +42,8 @@ class McpTests(unittest.TestCase):
         self.assertEqual(schemas["callers"]["relation"]["enum"], ["registers"])
         self.assertEqual(schemas["callees"]["relation"]["enum"], ["registers"])
         self.assertNotIn("relation", schemas["definition"])
+        self.assertEqual(schemas["references"]["continuation"]["maxLength"], 512)
+        self.assertNotIn("continuation", schemas["definition"])
 
     def test_calls_tool_with_structured_and_text_content(self) -> None:
         response = self.server.handle(
@@ -96,6 +98,19 @@ class McpTests(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(
             self.service.last_request.parameters["relation"], "registers"
+        )
+
+    def test_forwards_reference_continuation(self) -> None:
+        response = self.server.handle({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {
+                "name": "references",
+                "arguments": {"symbol": "target", "continuation": "opaque"},
+            },
+        })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(
+            self.service.last_request.parameters["continuation"], "opaque"
         )
 
     def test_stdio_emits_one_json_message_per_line(self) -> None:
