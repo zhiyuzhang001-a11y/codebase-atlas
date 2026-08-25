@@ -2,9 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release line: **0.17.0**, adding exact Python registration relationships,
-a persistent/incremental registration sidecar, and transactional indexing and
-guided onboarding while retaining the 0.16 read-only-first workflow.
+Current release line: **0.18.0**, adding resumable exact TypeScript reference
+pages inside one MCP or JSON-lines batch session while retaining the 0.17 exact
+Python registration and transactional onboarding workflow.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -28,6 +28,7 @@ query budgets, index freshness, and product interfaces.
   transactionally with configuration and index state;
 - read-only index/storage inspection, explicit repair, and dry-run-first cleanup;
 - large-repository and monorepo subproject support;
+- bounded same-session continuation for wide exact TypeScript references;
 - one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
 
 UI, automatic source edits, and cloud sync remain out of scope.

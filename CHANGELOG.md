@@ -4,6 +4,23 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.18.0 — 2026-08-25
+
+- Add opaque, HMAC-protected continuation tokens for node-budget-truncated exact
+  TypeScript `references` results in MCP and `query-batch` sessions.
+- Reuse the complete compiler-backed ordered tuple for later pages without
+  rerunning the compiler; each page revalidates the Git source fingerprint.
+- Bind tokens to one service session and the exact symbol/path/owner query, with
+  explicit invalid, unavailable, mismatch and stale errors.
+- Bound retained answers with a 16 MiB per-entry, 64 MiB total and 32-entry
+  byte-weighted LRU; clear all state on close and never retain timed-out,
+  incomplete or oversized answers.
+- Preserve one-shot `query`, narrow answers, Python references and graph
+  traversals unchanged and non-resumable.
+- Pass independent Microsoft TypeScript wide-reference validation 5/5, product
+  160/160, M17 24/24, M19 147/147, reproducible packaging and installed
+  lifecycle gates.
+
 ## 0.17.0 — 2026-08-24
 
 - Add exact Python `registers` relationships for a closed, source-proven set of

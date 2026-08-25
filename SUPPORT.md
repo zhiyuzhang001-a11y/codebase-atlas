@@ -26,7 +26,9 @@ check verifies discoverable capabilities, not every Provider/repository version.
   API set is documented in `docs/LOCAL_USAGE.md`; other framework APIs and
   runtime-generated callbacks remain unsupported rather than guessed.
 - Broad TypeScript references/related-tests/impact can reach explicit node or
-  time budgets. Truncated results are partial evidence, not completeness.
+  time budgets. Exact compiler-backed `references` can resume a node-budget
+  result only inside the issuing MCP or `query-batch` session; other truncated
+  results remain partial evidence, not completeness.
 - Large semantic references can use the full timeout; time-truncated results are
   not cached.
 - Atlas is not a repository sandbox, hosted service, editor UI, background file
