@@ -275,16 +275,17 @@ class AtlasService:
                 and hasattr(self.test_provider, "references")
             ):
                 ts_query_key = self._ts_query_key(request, repository)
-                ts_source_fingerprint = self._source_fingerprint(repository)
-                if ts_source_fingerprint is not None:
-                    cached_response = self._cached_ts_initial_response(
-                        ts_query_key,
-                        ts_source_fingerprint,
-                        limits,
-                        started,
-                    )
-                    if cached_response is not None:
-                        return cached_response
+                if ts_query_key in self._ts_continuation_queries:
+                    ts_source_fingerprint = self._source_fingerprint(repository)
+                    if ts_source_fingerprint is not None:
+                        cached_response = self._cached_ts_initial_response(
+                            ts_query_key,
+                            ts_source_fingerprint,
+                            limits,
+                            started,
+                        )
+                        if cached_response is not None:
+                            return cached_response
             python_cache_key: tuple[Path, str, str, str] | None = None
             if repository is not None and Path(target_path).suffix == ".py":
                 python_cache_key = (
@@ -1218,15 +1219,17 @@ class AtlasService:
             "references", nodes, (), limits, started
         )
         if (
-            source_fingerprint is None
-            or len(nodes) <= limits["max_nodes"]
+            len(nodes) <= limits["max_nodes"]
             or (monotonic() - started) * 1000.0 > limits["timeout_ms"]
         ):
             return ordinary
         final_fingerprint = self._source_fingerprint(repository)
         if (
             final_fingerprint is None
-            or final_fingerprint != source_fingerprint
+            or (
+                source_fingerprint is not None
+                and final_fingerprint != source_fingerprint
+            )
             or (monotonic() - started) * 1000.0 > limits["timeout_ms"]
         ):
             return ordinary
