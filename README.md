@@ -9,6 +9,10 @@ Python registration and transactional onboarding workflow.
 The current unreleased source candidate also adds bounded Go support through an
 Atlas-owned `gopls` v0.23.0 process and an explicit Go 1.27.0 toolchain. This is
 not part of the 0.18.0 release until the remaining M27 validation gates pass.
+Atlas gives that owned process a Go runtime soft limit of 1400 MiB without
+changing the user's shell or Go configuration. This is not a hard OS cap;
+Kubernetes-class first use is validated against a 2304 MiB process-group ceiling
+and should have at least 2.5 GiB of free memory.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

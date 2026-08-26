@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlparse
 CONTRACT_VERSION = "m27-go-v1"
 PROVIDER = "gopls-0.23.0"
 DEFAULT_TIMEOUT_SECONDS = 30.0
+GOPLS_MEMORY_LIMIT = "1400MiB"
 DECLARATION = re.compile(
     r"^\s*func\s+(?:\((?P<receiver>[^)]*)\)\s*)?(?P<function>[A-Za-z_]\w*)"
     r"|^\s*type\s+(?P<type>[A-Za-z_]\w*)\s*(?P<alias>=)?"
@@ -542,6 +543,7 @@ class _GoAdapter:
             "GOARCH": self.goarch,
             "CGO_ENABLED": self.cgo_enabled,
             "GOWORK": str(go_work) if go_work.is_file() else "off",
+            "GOMEMLIMIT": GOPLS_MEMORY_LIMIT,
         }
 
     def _preflight(self, env: dict[str, str]) -> None:

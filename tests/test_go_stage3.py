@@ -8,7 +8,9 @@ import unittest
 
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.languages import detected_languages, select_language
-from codebase_atlas.providers.go import GoAdapterError, GoSemanticProvider, _GoAdapter
+from codebase_atlas.providers.go import (
+    GOPLS_MEMORY_LIMIT, GoAdapterError, GoSemanticProvider, _GoAdapter,
+)
 from codebase_atlas.runtime import required_checks_ok, runtime_checks
 from codebase_atlas.service import AtlasService, QueryRequest
 
@@ -48,6 +50,21 @@ class FakeDirectProvider:
 
 
 class GoStage3Tests(unittest.TestCase):
+    def test_go_provider_memory_policy_is_contained_and_fixed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            before = os.environ.get("GOMEMLIMIT")
+            adapter = _GoAdapter(
+                repository=repository, workspace_root=repository,
+                data_root=root / "data", go=root / "go", gopls=root / "gopls",
+            )
+            environment = adapter._environment()
+            self.assertEqual(GOPLS_MEMORY_LIMIT, "1400MiB")
+            self.assertEqual(environment["GOMEMLIMIT"], GOPLS_MEMORY_LIMIT)
+            self.assertEqual(os.environ.get("GOMEMLIMIT"), before)
+
     def test_registry_detects_go_and_rejects_mixed_implicit_selection(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
