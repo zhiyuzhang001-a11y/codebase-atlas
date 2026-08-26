@@ -29,9 +29,10 @@ query budgets, index freshness, and product interfaces.
 - read-only index/storage inspection, explicit repair, and dry-run-first cleanup;
 - large-repository and monorepo subproject support;
 - bounded same-session continuation for wide exact TypeScript references;
-- one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
+- one shared six-query service exposed by CLI, JSON-lines batch API, read-only
+  MCP, and a dependency-free loopback browser UI.
 
-UI, automatic source edits, and cloud sync remain out of scope.
+Automatic source edits, remote UI access, and cloud sync remain out of scope.
 
 Recall remains non-exhaustive for dynamic/runtime-only relationships. Broad
 TypeScript queries and very large semantic queries can still reach explicit
@@ -61,6 +62,7 @@ codebase-atlas setup
 codebase-atlas init
 codebase-atlas index
 codebase-atlas doctor
+codebase-atlas ui                    # local read-only graph UI; Ctrl-C stops it
 
 # After source changes:
 codebase-atlas update
@@ -81,6 +83,10 @@ codebase-atlas clean --apply          # exact planned targets only
 `setup` is a read-only preflight: it executes version/import probes and returns
 machine-readable remediation without installing software or changing project,
 editor, or MCP configuration.
+
+`ui` binds only to `127.0.0.1`, opens a session-token-protected browser page,
+and reuses the same index and query service. Use `ui --no-open` in headless
+environments. It does not expose source contents or perform index/config writes.
 
 When source and Provider storage are already current, `update` takes an
 Atlas-owned fast path without starting the Provider. Configured queries expose
@@ -114,9 +120,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 The product service supports `definition`, `references`, `callers`, `callees`,
-`related_tests`, and `impact`. Use `codebase-atlas query --help` for one query,
+`related_tests`, and `impact`. Use `codebase-atlas ui --help` for the visual
+interface, `codebase-atlas query --help` for one query,
 `query-batch --help` for a reusable JSON-lines session, or `mcp --help` for the
-read-only stdio MCP server. All three interfaces share `AtlasService` and stop
+read-only stdio MCP server. All interfaces share `AtlasService` and stop
 only provider processes they started themselves. In MCP and `query-batch`, a
 budget-truncated exact TypeScript `references` answer can expose an opaque
 same-session continuation token; one-shot `query` behavior is unchanged.

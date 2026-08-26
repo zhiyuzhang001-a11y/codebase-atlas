@@ -4,6 +4,14 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## Unreleased
+
+- Add a dependency-free, read-only browser UI bound strictly to loopback for all
+  six query types, exact target qualification, registration relationships,
+  resumable references, provenance, freshness, and explicit truncation.
+- Protect each UI session with a random token, strict Host/Origin checks, bounded
+  JSON input, no CORS, fixed packaged assets, and restrictive browser headers.
+
 ## 0.18.0 — 2026-08-25
 
 - Add opaque, HMAC-protected continuation tokens for node-budget-truncated exact

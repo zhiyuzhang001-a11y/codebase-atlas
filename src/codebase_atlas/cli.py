@@ -12,6 +12,7 @@ import sys
 import time
 import os
 import subprocess
+import webbrowser
 
 from . import __version__
 from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
@@ -41,6 +42,7 @@ from .python_registration_store import (
 )
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
+from .web_ui import LocalUiServer
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -157,6 +159,24 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--node-bin-dir", type=Path)
     mcp.add_argument("--tsconfig", type=Path)
     mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    ui = commands.add_parser("ui", help="open the lightweight read-only local browser UI")
+    ui.add_argument("--config", type=Path)
+    ui.add_argument("--repo", type=Path)
+    ui.add_argument("--node", type=Path)
+    ui.add_argument("--analyzer", type=Path, default=_asset("ts_test_analyzer.mjs"))
+    ui.add_argument("--binary", type=Path)
+    ui.add_argument("--cache-dir", type=Path)
+    ui.add_argument("--project")
+    ui.add_argument("--serena-python", type=Path)
+    ui.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
+    ui.add_argument("--serena-home", type=Path)
+    ui.add_argument("--metadata-root", type=Path)
+    ui.add_argument("--language", choices=("python", "typescript"))
+    ui.add_argument("--node-bin-dir", type=Path)
+    ui.add_argument("--tsconfig", type=Path)
+    ui.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    ui.add_argument("--port", type=int, default=0, help="loopback port; 0 selects a free port")
+    ui.add_argument("--no-open", action="store_true", help="do not open the system browser")
     query = commands.add_parser("query", help="run one query through the shared product service")
     query.add_argument("query_type", choices=("definition", "references", "callers", "callees", "related_tests", "impact"))
     query.add_argument("symbol")
@@ -683,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    if args.command in {"mcp", "query", "query-batch"}:
+    if args.command in {"mcp", "query", "query-batch", "ui"}:
         _apply_project_config(args)
         if args.command == "query":
             policy_error = stale_policy_error(args.index_status, args.stale_policy)
@@ -742,7 +762,7 @@ def main(argv: list[str] | None = None) -> int:
             impact_provider=structural,
             lifecycle=lifecycle,
             registration_index=registration_index,
-            session_continuations=args.command in {"mcp", "query-batch"},
+            session_continuations=args.command in {"mcp", "query-batch", "ui"},
         )
         with service:
             if args.command == "mcp":
@@ -769,8 +789,31 @@ def main(argv: list[str] | None = None) -> int:
                     ensure_ascii=False,
                     indent=2,
                 ))
-            else:
+            elif args.command == "query-batch":
                 _run_query_batch(service, args.index_status, args.stale_policy)
+            else:
+                if not 0 <= args.port <= 65535:
+                    raise SystemExit("port must be between 0 and 65535")
+                server = LocalUiServer(
+                    service,
+                    repository=str(args.repo),
+                    language=args.language,
+                    index_status=args.index_status,
+                    stale_policy=args.stale_policy,
+                    port=args.port,
+                )
+                print(json.dumps({
+                    "status": "ready", "url": server.url,
+                    "binding": server.authority, "mode": "read_only",
+                }), flush=True)
+                if not args.no_open:
+                    webbrowser.open(server.url)
+                try:
+                    server.serve_forever()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    server.httpd.server_close()
         return 0
     parser.print_help()
     return 0

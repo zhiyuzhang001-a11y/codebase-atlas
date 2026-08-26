@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="atlas-token" content="{{TOKEN}}">
+  <title>Codebase Atlas</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header><strong>Codebase Atlas</strong><span id="project">正在连接…</span><span id="health" class="badge">未知</span></header>
+  <main>
+    <aside class="controls">
+      <h1>查询代码关系</h1>
+      <label>查询类型<select id="type"><option value="definition">定义</option><option value="references">引用</option><option value="callers">调用者</option><option value="callees">被调用者</option><option value="related_tests">相关测试</option><option value="impact">影响范围</option></select></label>
+      <label>符号<input id="symbol" required placeholder="例如 Class.method"></label>
+      <details><summary>精确定位与预算</summary>
+        <label>文件路径<input id="targetPath" placeholder="src/example.py"></label>
+        <label>所属对象<input id="targetOwner" placeholder="ClassName"></label>
+        <label id="relationRow">关系<select id="relation"><option value="">普通调用</option><option value="registers">动态注册</option></select></label>
+        <label id="directionRow">方向<select id="direction"><option value="upstream">上游</option><option value="downstream">下游</option></select></label>
+        <label id="depthRow">深度<input id="depth" type="number" min="1" max="10" value="1"></label>
+        <label>最大节点<input id="maxNodes" type="number" min="1" max="10000" value="100"></label>
+        <label>最大边<input id="maxEdges" type="number" min="1" max="20000" value="200"></label>
+      </details>
+      <button id="run">运行查询</button><button id="more" class="secondary" hidden>继续加载</button>
+      <p id="message" role="status">输入一个精确符号开始。</p>
+    </aside>
+    <section class="graph"><div class="summary"><span id="counts">0 节点 · 0 边</span><span id="timing"></span></div><svg id="canvas" role="img" aria-label="代码关系图"></svg></section>
+    <aside class="details"><h2>证据详情</h2><div id="detail">选择图中的节点或边。</div></aside>
+  </main>
+</body>
+</html>
