@@ -10,8 +10,6 @@ For the task-oriented workflow and result interpretation, also see
   `typescript-language-server`) for TypeScript semantic queries
 - a local Codebase Memory executable
 - a Python environment with Serena installed
-- for candidate Go support only: Go 1.27.0 and gopls v0.23.0 supplied explicitly
-  or through `ATLAS_GO` and `ATLAS_GOPLS`
 
 Atlas does not edit global MCP/editor configuration. Provider caches are stored
 under `~/.local/share/codebase-atlas/` by default and user source files remain
@@ -67,16 +65,6 @@ For TypeScript monorepos, provide the project boundary explicitly:
 ```bash
 codebase-atlas onboard --repo /path/to/repository --language typescript \
   --tsconfig packages/app/tsconfig.json --apply
-```
-
-For Go, Atlas detects but never installs the exact frozen runtimes. Mixed-language
-repositories require `--language go`, and repositories with several Go module or
-workspace roots require an explicit repository-relative `--go-workspace`:
-
-```bash
-codebase-atlas onboard --repo /path/to/repository --language go \
-  --go /path/to/go1.27.0/bin/go --gopls /path/to/gopls-v0.23.0 \
-  --go-workspace . --apply
 ```
 
 ## Install
@@ -222,25 +210,6 @@ codebase-atlas index
 ```
 
 The selected config defines the compiler boundary used by exact test analysis.
-
-For Go, `index` validates and starts then stops one owned `gopls` session before
-atomically recording source freshness. Queries use offline, Atlas-contained Go
-caches and never modify source, global settings, editor settings, or MCP
-configuration:
-
-```bash
-codebase-atlas init --repo /path/to/repository --language go \
-  --go /path/to/go1.27.0/bin/go --gopls /path/to/gopls-v0.23.0 \
-  --go-workspace .
-codebase-atlas index
-codebase-atlas query callers Run --target-path app/identity.go \
-  --target-owner Alpha
-```
-
-All Go queries require `--target-path`; use `--target-owner` for same-name
-methods. Interface/function-value dispatch is reported as partial, external and
-vendor results are omitted, and missing offline dependencies return a typed
-failure rather than triggering a download.
 
 ## Query
 

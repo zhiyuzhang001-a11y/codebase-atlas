@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from .index_state import index_freshness, provider_database_health
-from .languages import capability
 
 
 STALE_POLICIES = ("warn", "error", "ignore")
@@ -17,14 +16,9 @@ def operational_index_status(
     repository: Path,
     cache_dir: Path,
     project: str,
-    language: str = "python",
 ) -> dict[str, Any]:
     source = index_freshness(data_dir, repository, project)
-    provider = (
-        {"status": "live", "ok": True, "reason": "provider_is_live"}
-        if capability(language).live_provider
-        else provider_database_health(cache_dir, project)
-    )
+    provider = provider_database_health(cache_dir, project)
     if not provider["ok"]:
         return {
             "status": "rebuild_required",
