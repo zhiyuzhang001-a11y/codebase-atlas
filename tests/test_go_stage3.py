@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.languages import detected_languages, select_language
+from codebase_atlas.go_environment import TELEMETRY_MODE, telemetry_mode_paths
 from codebase_atlas.providers.go import (
     GOPLS_MEMORY_LIMIT, GoAdapterError, GoSemanticProvider, _GoAdapter,
 )
@@ -55,7 +57,10 @@ class GoStage3Tests(unittest.TestCase):
             root = Path(raw)
             repository = root / "repo"
             repository.mkdir()
-            before = os.environ.get("GOMEMLIMIT")
+            before = {
+                name: os.environ.get(name)
+                for name in ("GOMEMLIMIT", "GOTELEMETRY", "XDG_CONFIG_HOME", "APPDATA")
+            }
             adapter = _GoAdapter(
                 repository=repository, workspace_root=repository,
                 data_root=root / "data", go=root / "go", gopls=root / "gopls",
@@ -63,7 +68,23 @@ class GoStage3Tests(unittest.TestCase):
             environment = adapter._environment()
             self.assertEqual(GOPLS_MEMORY_LIMIT, "1400MiB")
             self.assertEqual(environment["GOMEMLIMIT"], GOPLS_MEMORY_LIMIT)
-            self.assertEqual(os.environ.get("GOMEMLIMIT"), before)
+            self.assertTrue(
+                Path(environment["XDG_CONFIG_HOME"]).is_relative_to((root / "data").resolve())
+            )
+            self.assertTrue(
+                Path(environment["APPDATA"]).is_relative_to((root / "data").resolve())
+            )
+            self.assertTrue(all(
+                path.read_bytes() == TELEMETRY_MODE
+                for path in telemetry_mode_paths((root / "data").resolve())
+            ))
+            self.assertEqual(
+                {
+                    name: os.environ.get(name)
+                    for name in ("GOMEMLIMIT", "GOTELEMETRY", "XDG_CONFIG_HOME", "APPDATA")
+                },
+                before,
+            )
 
     def test_registry_detects_go_and_rejects_mixed_implicit_selection(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -171,7 +192,24 @@ class GoStage3Tests(unittest.TestCase):
                         "related_tests", "impact",
                     )
                 }
+                self.assertIs(provider._adapter.client.settings["staticcheck"], False)
+                process = provider._adapter.client.process
+                self.assertIsNotNone(process)
+                rows = subprocess.run(
+                    ["ps", "-axo", "ppid=,command="], capture_output=True,
+                    text=True, check=False,
+                ).stdout.splitlines()
+                self.assertFalse(any(
+                    len(parts := row.strip().split(maxsplit=1)) == 2
+                    and int(parts[0]) == process.pid
+                    and "gopls ** telemetry **" in parts[1]
+                    for row in rows
+                ))
             response = responses["definition"]
+            self.assertTrue(all(
+                path.read_bytes() == TELEMETRY_MODE
+                for path in telemetry_mode_paths(Path(raw))
+            ))
             self.assertEqual(len(response.nodes), 1)
             self.assertEqual(response.nodes[0].attributes["owner_named_origin"], "Alpha")
             self.assertEqual(response.nodes[0].attributes["declared_receiver_mode"], "value")

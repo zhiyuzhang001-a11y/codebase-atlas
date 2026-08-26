@@ -15,6 +15,7 @@ from codebase_atlas.go_dependencies import (
     dependency_plan, dependency_status, module_roots, prepare_dependencies,
     validate_proxy,
 )
+from codebase_atlas.go_environment import TELEMETRY_MODE, telemetry_mode_paths
 from codebase_atlas.maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 
 
@@ -108,12 +109,56 @@ class GoDependencyTests(unittest.TestCase):
             self.assertTrue(dependency_manifest_path(config).is_file())
             root = config.data_dir / "go-provider"
             for _command, _cwd, env in runner.calls:
-                for name in ("HOME", "TMPDIR", "GOMODCACHE", "GOCACHE", "GOPATH"):
+                for name in (
+                    "HOME", "TMPDIR", "GOMODCACHE", "GOCACHE", "GOPATH",
+                    "XDG_CONFIG_HOME", "APPDATA",
+                ):
                     self.assertTrue(Path(env[name]).resolve().is_relative_to(root.resolve()))
                 self.assertEqual(env["GOTOOLCHAIN"], "local")
                 self.assertEqual(env["GOTELEMETRY"], "off")
                 self.assertEqual(env["GOFLAGS"], "-mod=readonly")
+            for path in telemetry_mode_paths(root):
+                self.assertEqual(path.read_bytes(), TELEMETRY_MODE)
+                self.assertFalse(path.is_symlink())
             self.assertTrue(dependency_status(config, runner=runner)["ok"])
+
+    def test_apply_refuses_symlinked_go_environment_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = self.config(root)
+            provider = config.data_dir / "go-provider"
+            provider.mkdir(parents=True)
+            outside = root / "outside"
+            outside.mkdir()
+            (provider / "home").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(GoDependencyError, "go_environment_unsafe"):
+                prepare_dependencies(config, runner=RecordingRunner())
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_apply_repairs_regular_mode_bytes_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config = self.config(Path(raw))
+            runner = RecordingRunner()
+            prepare_dependencies(config, runner=runner)
+            modes = telemetry_mode_paths(config.data_dir / "go-provider")
+            modes[0].write_bytes(b"local\n")
+            prepare_dependencies(config, runner=runner)
+            self.assertTrue(all(path.read_bytes() == TELEMETRY_MODE for path in modes))
+
+    def test_apply_refuses_symlinked_telemetry_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = self.config(root)
+            runner = RecordingRunner()
+            prepare_dependencies(config, runner=runner)
+            mode = telemetry_mode_paths(config.data_dir / "go-provider")[0]
+            outside = root / "outside-mode"
+            outside.write_bytes(b"local\n")
+            mode.unlink()
+            mode.symlink_to(outside)
+            with self.assertRaisesRegex(GoDependencyError, "go_environment_unsafe"):
+                prepare_dependencies(config, runner=runner)
+            self.assertEqual(outside.read_bytes(), b"local\n")
 
     def test_download_failure_is_explicit_and_does_not_publish_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

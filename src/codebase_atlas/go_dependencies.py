@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import uuid
 
 from .config import AtlasConfig
+from .go_environment import GoEnvironmentError, contained_go_environment
 from .providers.go import source_fingerprint
 
 
@@ -68,22 +69,16 @@ def dependency_manifest_path(config: AtlasConfig) -> Path:
 def _environment(config: AtlasConfig, proxy: str, *, create: bool) -> dict[str, str]:
     proxy = validate_proxy(proxy)
     root = dependency_root(config)
-    paths = {
-        "HOME": root / "home",
-        "TMPDIR": root / "tmp",
-        "GOMODCACHE": root / "gomodcache",
-        "GOCACHE": root / "gocache",
-        "GOPATH": root / "gopath",
-    }
-    if create:
-        for path in paths.values():
-            path.mkdir(parents=True, exist_ok=True)
+    try:
+        paths = contained_go_environment(root, create=create)
+    except GoEnvironmentError as exc:
+        raise GoDependencyError("go_environment_unsafe", str(exc)) from exc
     go = config.go
     if go is None:
         raise GoDependencyError("go_toolchain_unavailable", "Go is not configured")
     return {
         "PATH": f"{go.parent}:/usr/bin:/bin:/usr/sbin:/sbin",
-        **{name: str(path) for name, path in paths.items()},
+        **paths,
         "GOTOOLCHAIN": "local",
         "GOTELEMETRY": "off",
         "GOENV": "off",

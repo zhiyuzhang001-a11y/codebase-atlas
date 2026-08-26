@@ -17,6 +17,8 @@ from time import monotonic
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from ..go_environment import GoEnvironmentError, contained_go_environment
+
 
 CONTRACT_VERSION = "m27-go-v1"
 PROVIDER = "gopls-0.23.0"
@@ -520,20 +522,14 @@ class _GoAdapter:
         self._function_ranges_cache: dict[Path, tuple[dict[str, Any], ...]] = {}
 
     def _environment(self) -> dict[str, str]:
-        for directory in (
-            self.data_root / "home", self.data_root / "tmp",
-            self.data_root / "gomodcache", self.data_root / "gocache",
-            self.data_root / "gopath", self.data_root / "logs",
-        ):
-            directory.mkdir(parents=True, exist_ok=True)
+        try:
+            paths = contained_go_environment(self.data_root, create=True)
+        except GoEnvironmentError as exc:
+            raise GoAdapterError("go_environment_unsafe", str(exc)) from exc
         go_work = self.workspace_root / "go.work"
         return {
             "PATH": f"{self.go.parent}:{self.gopls.parent}:/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": str(self.data_root / "home"),
-            "TMPDIR": str(self.data_root / "tmp"),
-            "GOMODCACHE": str(self.data_root / "gomodcache"),
-            "GOCACHE": str(self.data_root / "gocache"),
-            "GOPATH": str(self.data_root / "gopath"),
+            **paths,
             "GOTOOLCHAIN": "local",
             "GOPROXY": "off",
             "GOSUMDB": "off",
@@ -591,6 +587,7 @@ class _GoAdapter:
                 "GOPATH": env["GOPATH"], "GOWORK": env["GOWORK"],
             },
             "directoryFilters": ["-**/node_modules", "-**/vendor"],
+            "staticcheck": False,
         }
         self.build_context_fingerprint = digest({
             "contract": CONTRACT_VERSION,
@@ -608,6 +605,7 @@ class _GoAdapter:
                     if name not in {"GOMODCACHE", "GOCACHE", "GOPATH"}
                 },
                 "directoryFilters": settings["directoryFilters"],
+                "staticcheck": settings["staticcheck"],
                 "cache_policy": "atlas-data-root-contained",
             },
         })
