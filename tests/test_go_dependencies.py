@@ -26,10 +26,14 @@ class Completed:
 
 
 class RecordingRunner:
-    def __init__(self, *, fail_download: bool = False, mutate: Path | None = None) -> None:
+    def __init__(
+        self, *, fail_download: bool = False, mutate: Path | None = None,
+        write_working_sum: bool = False,
+    ) -> None:
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
         self.fail_download = fail_download
         self.mutate = mutate
+        self.write_working_sum = write_working_sum
 
     def __call__(self, command: list[str], **kwargs: object) -> Completed:
         cwd = Path(str(kwargs["cwd"]))
@@ -45,6 +49,8 @@ class RecordingRunner:
                 self.mutate = None
             if self.fail_download:
                 return Completed(1, stderr="dependency missing")
+            if self.write_working_sum:
+                (cwd / "go.sum").write_text("download-added-sum\n", encoding="utf-8")
             cache = Path(env["GOMODCACHE"])
             module = cwd.name
             base = cache / "cache/download/example.test" / module / "@v"
@@ -123,6 +129,14 @@ class GoDependencyTests(unittest.TestCase):
             with self.assertRaisesRegex(GoDependencyError, "source_changed"):
                 prepare_dependencies(config, runner=RecordingRunner(mutate=go_mod))
             self.assertFalse(dependency_manifest_path(config).exists())
+
+    def test_download_writes_only_staged_metadata_not_source_go_sum(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config = self.config(Path(raw))
+            source_sum = config.repository / "go.sum"
+            self.assertFalse(source_sum.exists())
+            prepare_dependencies(config, runner=RecordingRunner(write_working_sum=True))
+            self.assertFalse(source_sum.exists())
 
     def test_manifest_becomes_stale_when_module_input_changes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

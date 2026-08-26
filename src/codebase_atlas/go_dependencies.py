@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 from typing import Any, Callable
 from urllib.parse import urlsplit
 import uuid
@@ -170,6 +172,35 @@ def dependency_input_fingerprint(config: AtlasConfig, modules: list[Path]) -> st
     ).hexdigest()
 
 
+def _stage_metadata(
+    config: AtlasConfig, modules: list[Path],
+) -> tuple[tempfile.TemporaryDirectory[str], list[tuple[Path, Path]], Path | None]:
+    staging_parent = dependency_root(config) / "tmp"
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    temporary = tempfile.TemporaryDirectory(prefix="dependency-metadata-", dir=staging_parent)
+    staged_repository = Path(temporary.name) / "repository"
+    pairs: list[tuple[Path, Path]] = []
+    for module in modules:
+        relative = module.resolve().relative_to(config.repository.resolve())
+        staged = staged_repository / relative
+        staged.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(module / "go.mod", staged / "go.mod")
+        if (module / "go.sum").is_file():
+            shutil.copy2(module / "go.sum", staged / "go.sum")
+        pairs.append((module, staged))
+    staged_work = None
+    workspace = config.go_workspace
+    if workspace is not None and (workspace / "go.work").is_file():
+        relative = workspace.resolve().relative_to(config.repository.resolve())
+        staged_workspace = staged_repository / relative
+        staged_workspace.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(workspace / "go.work", staged_workspace / "go.work")
+        if (workspace / "go.work.sum").is_file():
+            shutil.copy2(workspace / "go.work.sum", staged_workspace / "go.work.sum")
+        staged_work = staged_workspace / "go.work"
+    return temporary, pairs, staged_work
+
+
 def dependency_plan(
     config: AtlasConfig, *, proxy: str = DEFAULT_GO_PROXY,
     runner: Runner = subprocess.run,
@@ -218,41 +249,46 @@ def prepare_dependencies(
     if version.returncode != 0 or "go version go1.27.0 " not in version.stdout:
         raise GoDependencyError("go_toolchain_unavailable", (version.stderr or version.stdout).strip())
     downloaded: list[dict[str, Any]] = []
-    for module in modules:
-        completed = _run(
-            [str(go), "mod", "download", "-json", "all"], cwd=module,
-            env=env | {"GOWORK": "off"}, runner=runner,
-        )
-        if completed.returncode != 0:
-            raise GoDependencyError(
-                "go_dependency_download_failed", (completed.stderr or completed.stdout).strip(),
-            )
-        values = _json_stream(completed.stdout)
-        errors = [item.get("Error") for item in values if item.get("Error")]
-        if errors:
-            raise GoDependencyError("go_dependency_download_failed", "; ".join(map(str, errors)))
-        downloaded.extend(values)
-    after_download = source_fingerprint(config.repository)
-    if after_download != before:
-        raise GoDependencyError("source_changed", "repository changed during dependency download")
-
-    offline_env = env | {"GOPROXY": "off", "GOSUMDB": "off", "GOWORK": "off"}
     verified: list[dict[str, Any]] = []
-    cache = Path(env["GOMODCACHE"]).resolve()
-    for module in modules:
-        completed = _run(
-            [str(go), "mod", "download", "-json", "all"], cwd=module,
-            env=offline_env, runner=runner,
-        )
-        if completed.returncode != 0:
-            raise GoDependencyError(
-                "go_dependencies_unavailable", (completed.stderr or completed.stdout).strip(),
+    temporary, staged_modules, staged_work = _stage_metadata(config, modules)
+    try:
+        work_value = str(staged_work) if staged_work is not None else "off"
+        for _source_module, staged_module in staged_modules:
+            completed = _run(
+                [str(go), "mod", "download", "-json", "all"], cwd=staged_module,
+                env=env | {"GOWORK": work_value}, runner=runner,
             )
-        values = _json_stream(completed.stdout)
-        errors = [item.get("Error") for item in values if item.get("Error")]
-        if errors:
-            raise GoDependencyError("go_dependencies_unavailable", "; ".join(map(str, errors)))
-        verified.extend(values)
+            if completed.returncode != 0:
+                raise GoDependencyError(
+                    "go_dependency_download_failed", (completed.stderr or completed.stdout).strip(),
+                )
+            values = _json_stream(completed.stdout)
+            errors = [item.get("Error") for item in values if item.get("Error")]
+            if errors:
+                raise GoDependencyError("go_dependency_download_failed", "; ".join(map(str, errors)))
+            downloaded.extend(values)
+        after_download = source_fingerprint(config.repository)
+        if after_download != before:
+            raise GoDependencyError("source_changed", "repository changed during dependency download")
+
+        offline_env = env | {"GOPROXY": "off", "GOSUMDB": "off", "GOWORK": work_value}
+        for _source_module, staged_module in staged_modules:
+            completed = _run(
+                [str(go), "mod", "download", "-json", "all"], cwd=staged_module,
+                env=offline_env, runner=runner,
+            )
+            if completed.returncode != 0:
+                raise GoDependencyError(
+                    "go_dependencies_unavailable", (completed.stderr or completed.stdout).strip(),
+                )
+            values = _json_stream(completed.stdout)
+            errors = [item.get("Error") for item in values if item.get("Error")]
+            if errors:
+                raise GoDependencyError("go_dependencies_unavailable", "; ".join(map(str, errors)))
+            verified.extend(values)
+    finally:
+        temporary.cleanup()
+    cache = Path(env["GOMODCACHE"]).resolve()
     artifacts: list[dict[str, str]] = []
     seen = set()
     for item in verified or downloaded:
