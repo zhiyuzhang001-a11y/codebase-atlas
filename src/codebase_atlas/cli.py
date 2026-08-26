@@ -15,6 +15,10 @@ import subprocess
 
 from . import __version__
 from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
+from .go_dependencies import (
+    DEFAULT_GO_PROXY, GoDependencyError, dependency_check, dependency_plan,
+    dependency_status, prepare_dependencies,
+)
 from .index_state import (
     index_freshness,
     provider_database_health,
@@ -75,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--go", type=Path)
     setup.add_argument("--gopls", type=Path)
     setup.add_argument("--go-workspace", type=Path)
+    prepare = commands.add_parser(
+        "prepare-dependencies",
+        help="plan or explicitly populate the contained Go module cache",
+    )
+    prepare.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
+    prepare.add_argument("--apply", action="store_true")
+    prepare.add_argument("--go-proxy", default=DEFAULT_GO_PROXY)
     onboard = commands.add_parser("onboard", help="plan or explicitly apply a guided local onboarding flow")
     onboard.add_argument("--repo", type=Path, default=Path.cwd())
     onboard.add_argument("--config", type=Path)
@@ -274,6 +285,8 @@ def main(argv: list[str] | None = None) -> int:
             tsconfig=tsconfig,
             go=go, gopls=gopls, go_workspace=go_workspace,
         )
+        if candidate is not None and configured.language == "go":
+            checks.append(dependency_check(configured))
         ok = required_checks_ok(checks)
         print(json.dumps({
             "status": "ready" if ok else "incomplete",
@@ -283,6 +296,24 @@ def main(argv: list[str] | None = None) -> int:
             "checks": checks,
         }, indent=2))
         return 0 if ok else 2
+    if args.command == "prepare-dependencies":
+        config = AtlasConfig.load(args.config)
+        try:
+            result = (
+                prepare_dependencies(config, proxy=args.go_proxy)
+                if args.apply else dependency_plan(config, proxy=args.go_proxy)
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        except GoDependencyError as exc:
+            print(json.dumps({
+                "status": "failed", "code": exc.code, "detail": exc.detail,
+                "remediation": (
+                    "fix the reported workspace/proxy/dependency condition and "
+                    "run prepare-dependencies --apply again"
+                ),
+            }, ensure_ascii=False, indent=2))
+            return 2
     if args.command == "init":
         config_path = (args.config or args.repo / CONFIG_NAME).resolve()
         config = AtlasConfig.discover(
@@ -904,6 +935,11 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     if capability(config.language).live_provider:
         if config.go is None or config.gopls is None or config.go_workspace is None:
             raise RuntimeError("Go runtime configuration is incomplete")
+        dependencies = dependency_status(config)
+        if not dependencies["ok"]:
+            raise RuntimeError(
+                f"{dependencies['reason']}: {dependencies.get('remediation', '')}"
+            )
         provider = direct_provider_for(
             config.language, repository=config.repository,
             data_root=config.data_dir / "go-provider", go=config.go,

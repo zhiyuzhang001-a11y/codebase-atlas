@@ -72,10 +72,14 @@ codebase-atlas init
 codebase-atlas index
 codebase-atlas doctor
 
-# Candidate Go setup never installs Go or gopls:
-codebase-atlas onboard --repo /path/to/go-repo --language go \
+# Candidate Go setup never installs Go or gopls. Initialize first:
+codebase-atlas init --repo /path/to/go-repo --language go \
   --go /path/to/go1.27.0/bin/go --gopls /path/to/gopls-v0.23.0 \
-  --go-workspace . --apply
+  --go-workspace .
+# Read-only dependency plan, then explicit contained network preparation:
+codebase-atlas prepare-dependencies --config /path/to/go-repo/.codebase-atlas.toml
+codebase-atlas prepare-dependencies --config /path/to/go-repo/.codebase-atlas.toml --apply
+codebase-atlas index --config /path/to/go-repo/.codebase-atlas.toml
 codebase-atlas query definition Run --target-path app/identity.go \
   --target-owner Alpha
 
@@ -98,6 +102,16 @@ codebase-atlas clean --apply          # exact planned targets only
 `setup` is a read-only preflight: it executes version/import probes and returns
 machine-readable remediation without installing software or changing project,
 editor, or MCP configuration.
+
+Go dependency preparation is also dry-run-first. Only
+`prepare-dependencies --apply` may contact the selected module proxy and write
+the Atlas-owned cache. The default is `https://proxy.golang.org,direct`, so
+public module paths may be disclosed to that proxy, the Go checksum database,
+or their direct origins.
+Credential-bearing proxy URLs and private-module credential forwarding are not
+supported in this candidate. Preparation never changes the repository, global
+Go settings, editor, or MCP configuration; normal indexing and queries remain
+offline and return explicit remediation when the contained cache is incomplete.
 
 When source and Provider storage are already current, `update` takes an
 Atlas-owned fast path without starting the Provider. Configured queries expose

@@ -175,6 +175,8 @@ def _residue(config: AtlasConfig) -> list[dict[str, object]]:
     candidates: dict[Path, tuple[str, str]] = {}
     for path in config.data_dir.glob(".index-state-*.json"):
         candidates[path] = ("atlas_state_temporary", "warning")
+    for path in (config.data_dir / "go-provider").glob(".go-dependencies.json.*.tmp"):
+        candidates[path] = ("go_dependency_manifest_temporary", "warning")
     if database is not None:
         for path in config.cache_dir.glob(database.name + ".stage.*"):
             candidates[path] = ("provider_staging", "warning")
@@ -211,11 +213,17 @@ def inspect_installation(config: AtlasConfig, *, deep: bool = False) -> dict[str
         if config.language == "python"
         else {"status": "not_applicable", "ok": True}
     )
+    if config.language == "go":
+        from .go_dependencies import dependency_status
+        dependencies = dependency_status(config)
+    else:
+        dependencies = {"status": "not_applicable", "ok": True, "required": False}
     findings = _residue(config)
     core_ok = (
         bool(database["ok"])
         and bool(freshness["ok"])
         and bool(registrations["ok"])
+        and bool(dependencies["ok"])
     )
     remediation: list[str] = []
     if not database["ok"]:
@@ -224,6 +232,8 @@ def inspect_installation(config: AtlasConfig, *, deep: bool = False) -> dict[str
         remediation.append("run 'codebase-atlas update' to refresh the index safely")
     elif not registrations["ok"]:
         remediation.append("run 'codebase-atlas repair --apply' to rebuild the Python registration index")
+    elif not dependencies["ok"]:
+        remediation.append(str(dependencies.get("remediation", "run prepare-dependencies --apply")))
     if any(item["severity"] == "warning" for item in findings):
         remediation.append("review detected residue before using a future cleanup command")
     return {
@@ -237,6 +247,7 @@ def inspect_installation(config: AtlasConfig, *, deep: bool = False) -> dict[str
         "index": freshness,
         "provider_database": database,
         "python_registrations": registrations,
+        "go_dependencies": dependencies,
         "storage": _storage(config),
         "findings": findings,
         "remediation": remediation,
@@ -250,7 +261,16 @@ def repair_plan(report: dict[str, object]) -> dict[str, object]:
     registrations = report.get(
         "python_registrations", {"status": "not_applicable", "ok": True}
     )
-    assert isinstance(database, dict) and isinstance(index, dict) and isinstance(registrations, dict)
+    dependencies = report.get(
+        "go_dependencies", {"status": "not_applicable", "ok": True}
+    )
+    assert isinstance(database, dict) and isinstance(index, dict) and isinstance(registrations, dict) and isinstance(dependencies, dict)
+    if not bool(dependencies["ok"]):
+        return {
+            "action": "prepare_go_dependencies", "applicable": False,
+            "reason": str(dependencies.get("reason", "go_dependencies_unavailable")),
+            "remediation": str(dependencies.get("remediation", "")),
+        }
     database_status = str(database["status"])
     index_status = str(index["status"])
     if database_status == "unavailable":
@@ -289,6 +309,8 @@ def cleanup_plan(config: AtlasConfig) -> dict[str, object]:
 
     for path in config.data_dir.glob(".index-state-*.json"):
         proposed[path] = "atlas_state_temporary"
+    for path in (config.data_dir / "go-provider").glob(".go-dependencies.json.*.tmp"):
+        proposed[path] = "go_dependency_manifest_temporary"
     for pattern, kind in (
         (".python-registrations-*.json", "registration_index_temporary"),
         (".python-registrations-backup-*.json", "registration_index_backup"),

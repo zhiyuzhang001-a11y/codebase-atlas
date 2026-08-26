@@ -270,6 +270,7 @@ class AtlasConfig:
 
 
 def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
+    from .go_dependencies import dependency_check
     from .index_state import index_freshness, provider_database_health
     from .runtime import runtime_checks
 
@@ -313,4 +314,6 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
             "remediation": "" if provider_database["ok"] else "run 'codebase-atlas index'",
         },
     ])
+    if config.language == "go":
+        checks.append(dependency_check(config, **kwargs))
     return checks
