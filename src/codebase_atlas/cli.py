@@ -22,6 +22,7 @@ from .index_state import (
     repository_snapshot,
 )
 from .lifecycle import CodebaseMemoryDaemon
+from .languages import LANGUAGE_CHOICES, capability, select_language
 from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
 from .operations import (
@@ -32,7 +33,7 @@ from .operations import (
     unknown_operational_status,
 )
 from .onboarding import OnboardingInputs, apply_plan, build_plan
-from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
+from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider, direct_provider_for
 from .python_registration_store import (
     RegistrationIndexError,
     load_registration_index_state,
@@ -50,34 +51,43 @@ def main(argv: list[str] | None = None) -> int:
     initialize = commands.add_parser("init", help="create a project-local Atlas configuration")
     initialize.add_argument("--repo", type=Path, default=Path.cwd())
     initialize.add_argument("--config", type=Path)
-    initialize.add_argument("--language", choices=("python", "typescript"))
+    initialize.add_argument("--language", choices=LANGUAGE_CHOICES)
     initialize.add_argument("--node", type=Path)
     initialize.add_argument("--cbm-binary", type=Path)
     initialize.add_argument("--serena-python", type=Path)
     initialize.add_argument("--node-bin-dir", type=Path)
     initialize.add_argument("--tsconfig", type=Path)
     initialize.add_argument("--data-dir", type=Path)
+    initialize.add_argument("--go", type=Path)
+    initialize.add_argument("--gopls", type=Path)
+    initialize.add_argument("--go-workspace", type=Path)
     setup = commands.add_parser(
         "setup", help="read-only compatibility check for required local runtimes"
     )
     setup.add_argument("--repo", type=Path, default=Path.cwd())
     setup.add_argument("--config", type=Path)
-    setup.add_argument("--language", choices=("python", "typescript"))
+    setup.add_argument("--language", choices=LANGUAGE_CHOICES)
     setup.add_argument("--node", type=Path)
     setup.add_argument("--cbm-binary", type=Path)
     setup.add_argument("--serena-python", type=Path)
     setup.add_argument("--node-bin-dir", type=Path)
     setup.add_argument("--tsconfig", type=Path)
+    setup.add_argument("--go", type=Path)
+    setup.add_argument("--gopls", type=Path)
+    setup.add_argument("--go-workspace", type=Path)
     onboard = commands.add_parser("onboard", help="plan or explicitly apply a guided local onboarding flow")
     onboard.add_argument("--repo", type=Path, default=Path.cwd())
     onboard.add_argument("--config", type=Path)
-    onboard.add_argument("--language", choices=("python", "typescript"))
+    onboard.add_argument("--language", choices=LANGUAGE_CHOICES)
     onboard.add_argument("--node", type=Path)
     onboard.add_argument("--cbm-binary", type=Path)
     onboard.add_argument("--serena-python", type=Path)
     onboard.add_argument("--node-bin-dir", type=Path)
     onboard.add_argument("--tsconfig", type=Path)
     onboard.add_argument("--data-dir", type=Path)
+    onboard.add_argument("--go", type=Path)
+    onboard.add_argument("--gopls", type=Path)
+    onboard.add_argument("--go-workspace", type=Path)
     onboard.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
     onboard.add_argument("--apply", action="store_true")
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
@@ -153,9 +163,12 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     mcp.add_argument("--serena-home", type=Path)
     mcp.add_argument("--metadata-root", type=Path)
-    mcp.add_argument("--language", choices=("python", "typescript"))
+    mcp.add_argument("--language", choices=LANGUAGE_CHOICES)
     mcp.add_argument("--node-bin-dir", type=Path)
     mcp.add_argument("--tsconfig", type=Path)
+    mcp.add_argument("--go", type=Path)
+    mcp.add_argument("--gopls", type=Path)
+    mcp.add_argument("--go-workspace", type=Path)
     mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
     query = commands.add_parser("query", help="run one query through the shared product service")
     query.add_argument("query_type", choices=("definition", "references", "callers", "callees", "related_tests", "impact"))
@@ -171,9 +184,12 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     query.add_argument("--serena-home", type=Path)
     query.add_argument("--metadata-root", type=Path)
-    query.add_argument("--language", choices=("python", "typescript"))
+    query.add_argument("--language", choices=LANGUAGE_CHOICES)
     query.add_argument("--node-bin-dir", type=Path)
     query.add_argument("--tsconfig", type=Path)
+    query.add_argument("--go", type=Path)
+    query.add_argument("--gopls", type=Path)
+    query.add_argument("--go-workspace", type=Path)
     query.add_argument("--target-path", default="")
     query.add_argument("--target-owner", default="")
     query.add_argument("--relation", choices=("registers",), default="")
@@ -212,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         plan, config = build_plan(OnboardingInputs(
             args.repo, config_path, args.language, args.node, args.cbm_binary,
             args.serena_python, args.node_bin_dir, args.tsconfig, args.data_dir,
-            args.mode,
+            args.mode, args.go, args.gopls, args.go_workspace,
         ))
         if not args.apply:
             print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -234,18 +250,20 @@ def main(argv: list[str] | None = None) -> int:
             serena_python = configured.serena_python
             node_bin_dir = configured.node_bin_dir
             tsconfig = configured.tsconfig
+            go = configured.go
+            gopls = configured.gopls
+            go_workspace = configured.go_workspace
         else:
             repository = args.repo
-            language = args.language or (
-                "typescript"
-                if args.tsconfig is not None or (repository / "tsconfig.json").is_file()
-                else "python"
-            )
+            language = select_language(repository, args.language)
             node = args.node
             cbm_binary = args.cbm_binary
             serena_python = args.serena_python
             node_bin_dir = args.node_bin_dir
             tsconfig = args.tsconfig
+            go = args.go
+            gopls = args.gopls
+            go_workspace = args.go_workspace
         checks = runtime_checks(
             repository,
             language=language,
@@ -254,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
             serena_python=serena_python,
             node_bin_dir=node_bin_dir,
             tsconfig=tsconfig,
+            go=go, gopls=gopls, go_workspace=go_workspace,
         )
         ok = required_checks_ok(checks)
         print(json.dumps({
@@ -272,8 +291,14 @@ def main(argv: list[str] | None = None) -> int:
             node_bin_dir=args.node_bin_dir,
             tsconfig=args.tsconfig,
             data_dir=args.data_dir,
+            go=args.go, gopls=args.gopls, go_workspace=args.go_workspace,
         )
-        config.write(config_path)
+        try:
+            config.write_exclusive(config_path)
+        except FileExistsError as exc:
+            raise SystemExit(
+                f"config already exists and was not replaced: {config_path}"
+            ) from exc
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
         return 0
     if args.command == "inspect":
@@ -440,7 +465,11 @@ def main(argv: list[str] | None = None) -> int:
             checks = diagnose(config)
             ok = required_checks_ok(checks)
             freshness = index_freshness(config.data_dir, config.repository, config.project)
-            provider_database = provider_database_health(config.cache_dir, config.project)
+            provider_database = (
+                {"status": "live", "ok": True, "reason": "provider_is_live"}
+                if capability(config.language).live_provider
+                else provider_database_health(config.cache_dir, config.project)
+            )
             print(json.dumps({
                 "status": "ready" if ok else "incomplete",
                 "index": freshness,
@@ -451,7 +480,11 @@ def main(argv: list[str] | None = None) -> int:
         config_identity, config_bytes = _config_publication_snapshot(args.config)
         if args.command == "update" and not args.force_provider:
             freshness = index_freshness(config.data_dir, config.repository, config.project)
-            provider_database = provider_database_health(config.cache_dir, config.project)
+            provider_database = (
+                {"status": "live", "ok": True, "reason": "provider_is_live"}
+                if capability(config.language).live_provider
+                else provider_database_health(config.cache_dir, config.project)
+            )
             registration_health = registration_index_health(
                 config.data_dir,
                 config.repository,
@@ -694,12 +727,10 @@ def main(argv: list[str] | None = None) -> int:
                     args.stale_policy,
                 ), ensure_ascii=False, indent=2))
                 return 3
-        lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
-        structural = CodebaseMemoryImpactProvider(
-            args.binary,
-            args.repo,
-            args.cache_dir,
-            args.project,
+        is_go = capability(args.language).live_provider
+        lifecycle = None if is_go else CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
+        structural = None if is_go else CodebaseMemoryImpactProvider(
+            args.binary, args.repo, args.cache_dir, args.project,
         )
         registration_index = None
         if args.language == "python" and getattr(args, "data_dir", None) is not None:
@@ -729,7 +760,7 @@ def main(argv: list[str] | None = None) -> int:
         service = AtlasService(
             repository=args.repo,
             structural_provider=structural,
-            semantic_provider=SerenaSemanticProvider(
+            semantic_provider=None if is_go else SerenaSemanticProvider(
                 args.serena_python,
                 args.serena_runner,
                 args.repo,
@@ -738,10 +769,15 @@ def main(argv: list[str] | None = None) -> int:
                 language=args.language,
                 node_bin_dir=args.node_bin_dir,
             ),
-            test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
+            test_provider=None if is_go else TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
             impact_provider=structural,
             lifecycle=lifecycle,
             registration_index=registration_index,
+            direct_provider=direct_provider_for(
+                args.language, repository=args.repo,
+                data_root=args.data_dir / "go-provider", go=args.go,
+                gopls=args.gopls, workspace_root=args.go_workspace,
+            ),
             session_continuations=args.command in {"mcp", "query-batch"},
         )
         with service:
@@ -828,22 +864,34 @@ def _apply_project_config(args) -> None:
         args.language = config.language
         args.node_bin_dir = config.node_bin_dir
         args.tsconfig = config.tsconfig
+        args.go = config.go
+        args.gopls = config.gopls
+        args.go_workspace = config.go_workspace
         args.index_status = operational_index_status(
             config.data_dir,
             config.repository,
             config.cache_dir,
             config.project,
+            config.language,
         )
         args.data_dir = config.data_dir
     else:
         args.index_status = unknown_operational_status()
         args.data_dir = None
-    required = {
-        "repo": args.repo, "node": args.node, "binary": args.binary,
-        "cache_dir": args.cache_dir, "project": args.project,
-        "serena_python": args.serena_python, "serena_home": args.serena_home,
-        "metadata_root": args.metadata_root, "language": args.language,
-    }
+    selected = capability(args.language)
+    required = {"repo": args.repo, "project": args.project, "language": args.language}
+    if selected.requires_node:
+        required["node"] = args.node
+    if selected.requires_cbm:
+        required.update({"binary": args.binary, "cache_dir": args.cache_dir})
+    if selected.requires_serena:
+        required.update({
+            "serena_python": args.serena_python,
+            "serena_home": args.serena_home,
+            "metadata_root": args.metadata_root,
+        })
+    if selected.requires_go:
+        required.update({"go": args.go, "gopls": args.gopls, "go_workspace": args.go_workspace})
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise SystemExit(
@@ -853,6 +901,18 @@ def _apply_project_config(args) -> None:
 
 
 def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
+    if capability(config.language).live_provider:
+        if config.go is None or config.gopls is None or config.go_workspace is None:
+            raise RuntimeError("Go runtime configuration is incomplete")
+        provider = direct_provider_for(
+            config.language, repository=config.repository,
+            data_root=config.data_dir / "go-provider", go=config.go,
+            gopls=config.gopls, workspace_root=config.go_workspace,
+        )
+        assert provider is not None
+        provider.start()
+        provider.close()
+        return {"status": "indexed", "project": "gopls", "nodes": None, "edges": None}
     config.cache_dir.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["CBM_CACHE_DIR"] = str(config.cache_dir)

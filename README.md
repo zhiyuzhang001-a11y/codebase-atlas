@@ -6,6 +6,10 @@ Current release line: **0.18.0**, adding resumable exact TypeScript reference
 pages inside one MCP or JSON-lines batch session while retaining the 0.17 exact
 Python registration and transactional onboarding workflow.
 
+The current unreleased source candidate also adds bounded Go support through an
+Atlas-owned `gopls` v0.23.0 process and an explicit Go 1.27.0 toolchain. This is
+not part of the 0.18.0 release until the remaining M27 validation gates pass.
+
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
 exact TS/JS relation and test mapping, identity-safe impact traversal, exact
@@ -16,7 +20,7 @@ query budgets, index freshness, and product interfaces.
 
 - local and read-only against user source;
 - provider-neutral result and graph contracts;
-- Python and TypeScript/JavaScript repositories;
+- Python, TypeScript/JavaScript, and candidate Go repositories;
 - exact TS/JS Vitest/Jest callback mapping;
 - path and owner-qualified identity for same-name symbols and members;
 - explicit-depth impact traversal over stable identities;
@@ -30,6 +34,8 @@ query budgets, index freshness, and product interfaces.
 - large-repository and monorepo subproject support;
 - bounded same-session continuation for wide exact TypeScript references;
 - one shared six-query service exposed by CLI, JSON-lines batch API, and read-only MCP.
+- exact Go package/receiver identity, static call/test mapping, offline caches,
+  and owned `gopls` shutdown; Go queries require `target_path`.
 
 UI, automatic source edits, and cloud sync remain out of scope.
 
@@ -61,6 +67,13 @@ codebase-atlas setup
 codebase-atlas init
 codebase-atlas index
 codebase-atlas doctor
+
+# Candidate Go setup never installs Go or gopls:
+codebase-atlas onboard --repo /path/to/go-repo --language go \
+  --go /path/to/go1.27.0/bin/go --gopls /path/to/gopls-v0.23.0 \
+  --go-workspace . --apply
+codebase-atlas query definition Run --target-path app/identity.go \
+  --target-owner Alpha
 
 # After source changes:
 codebase-atlas update

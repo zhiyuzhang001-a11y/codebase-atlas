@@ -11,6 +11,7 @@ import sys
 from typing import Callable, Any
 
 from .config import _asset
+from .languages import capability, go_workspace_root
 
 
 Runner = Callable[..., Any]
@@ -73,10 +74,14 @@ def runtime_checks(
     serena_python: Path | None = None,
     node_bin_dir: Path | None = None,
     tsconfig: Path | None = None,
+    go: Path | None = None,
+    gopls: Path | None = None,
+    go_workspace: Path | None = None,
     runner: Runner = subprocess.run,
 ) -> list[dict[str, object]]:
     """Inspect required runtimes without installing software or changing config."""
     repo = repository.resolve()
+    selected = capability(language)
     node_path = _candidate(node, "ATLAS_NODE", "node")
     cbm_path = _candidate(cbm_binary, "ATLAS_CBM_BINARY", "codebase-memory-mcp")
     serena_path = serena_python or (
@@ -114,6 +119,7 @@ def runtime_checks(
     checks.append(_check(
         "node", node_ok, path=node_path, version=node_version, detail=node_detail,
         remediation="install Node.js 18 or newer, or pass --node /absolute/path/to/node",
+        required=selected.requires_node,
     ))
 
     cbm_ok = False
@@ -132,6 +138,7 @@ def runtime_checks(
             "run 'python -m pip install codebase-memory-mcp', or pass "
             "--cbm-binary /absolute/path/to/codebase-memory-mcp"
         ),
+        required=selected.requires_cbm,
     ))
 
     serena_ok = False
@@ -156,6 +163,7 @@ def runtime_checks(
             "run 'uv tool install -p 3.13 serena-agent', then pass a Python interpreter "
             "that can import serena with --serena-python or ATLAS_SERENA_PYTHON"
         ),
+        required=selected.requires_serena,
     ))
 
     analyzer = _asset("ts_test_analyzer.mjs")
@@ -208,6 +216,42 @@ def runtime_checks(
                 "install npm beside the configured Node.js runtime, or provide a "
                 "node bin directory containing typescript-language-server"
             ),
+        ))
+    if selected.requires_go:
+        go_path = _candidate(go, "ATLAS_GO", "go")
+        gopls_path = _candidate(gopls, "ATLAS_GOPLS", "gopls")
+        go_ok = False
+        go_version = ""
+        if go_path:
+            ran, output = _run_version([str(go_path), "version"], runner=runner)
+            match = re.search(r"go version go(\d+\.\d+(?:\.\d+)?)", output)
+            go_version = match.group(1) if match else output
+            go_ok = bool(ran and match and match.group(1) == "1.27.0")
+        checks.append(_check(
+            "go_toolchain", go_ok, path=go_path, version=go_version,
+            detail=("Go 1.27.0 contract runtime is available" if go_ok else "Go 1.27.0 is required exactly"),
+            remediation="provide Go 1.27.0 with --go or ATLAS_GO; Atlas never installs it",
+        ))
+        gopls_ok = False
+        gopls_version = ""
+        if gopls_path:
+            ran, output = _run_version([str(gopls_path), "version"], runner=runner)
+            gopls_version = output
+            gopls_ok = bool(ran and output.split() and output.split()[-1] == "v0.23.0")
+        checks.append(_check(
+            "gopls", gopls_ok, path=gopls_path, version=gopls_version,
+            detail=("gopls v0.23.0 contract Provider is available" if gopls_ok else "gopls v0.23.0 is required exactly"),
+            remediation="provide gopls v0.23.0 with --gopls or ATLAS_GOPLS; Atlas never installs it",
+        ))
+        try:
+            workspace = go_workspace_root(repo, go_workspace)
+            workspace_ok, workspace_detail = True, "deterministic Go workspace selected"
+        except ValueError as exc:
+            workspace, workspace_ok, workspace_detail = None, False, str(exc)
+        checks.append(_check(
+            "go_workspace", workspace_ok, path=workspace,
+            detail=workspace_detail,
+            remediation="pass --go-workspace for repositories with multiple modules or workspaces",
         ))
     return checks
 

@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from .config import AtlasConfig
 from .index_state import index_freshness
+from .languages import capability
 from .python_registration_store import registration_index_health
 
 
@@ -39,6 +40,7 @@ def _storage(config: AtlasConfig) -> dict[str, object]:
         "serena_home": config.serena_home,
         "serena_metadata": config.metadata_root,
         "index_state": config.data_dir / "index-state.json",
+        "go_provider": config.data_dir / "go-provider",
     }
     entries: list[dict[str, object]] = []
     for name, path in components.items():
@@ -67,6 +69,11 @@ def _database_path(config: AtlasConfig) -> Path | None:
 
 def inspect_provider_database(config: AtlasConfig, *, deep: bool = False) -> dict[str, object]:
     """Inspect the Provider database through a read-only SQLite connection."""
+    if capability(config.language).live_provider:
+        return {
+            "status": "ready", "ok": True, "reason": "provider_is_live",
+            "path": str(config.data_dir / "go-provider"), "deep_check": deep,
+        }
     database = _database_path(config)
     if database is None:
         return {

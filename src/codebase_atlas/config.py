@@ -11,6 +11,8 @@ import stat
 import sys
 import tomllib
 
+from .languages import capability, go_workspace_root, select_language
+
 
 CONFIG_NAME = ".codebase-atlas.toml"
 
@@ -46,13 +48,16 @@ def default_data_dir(repository: Path) -> Path:
 class AtlasConfig:
     repository: Path
     language: str
-    node: Path
-    cbm_binary: Path
-    serena_python: Path
+    node: Path | None
+    cbm_binary: Path | None
+    serena_python: Path | None
     data_dir: Path
     project: str = ""
     node_bin_dir: Path | None = None
     tsconfig: Path | None = None
+    go: Path | None = None
+    gopls: Path | None = None
+    go_workspace: Path | None = None
 
     def __post_init__(self) -> None:
         for name in ("repository", "data_dir"):
@@ -60,11 +65,19 @@ class AtlasConfig:
         # Preserve virtualenv interpreter symlinks; resolving them bypasses
         # pyvenv.cfg and silently loses the installed Serena environment.
         for name in ("node", "cbm_binary", "serena_python"):
-            object.__setattr__(self, name, getattr(self, name).absolute())
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, value.absolute())
         if self.node_bin_dir is not None:
             object.__setattr__(self, "node_bin_dir", self.node_bin_dir.absolute())
         if self.tsconfig is not None:
             object.__setattr__(self, "tsconfig", self.tsconfig)
+        for name in ("go", "gopls"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, value.absolute())
+        if self.go_workspace is not None:
+            object.__setattr__(self, "go_workspace", self.go_workspace.resolve())
 
     @property
     def cache_dir(self) -> Path:
@@ -98,22 +111,28 @@ class AtlasConfig:
         node_bin_dir: Path | None = None,
         tsconfig: Path | None = None,
         data_dir: Path | None = None,
+        go: Path | None = None,
+        gopls: Path | None = None,
+        go_workspace: Path | None = None,
     ) -> "AtlasConfig":
         repo = repository.resolve()
-        selected_language = language or (
-            "typescript" if tsconfig is not None or (repo / "tsconfig.json").is_file() else "python"
-        )
+        selected_language = select_language(repo, language)
+        selected_capability = capability(selected_language)
         discovered_node = node or _which("node", "ATLAS_NODE")
         discovered_cbm = cbm_binary or _which("codebase-memory-mcp", "ATLAS_CBM_BINARY")
         discovered_serena = serena_python or (
             Path(os.environ["ATLAS_SERENA_PYTHON"]).absolute()
             if os.environ.get("ATLAS_SERENA_PYTHON") else None
         )
+        discovered_go = go or _which("go", "ATLAS_GO")
+        discovered_gopls = gopls or _which("gopls", "ATLAS_GOPLS")
         missing = [
             name for name, value in (
-                ("Node.js (--node or ATLAS_NODE)", discovered_node),
-                ("Codebase Memory (--cbm-binary or ATLAS_CBM_BINARY)", discovered_cbm),
-                ("Serena Python (--serena-python or ATLAS_SERENA_PYTHON)", discovered_serena),
+                ("Node.js (--node or ATLAS_NODE)", discovered_node if selected_capability.requires_node else True),
+                ("Codebase Memory (--cbm-binary or ATLAS_CBM_BINARY)", discovered_cbm if selected_capability.requires_cbm else True),
+                ("Serena Python (--serena-python or ATLAS_SERENA_PYTHON)", discovered_serena if selected_capability.requires_serena else True),
+                ("Go (--go or ATLAS_GO)", discovered_go if selected_capability.requires_go else True),
+                ("gopls (--gopls or ATLAS_GOPLS)", discovered_gopls if selected_capability.requires_gopls else True),
             ) if value is None
         ]
         if missing:
@@ -121,8 +140,14 @@ class AtlasConfig:
         return cls(
             repo, selected_language, discovered_node, discovered_cbm,
             discovered_serena, (data_dir or default_data_dir(repo)).resolve(),
-            node_bin_dir=node_bin_dir or discovered_node.parent,
+            node_bin_dir=node_bin_dir or (discovered_node.parent if discovered_node else None),
             tsconfig=tsconfig,
+            go=discovered_go if selected_capability.requires_go else go,
+            gopls=discovered_gopls if selected_capability.requires_gopls else gopls,
+            go_workspace=(
+                go_workspace_root(repo, go_workspace)
+                if selected_capability.requires_go else None
+            ),
         )
 
     @classmethod
@@ -132,12 +157,19 @@ class AtlasConfig:
         project = value["project"]
         node_bin = runtime.get("node_bin_dir", "")
         tsconfig = project.get("tsconfig", "")
+        go = runtime.get("go", "")
+        gopls = runtime.get("gopls", "")
+        workspace = project.get("go_workspace", "")
         return cls(
             Path(project["repository"]), project["language"],
-            Path(runtime["node"]), Path(runtime["cbm_binary"]),
-            Path(runtime["serena_python"]), Path(project["data_dir"]),
+            Path(runtime["node"]) if runtime.get("node") else None,
+            Path(runtime["cbm_binary"]) if runtime.get("cbm_binary") else None,
+            Path(runtime["serena_python"]) if runtime.get("serena_python") else None,
+            Path(project["data_dir"]),
             project.get("cbm_project", ""), Path(node_bin) if node_bin else None,
             Path(tsconfig) if tsconfig else None,
+            Path(go) if go else None, Path(gopls) if gopls else None,
+            Path(workspace) if workspace else None,
         )
 
     def with_project(self, project: str) -> "AtlasConfig":
@@ -152,11 +184,14 @@ class AtlasConfig:
             f'language = "{self.language}"\n'
             f'data_dir = "{quote(self.data_dir)}"\n'
             f'cbm_project = "{quote(self.project)}"\n'
-            f'tsconfig = "{quote(self.tsconfig) if self.tsconfig else ""}"\n\n[runtime]\n'
-            f'node = "{quote(self.node)}"\n'
+            f'tsconfig = "{quote(self.tsconfig) if self.tsconfig else ""}"\n'
+            f'go_workspace = "{quote(self.go_workspace) if self.go_workspace else ""}"\n\n[runtime]\n'
+            f'node = "{quote(self.node) if self.node else ""}"\n'
             f'node_bin_dir = "{node_bin}"\n'
-            f'cbm_binary = "{quote(self.cbm_binary)}"\n'
-            f'serena_python = "{quote(self.serena_python)}"\n'
+            f'cbm_binary = "{quote(self.cbm_binary) if self.cbm_binary else ""}"\n'
+            f'serena_python = "{quote(self.serena_python) if self.serena_python else ""}"\n'
+            f'go = "{quote(self.go) if self.go else ""}"\n'
+            f'gopls = "{quote(self.gopls) if self.gopls else ""}"\n'
         )
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,7 +284,14 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
         serena_python=config.serena_python,
         node_bin_dir=config.node_bin_dir,
         tsconfig=config.tsconfig,
+        go=config.go,
+        gopls=config.gopls,
+        go_workspace=config.go_workspace,
         **kwargs,
+    )
+    provider_database = (
+        {"status": "live", "ok": True, "reason": "provider_is_live"}
+        if capability(config.language).live_provider else provider_database
     )
     checks.extend([
         {

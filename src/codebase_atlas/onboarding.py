@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from .config import AtlasConfig, default_data_dir, diagnose
 from .index_state import index_freshness, provider_database_health, record_index_state, repository_snapshot
+from .languages import capability, select_language
 from .python_registration_store import (
     registration_index_health,
     stage_registration_index,
@@ -31,6 +32,9 @@ class OnboardingInputs:
     tsconfig: Path | None
     data_dir: Path | None
     mode: str
+    go: Path | None = None
+    gopls: Path | None = None
+    go_workspace: Path | None = None
 
 
 def _safe_path(path: Path, *, label: str, file_target: bool, anchor: Path | None = None) -> str | None:
@@ -114,6 +118,9 @@ def _configuration_conflict(config: AtlasConfig, inputs: OnboardingInputs, reque
         ("node_bin_dir", inputs.node_bin_dir, config.node_bin_dir),
         ("tsconfig", inputs.tsconfig, config.tsconfig),
         ("data_dir", inputs.data_dir, config.data_dir),
+        ("go", inputs.go, config.go),
+        ("gopls", inputs.gopls, config.gopls),
+        ("go_workspace", inputs.go_workspace, config.go_workspace),
     )
     for name, requested, existing in comparisons:
         if requested is not None and existing is not None and isinstance(requested, Path) and isinstance(existing, Path):
@@ -145,17 +152,32 @@ def build_plan(inputs: OnboardingInputs) -> tuple[dict[str, object], AtlasConfig
         repo, language = configured.repository, configured.language
         node, cbm, serena = configured.node, configured.cbm_binary, configured.serena_python
         node_bin, tsconfig, data_dir = configured.node_bin_dir, configured.tsconfig, configured.data_dir
+        go, gopls, go_workspace = configured.go, configured.gopls, configured.go_workspace
     else:
-        language = inputs.language or ("typescript" if inputs.tsconfig or (repo / "tsconfig.json").is_file() else "python")
+        try:
+            language = select_language(repo, inputs.language)
+        except ValueError as exc:
+            language = inputs.language or ""
+            path_error = path_error or str(exc)
         node, cbm, serena = inputs.node, inputs.cbm_binary, inputs.serena_python
         node_bin, tsconfig, data_dir = inputs.node_bin_dir, inputs.tsconfig, inputs.data_dir
+        go, gopls, go_workspace = inputs.go, inputs.gopls, inputs.go_workspace
     resolved_data_dir = data_dir or default_data_dir(repo)
     path_error = path_error or _safe_path(resolved_data_dir, label="data path", file_target=False, anchor=literal_anchor)
-    checks = runtime_checks(repo, language=language, node=node, cbm_binary=cbm, serena_python=serena, node_bin_dir=node_bin, tsconfig=tsconfig)
+    checks = runtime_checks(
+        repo, language=language or "python", node=node, cbm_binary=cbm,
+        serena_python=serena, node_bin_dir=node_bin, tsconfig=tsconfig,
+        go=go, gopls=gopls, go_workspace=go_workspace,
+    )
     ready = not path_error and required_checks_ok(checks)
     config = None
     if ready:
-        config = configured or AtlasConfig.discover(repo, language=language, node=node, cbm_binary=cbm, serena_python=serena, node_bin_dir=node_bin, tsconfig=tsconfig, data_dir=data_dir)
+        config = configured or AtlasConfig.discover(
+            repo, language=language, node=node, cbm_binary=cbm,
+            serena_python=serena, node_bin_dir=node_bin, tsconfig=tsconfig,
+            data_dir=data_dir, go=go, gopls=gopls,
+            go_workspace=go_workspace,
+        )
     apply_argv: list[str] = []
     if ready:
         # Keep the approved plan replayable even when its runtime paths were
@@ -169,6 +191,9 @@ def build_plan(inputs: OnboardingInputs) -> tuple[dict[str, object], AtlasConfig
             ("--node-bin-dir", node_bin),
             ("--tsconfig", tsconfig),
             ("--data-dir", data_dir),
+            ("--go", go),
+            ("--gopls", gopls),
+            ("--go-workspace", go_workspace),
         ):
             if value:
                 options += [flag, str(value)]
@@ -229,7 +254,11 @@ def apply_plan(plan: dict[str, object], config: AtlasConfig | None, *, indexer: 
             expected_identity = _file_identity(config_path)
         original_config_bytes = config_path.read_bytes()
         freshness = index_freshness(config.data_dir, config.repository, config.project)
-        database = provider_database_health(config.cache_dir, config.project)
+        database = (
+            {"status": "live", "ok": True, "reason": "provider_is_live"}
+            if capability(config.language).live_provider
+            else provider_database_health(config.cache_dir, config.project)
+        )
         registration_health = (
             registration_index_health(
                 config.data_dir,

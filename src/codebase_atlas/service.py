@@ -16,7 +16,7 @@ import sys
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from .contracts import Edge, Node, repository_path
+from .contracts import Edge, Node, SourceRange, repository_path
 from .graph import ImpactHit, ImpactTraversal
 from .index_state import repository_snapshot
 from .providers.python_callers import PythonExactCallerProvider
@@ -126,6 +126,7 @@ class AtlasService:
         impact_provider: CodebaseMemoryImpactProvider | None = None,
         lifecycle: CodebaseMemoryDaemon | None = None,
         registration_index: RegistrationIndex | None = None,
+        direct_provider: Any | None = None,
         session_continuations: bool = False,
     ) -> None:
         self.repository = repository.resolve() if repository is not None else None
@@ -135,10 +136,12 @@ class AtlasService:
         self.impact_provider = impact_provider
         self.lifecycle = lifecycle
         self.registration_index = registration_index
+        self.direct_provider = direct_provider
         self.session_continuations = session_continuations
         self.started = False
         self._structural_started = False
         self._semantic_started = False
+        self._direct_started = False
         self._python_reference_cache: OrderedDict[
             tuple[Path, str, str], tuple[Node, ...]
         ] = OrderedDict()
@@ -184,11 +187,25 @@ class AtlasService:
         self._semantic_started = True
         return True
 
+    def _ensure_direct(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
+        if self._direct_started:
+            return True
+        if self.direct_provider is None:
+            return False
+        try:
+            self.direct_provider.start(timeout_seconds=timeout_ms / 1000.0)
+        except TimeoutError:
+            return False
+        self._direct_started = True
+        return True
+
     def close(self) -> None:
         if not self.started:
             return
         try:
             try:
+                if self._direct_started and self.direct_provider is not None:
+                    self.direct_provider.close()
                 if self._semantic_started and self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
                     self.semantic_provider.close()
             finally:
@@ -196,6 +213,7 @@ class AtlasService:
                     self.lifecycle.close()
         finally:
             self._semantic_started = False
+            self._direct_started = False
             self._structural_started = False
             self._python_reference_cache.clear()
             self._python_complete_reference_cache.clear()
@@ -209,6 +227,83 @@ class AtlasService:
             raise RuntimeError("AtlasService.start() must be called before query()")
         started = monotonic()
         limits = self._limits(request)
+        if self.direct_provider is not None:
+            if request.parameters.get("relation"):
+                raise ValueError("relation is not supported by the configured language")
+            if not self._ensure_direct(limits["timeout_ms"]):
+                return self._time_budget_response(request.query_type, limits, started)
+            raw = self.direct_provider.query_product(
+                request.query_type,
+                request.symbol,
+                target_path=str(request.parameters.get("target_path", "")),
+                target_owner=str(request.parameters.get("target_owner", "")),
+                parameters=request.parameters,
+            )
+            nodes = tuple(Node(
+                id=str(item["id"]),
+                kind=str(item["kind"]),
+                name=str(item["name"]),
+                location=SourceRange(
+                    path=str(item["location"]["path"]),
+                    start_line=int(item["location"]["line"]),
+                    end_line=int(item["location"].get("end_line", item["location"]["line"])),
+                    start_column=int(item["location"].get("column", 1)),
+                    end_column=int(item["location"].get("end_column", item["location"].get("column", 1))),
+                ),
+                provider=str(item["provider"]),
+                confidence=float(item["confidence"]),
+                evidence_hash=str(item["evidence_hash"]),
+                attributes=dict(item.get("attributes", {})),
+            ) for item in raw["nodes"])
+            edges = tuple(Edge(
+                source_id=str(item["source_id"]),
+                target_id=str(item["target_id"]),
+                relation=str(item["relation"]),
+                provider=str(item["provider"]),
+                confidence=float(item["confidence"]),
+                evidence_hash=str(item["evidence_hash"]),
+                resolution=str(item.get("resolution", "exact")),
+                attributes=dict(item.get("attributes", {})),
+            ) for item in raw["edges"])
+            truncation = dict(raw.get("truncation", {}))
+            truncation["warnings"] = list(raw.get("warnings", []))
+            truncation["capability"] = raw.get("capability", "complete")
+            depths: dict[str, int] = {}
+            paths: dict[str, tuple[Edge, ...]] = {}
+            if request.query_type == "impact" and edges:
+                node_ids = {node.id for node in nodes}
+                direction = str(request.parameters.get("direction", "upstream"))
+                endpoint_ids = {
+                    endpoint for edge in edges
+                    for endpoint in (edge.source_id, edge.target_id)
+                }
+                roots = sorted(endpoint_ids - node_ids)
+                if roots:
+                    frontier = [(roots[0], 0, ())]
+                    seen = {roots[0]}
+                    while frontier:
+                        parent, depth, path = frontier.pop(0)
+                        candidates = (
+                            ((edge.source_id, edge) for edge in edges if edge.target_id == parent)
+                            if direction == "upstream"
+                            else ((edge.target_id, edge) for edge in edges if edge.source_id == parent)
+                        )
+                        for child, edge in candidates:
+                            if child in seen:
+                                continue
+                            seen.add(child)
+                            depths[child] = depth + 1
+                            paths[child] = path + (edge,)
+                            frontier.append((child, depth + 1, paths[child]))
+            return QueryResponse(
+                request.query_type,
+                nodes,
+                edges,
+                depths=depths,
+                paths=paths,
+                truncated=bool(truncation.get("reasons")),
+                truncation=truncation,
+            )
         if request.parameters.get("relation") == "registers":
             if self.registration_index is None:
                 return self._impact_response(
