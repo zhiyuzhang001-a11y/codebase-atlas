@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from codebase_atlas.codex_integration import codex_apply, codex_plan, codex_remove
 
@@ -60,6 +61,31 @@ class CodexIntegrationTests(unittest.TestCase):
         self.assertFalse(plan["mutates"])
         self.assertEqual(plan["transport"]["args"][-2:], ["--config", str(config.resolve())])
         self.assertTrue(plan["current_session_refresh_required"])
+
+    def test_fallback_preserves_virtualenv_interpreter_path(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config, codex, _atlas = self.paths(root)
+            target = root / "python-real"
+            target.write_text("")
+            virtualenv_python = root / "venv-python"
+            virtualenv_python.symlink_to(target)
+
+            def executable(candidate):
+                return str(codex) if candidate == str(codex) else None
+
+            with (
+                patch(
+                    "codebase_atlas.codex_integration.shutil.which",
+                    side_effect=executable,
+                ),
+                patch(
+                    "codebase_atlas.codex_integration.sys.executable",
+                    str(virtualenv_python),
+                ),
+            ):
+                plan = codex_plan(config, codex_binary=codex, runner=FakeRunner())
+        self.assertEqual(plan["transport"]["command"], str(virtualenv_python.absolute()))
 
     def test_apply_verifies_and_remove_only_deletes_matching_entry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

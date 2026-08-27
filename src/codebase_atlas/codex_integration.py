@@ -40,7 +40,9 @@ def _atlas_transport(
     discovered = shutil.which("codebase-atlas")
     if discovered:
         return str(Path(discovered).resolve()), ["mcp", "--config", str(config)]
-    return str(Path(sys.executable).resolve()), [
+    # Preserve a virtualenv interpreter path. Resolving its symlink bypasses
+    # pyvenv.cfg and can make the installed codebase_atlas package disappear.
+    return str(Path(sys.executable).absolute()), [
         "-m", "codebase_atlas.cli", "mcp", "--config", str(config)
     ]
 
