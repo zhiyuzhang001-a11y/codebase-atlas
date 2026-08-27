@@ -228,7 +228,11 @@ def main(argv: list[str] | None = None) -> int:
         kwargs = {
             "dest": action.dest,
             "required": action.required,
-            "default": 60_000 if action.dest == "timeout_ms" else action.default,
+            "default": (
+                60_000 if action.dest == "timeout_ms"
+                else 2 if action.dest == "depth"
+                else action.default
+            ),
         }
         if action.type is not None:
             kwargs["type"] = action.type
