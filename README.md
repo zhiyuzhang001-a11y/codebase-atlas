@@ -2,9 +2,10 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release line: **0.19.0**, adding a lightweight, dependency-free local
-graph UI while retaining resumable exact TypeScript references, exact Python
-registration relationships, and transactional onboarding.
+Current release line: **0.20.0**, adding a bounded task-oriented Change Brief
+and dry-run-first Codex integration while retaining the lightweight local UI,
+resumable exact TypeScript references, exact Python registration relationships,
+and transactional onboarding.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

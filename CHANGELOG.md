@@ -4,6 +4,22 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.20.0 — 2026-08-27
+
+- Add one bounded `analyze_change` product operation across CLI and MCP. It
+  resolves the exact definition first, stops on ambiguity, and returns callers,
+  callees, references, impact, related tests, recommended reads, provenance,
+  freshness and per-subquery completeness under one shared deadline.
+- Add dry-run-first `codex plan`, explicit `codex apply`, and identity-safe
+  `codex remove`; preserve virtualenv transports and refuse to overwrite or
+  remove a different existing MCP entry.
+- Bound Provider lock contention to two seconds, report `provider_busy`, reuse
+  that result within the service session, and reliably release owned Provider
+  state when an MCP client terminates.
+- Pass the 16-task Codebase Atlas/FastAPI/Vite acceptance with 16/16 exact
+  targets, 16/16 implementation Top-3, 14/16 test Top-5 and stable explicit
+  completeness; preserve M17 24/24 and M19 147/147 exact gates.
+
 ## 0.19.0 — 2026-08-27
 
 - Add a dependency-free, read-only browser UI bound strictly to loopback for all
