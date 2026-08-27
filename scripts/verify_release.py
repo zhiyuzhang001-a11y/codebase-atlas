@@ -30,6 +30,10 @@ def verify_wheel(path: Path, version: str) -> str:
         "codebase_atlas/runtime.py",
         "codebase_atlas/cli.py",
         "codebase_atlas/service.py",
+        "codebase_atlas/web_ui.py",
+        "codebase_atlas/ui_assets/index.html",
+        "codebase_atlas/ui_assets/app.css",
+        "codebase_atlas/ui_assets/app.js",
         "share/codebase-atlas/serena_runner.py",
         "share/codebase-atlas/ts_test_analyzer.mjs",
         "share/codebase-atlas/node_modules/typescript/LICENSE.txt",
@@ -48,6 +52,14 @@ def verify_wheel(path: Path, version: str) -> str:
             raise SystemExit("wheel metadata version does not match source")
         if "Requires-Python: <3.15,>=3.11" not in metadata and "Requires-Python: >=3.11,<3.15" not in metadata:
             raise SystemExit("wheel does not declare the supported Python range")
+        for name in (
+            "codebase_atlas/ui_assets/index.html",
+            "codebase_atlas/ui_assets/app.css",
+            "codebase_atlas/ui_assets/app.js",
+        ):
+            payload = next(archive.read(item) for item in names if item.endswith(name))
+            if not payload:
+                raise SystemExit(f"wheel contains an empty UI asset: {name}")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 

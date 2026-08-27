@@ -2,9 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release line: **0.18.0**, adding resumable exact TypeScript reference
-pages inside one MCP or JSON-lines batch session while retaining the 0.17 exact
-Python registration and transactional onboarding workflow.
+Current release line: **0.19.0**, adding a lightweight, dependency-free local
+graph UI while retaining resumable exact TypeScript references, exact Python
+registration relationships, and transactional onboarding.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

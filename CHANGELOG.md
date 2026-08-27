@@ -4,7 +4,7 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
-## Unreleased
+## 0.19.0 — 2026-08-27
 
 - Add a dependency-free, read-only browser UI bound strictly to loopback for all
   six query types, exact target qualification, registration relationships,

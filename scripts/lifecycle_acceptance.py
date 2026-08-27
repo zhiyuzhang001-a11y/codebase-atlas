@@ -7,8 +7,10 @@ import argparse
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import tempfile
+import threading
 import venv
 
 
@@ -77,6 +79,43 @@ def main() -> int:
         assert preflight.returncode in (0, 2)
         assert json.loads(preflight.stdout)["mode"] == "read_only"
         assert not (repository / ".codebase-atlas.toml").exists()
+        assert sorted(path.name for path in repository.iterdir()) == ["sample.py"]
+
+        config = root / "atlas.toml"
+        create_config = (
+            "import sys; from pathlib import Path; "
+            "from codebase_atlas.config import AtlasConfig; "
+            "python=Path(sys.executable); "
+            "AtlasConfig(Path(sys.argv[1]), 'python', python, python, python, "
+            "Path(sys.argv[3]), 'lifecycle', python.parent).write(Path(sys.argv[2]))"
+        )
+        subprocess.run(
+            [str(python), "-c", create_config, str(repository), str(config), str(root / "ui-data")],
+            check=True, env=command_env, capture_output=True, text=True,
+        )
+        ui = subprocess.Popen(
+            [str(atlas), "ui", "--config", str(config), "--no-open"],
+            env=command_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        output: queue.Queue[str] = queue.Queue()
+        reader = threading.Thread(target=lambda: output.put(ui.stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            ready_line = output.get(timeout=5)
+        except queue.Empty:
+            ui.terminate()
+            _stdout, stderr = ui.communicate(timeout=5)
+            raise AssertionError(f"installed UI did not become ready: {stderr}")
+        assert ready_line, ui.stderr.read()
+        assert ui.poll() is None, ui.stderr.read()
+        ui.terminate()
+        _stdout, stderr = ui.communicate(timeout=5)
+        assert ui.returncode is not None
+        ready = json.loads(ready_line)
+        assert ready["status"] == "ready"
+        assert ready["mode"] == "read_only"
+        assert ready["binding"].startswith("127.0.0.1:")
+        assert stderr == ""
         assert sorted(path.name for path in repository.iterdir()) == ["sample.py"]
 
         subprocess.run(
