@@ -32,7 +32,10 @@ class McpTests(unittest.TestCase):
         listed = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         self.assertEqual(
             [tool["name"] for tool in listed["result"]["tools"]],
-            ["definition", "references", "callers", "callees", "related_tests", "impact"],
+            [
+                "definition", "references", "callers", "callees",
+                "related_tests", "impact", "analyze_change",
+            ],
         )
         self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in listed["result"]["tools"]))
         schemas = {
@@ -44,6 +47,24 @@ class McpTests(unittest.TestCase):
         self.assertNotIn("relation", schemas["definition"])
         self.assertEqual(schemas["references"]["continuation"]["maxLength"], 512)
         self.assertNotIn("continuation", schemas["definition"])
+        self.assertIn("fix_bug", schemas["analyze_change"]["intent"]["enum"])
+
+    def test_analyze_change_uses_shared_product_contract(self) -> None:
+        response = self.server.handle({
+            "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+            "params": {
+                "name": "analyze_change",
+                "arguments": {
+                    "symbol": "target", "intent": "fix_bug",
+                    "target_path": "src/x.py", "timeout_ms": 5000,
+                },
+            },
+        })
+        brief = response["result"]["structuredContent"]
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(brief["analysis_type"], "change_brief")
+        self.assertEqual(brief["intent"], "fix_bug")
+        self.assertEqual(brief["target"]["name"], "target")
 
     def test_calls_tool_with_structured_and_text_content(self) -> None:
         response = self.server.handle(

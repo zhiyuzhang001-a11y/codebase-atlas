@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 DEFAULT_MAX_NODES = 100
 DEFAULT_MAX_EDGES = 200
 DEFAULT_TIMEOUT_MS = 30_000
+MAX_PROVIDER_LOCK_WAIT_MS = 2_000
 MAX_SESSION_CACHE_ENTRIES = 128
 MAX_CONTINUATION_LENGTH = 512
 MAX_CONTINUATION_ENTRY_BYTES = 16 * 1024 * 1024
@@ -154,6 +155,7 @@ class AtlasService:
         ] = OrderedDict()
         self._ts_continuation_queries: dict[tuple[str, ...], str] = {}
         self._ts_continuation_bytes = 0
+        self._structural_unavailable_reason = ""
 
     def start(self) -> None:
         if self.started:
@@ -165,13 +167,22 @@ class AtlasService:
     def _ensure_structural(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
         if self._structural_started:
             return True
+        if self._structural_unavailable_reason == "provider_busy":
+            return False
         if self.lifecycle is not None:
             try:
-                self.lifecycle.start(timeout_seconds=timeout_ms / 1000.0)
+                self.lifecycle.start(
+                    timeout_seconds=min(timeout_ms, MAX_PROVIDER_LOCK_WAIT_MS) / 1000.0
+                )
             except TimeoutError:
+                self._structural_unavailable_reason = "provider_busy"
                 return False
+        self._structural_unavailable_reason = ""
         self._structural_started = True
         return True
+
+    def _structural_unavailable_reasons(self) -> tuple[str, ...]:
+        return (self._structural_unavailable_reason or "time_budget_exceeded",)
 
     def _ensure_semantic(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
         if self._semantic_started:
@@ -197,6 +208,7 @@ class AtlasService:
         finally:
             self._semantic_started = False
             self._structural_started = False
+            self._structural_unavailable_reason = ""
             self._python_reference_cache.clear()
             self._python_complete_reference_cache.clear()
             self._python_caller_cache.clear()
@@ -241,7 +253,12 @@ class AtlasService:
             if self.structural_provider is None:
                 raise RuntimeError("structural provider is not configured")
             if not self._ensure_structural(limits["timeout_ms"]):
-                return self._time_budget_response(request.query_type, limits, started)
+                return self._time_budget_response(
+                    request.query_type,
+                    limits,
+                    started,
+                    reason=self._structural_unavailable_reasons()[0],
+                )
             return self._bounded_response(
                 request.query_type,
                 tuple(self.structural_provider.definitions(
@@ -422,12 +439,12 @@ class AtlasService:
                     or not self._ensure_structural(remaining_timeout)
                 ):
                     return ImpactTraversal(
-                        (), True, ("time_budget_exceeded",)
+                        (), True, self._structural_unavailable_reasons()
                     )
                 remaining_timeout = self._remaining_timeout(limits, started)
                 if remaining_timeout is None:
                     return ImpactTraversal(
-                        (), True, ("time_budget_exceeded",)
+                        (), True, self._structural_unavailable_reasons()
                     )
                 return method(
                     request.symbol,
@@ -538,7 +555,9 @@ class AtlasService:
                 remaining_timeout is None
                 or not self._ensure_structural(remaining_timeout)
             ):
-                return ImpactTraversal((), True, ("time_budget_exceeded",))
+                return ImpactTraversal(
+                    (), True, self._structural_unavailable_reasons()
+                )
             remaining_timeout = self._remaining_timeout(limits, started)
             if remaining_timeout is None:
                 return ImpactTraversal((), True, ("time_budget_exceeded",))
@@ -1310,11 +1329,16 @@ class AtlasService:
 
     @classmethod
     def _time_budget_response(
-        cls, query_type: str, limits: dict[str, int], started: float
+        cls,
+        query_type: str,
+        limits: dict[str, int],
+        started: float,
+        *,
+        reason: str = "time_budget_exceeded",
     ) -> QueryResponse:
         elapsed_ms = (monotonic() - started) * 1000.0
         truncation = cls._truncation(
-            ["time_budget_exceeded"],
+            [reason],
             limits,
             observed_nodes=0,
             observed_edges=0,

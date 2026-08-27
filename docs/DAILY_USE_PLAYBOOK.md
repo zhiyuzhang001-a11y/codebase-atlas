@@ -44,6 +44,20 @@ optional for module-level functions and unique declarations.
 
 ## Follow a maintenance question
 
+For normal AI-assisted work, prefer one Change Brief instead of manually
+orchestrating six primitive queries:
+
+```bash
+codebase-atlas analyze-change LocalUiServer.close \
+  --target-path src/codebase_atlas/web_ui.py \
+  --intent change_behavior
+```
+
+The `Owner.member` form is an explicit shorthand, not fuzzy search. If the
+definition is unresolved or ambiguous, the analysis stops and asks for a more
+precise path/owner. Read the returned `recommended_reads`, inspect every
+`completeness` entry, then run only evidence-backed tests.
+
 - Before changing a contract: run `definition`, then `references`.
 - Before changing behavior: run `callers` and upstream `impact --depth 2`.
 - Before refactoring internals: run `callees`.
@@ -84,3 +98,29 @@ queries should normally return from the in-session cache.
 Run `codebase-atlas doctor` after installation or configuration changes. Atlas is
 read-only: it should leave repository source and global editor/MCP settings
 unchanged, and Provider processes should stop with the session.
+
+The upstream Provider is process-global. Do not keep the browser UI and a
+separate MCP server active at the same time. Close the UI first or reuse the
+existing MCP session; a second session reports `provider_busy` quickly.
+
+## Connect Codex safely
+
+Preview the exact MCP registration first:
+
+```bash
+codebase-atlas codex plan --config /path/to/.codebase-atlas.toml
+```
+
+The plan reports the current name, full stdio command/arguments, existing-entry
+state, rollback command, project rule, and verification steps. It performs no
+write. Apply or remove only with the explicit subcommand:
+
+```bash
+codebase-atlas codex apply --config /path/to/.codebase-atlas.toml
+codebase-atlas codex remove --config /path/to/.codebase-atlas.toml
+```
+
+Apply refuses to overwrite a same-name different transport; remove refuses to
+delete one. Codex does not hot-load a newly registered MCP into an already
+running task, so start a new task or refresh the local client and verify one
+real `analyze_change` call.

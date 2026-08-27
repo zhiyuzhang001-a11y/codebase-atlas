@@ -15,6 +15,8 @@ import subprocess
 import webbrowser
 
 from . import __version__
+from .change_analysis import CHANGE_INTENTS, analyze_change
+from .codex_integration import codex_apply, codex_plan, codex_remove
 from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
 from .index_state import (
     index_freshness,
@@ -82,6 +84,18 @@ def main(argv: list[str] | None = None) -> int:
     onboard.add_argument("--data-dir", type=Path)
     onboard.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
     onboard.add_argument("--apply", action="store_true")
+    codex = commands.add_parser(
+        "codex", help="plan, apply, or remove the local Codex MCP integration"
+    )
+    codex_commands = codex.add_subparsers(dest="codex_command", required=True)
+    for codex_mode in ("plan", "apply", "remove"):
+        codex_action = codex_commands.add_parser(codex_mode)
+        codex_action.add_argument(
+            "--config", type=Path, default=Path.cwd() / CONFIG_NAME
+        )
+        codex_action.add_argument("--name", default="codebase_atlas")
+        codex_action.add_argument("--codex-binary", type=Path)
+        codex_action.add_argument("--atlas-executable", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     inspect = commands.add_parser("inspect", help="inspect index health and storage without modifying it")
@@ -203,6 +217,24 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--max-edges", type=int, default=200)
     query.add_argument("--timeout-ms", type=int, default=30_000)
     query.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    analyze = commands.add_parser(
+        "analyze-change", help="build one exact, bounded change brief"
+    )
+    analyze.add_argument("symbol")
+    analyze.add_argument("--intent", choices=CHANGE_INTENTS, default="change_behavior")
+    for action in query._actions:
+        if action.dest in {"help", "query_type", "symbol", "relation"}:
+            continue
+        kwargs = {
+            "dest": action.dest,
+            "required": action.required,
+            "default": 60_000 if action.dest == "timeout_ms" else action.default,
+        }
+        if action.type is not None:
+            kwargs["type"] = action.type
+        if action.choices is not None:
+            kwargs["choices"] = action.choices
+        analyze.add_argument(*action.option_strings, **kwargs)
     batch = commands.add_parser(
         "query-batch", help="run JSON-lines queries through one long-lived product service"
     )
@@ -227,6 +259,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
         return 0
+    if args.command == "codex":
+        operation = {
+            "plan": codex_plan,
+            "apply": codex_apply,
+            "remove": codex_remove,
+        }[args.codex_command]
+        try:
+            result = operation(
+                args.config,
+                name=args.name,
+                codex_binary=args.codex_binary,
+                atlas_executable=args.atlas_executable,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "blocked",
+                "mode": args.codex_command,
+                "error": str(exc),
+            }, ensure_ascii=False, indent=2))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["status"] != "blocked" else 2
     if args.command == "onboard":
         config_path = args.config or args.repo / CONFIG_NAME
         plan, config = build_plan(OnboardingInputs(
@@ -703,9 +758,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    if args.command in {"mcp", "query", "query-batch", "ui"}:
+    if args.command in {"mcp", "query", "query-batch", "ui", "analyze-change"}:
         _apply_project_config(args)
-        if args.command == "query":
+        if args.command in {"query", "analyze-change"}:
             policy_error = stale_policy_error(args.index_status, args.stale_policy)
             if policy_error:
                 print(json.dumps(attach_operational_status(
@@ -786,6 +841,25 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(json.dumps(
                     _response_payload(response, args.index_status, args.stale_policy),
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            elif args.command == "analyze-change":
+                print(json.dumps(
+                    analyze_change(
+                        service,
+                        args.symbol,
+                        intent=args.intent,
+                        target_path=args.target_path,
+                        target_owner=args.target_owner,
+                        direction=args.direction,
+                        depth=args.depth,
+                        max_nodes=args.max_nodes,
+                        max_edges=args.max_edges,
+                        timeout_ms=args.timeout_ms,
+                        index_status=args.index_status,
+                        stale_policy=args.stale_policy,
+                    ),
                     ensure_ascii=False,
                     indent=2,
                 ))

@@ -11,7 +11,9 @@ For the task-oriented workflow and result interpretation, also see
 - a local Codebase Memory executable
 - a Python environment with Serena installed
 
-Atlas does not edit global MCP/editor configuration. Provider caches are stored
+Atlas does not edit global MCP/editor configuration unless the user explicitly
+runs `codebase-atlas codex apply`; `codex plan` is read-only and shows the exact
+change first. Provider caches are stored
 under `~/.local/share/codebase-atlas/` by default and user source files remain
 unchanged.
 The wheel includes the pinned TypeScript 5.9.3 runtime used by the exact test
@@ -177,6 +179,18 @@ codebase-atlas query definition MyClass --stale-policy error
 codebase-atlas query-batch --stale-policy warn
 codebase-atlas mcp --stale-policy ignore
 ```
+
+For a single task-oriented result, use:
+
+```bash
+codebase-atlas analyze-change Class.method \
+  --target-path package/module.py --intent fix_bug
+```
+
+The response distinguishes unresolved/ambiguous identity from partial evidence,
+preserves every subquery's truncation, and lists evidence-backed source/test
+targets. A separate UI and MCP/query process cannot own the Provider
+simultaneously; close the old session when `provider_busy` is reported.
 
 Long-lived batch and MCP sessions expose the state captured at session startup
 without adding Git work to every warm query. Restart the session after editing,

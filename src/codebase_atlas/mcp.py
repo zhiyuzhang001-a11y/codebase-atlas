@@ -8,6 +8,7 @@ import sys
 from typing import Any, TextIO
 
 from . import __version__
+from .change_analysis import CHANGE_INTENTS, analyze_change
 from .operations import (
     attach_operational_status,
     stale_policy_error,
@@ -46,6 +47,14 @@ def _tool_result(
         "content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}],
         "structuredContent": structured,
         "isError": False,
+    }
+
+
+def _brief_tool_result(brief: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": json.dumps(brief, ensure_ascii=False)}],
+        "structuredContent": brief,
+        "isError": brief.get("status") == "error",
     }
 
 
@@ -120,6 +129,31 @@ TOOLS = [
                     "type": "string",
                     "description": "Enclosing class or object name for a same-file member.",
                 },
+                "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
+                "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
+                "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
+    {
+        "name": "analyze_change",
+        "title": "Build an exact change brief",
+        "description": (
+            "Resolve one exact target and return bounded implementation, relationship, "
+            "impact, test, freshness, provenance, and completeness evidence."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "intent": {"type": "string", "enum": list(CHANGE_INTENTS)},
+                "target_path": {"type": "string"},
+                "target_owner": {"type": "string"},
+                "direction": {"type": "string", "enum": ["upstream", "downstream"]},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 10},
                 "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
                 "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
                 "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
@@ -218,6 +252,26 @@ class McpServer:
                 for name in ("max_nodes", "max_edges", "timeout_ms")
                 if name in arguments
             }
+            if name == "analyze_change":
+                brief = analyze_change(
+                    self.service,
+                    symbol,
+                    intent=arguments.get("intent", "change_behavior"),
+                    target_path=target_path,
+                    target_owner=target_owner,
+                    direction=arguments.get("direction", "upstream"),
+                    depth=arguments.get("depth", 2),
+                    max_nodes=arguments.get("max_nodes", 100),
+                    max_edges=arguments.get("max_edges", 200),
+                    timeout_ms=arguments.get("timeout_ms", 60_000),
+                    index_status=self.index_status,
+                    stale_policy=self.stale_policy,
+                )
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": _brief_tool_result(brief),
+                }
             if name in {"definition", "references", "callers", "callees"}:
                 continuation = (
                     {"continuation": arguments["continuation"]}

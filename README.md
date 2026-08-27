@@ -29,8 +29,11 @@ query budgets, index freshness, and product interfaces.
 - read-only index/storage inspection, explicit repair, and dry-run-first cleanup;
 - large-repository and monorepo subproject support;
 - bounded same-session continuation for wide exact TypeScript references;
-- one shared six-query service exposed by CLI, JSON-lines batch API, read-only
-  MCP, and a dependency-free loopback browser UI.
+- one shared six-query service plus a bounded `analyze_change` Change Brief,
+  exposed by CLI, JSON-lines batch API, read-only MCP, and a dependency-free
+  loopback browser UI;
+- dry-run-first Codex MCP registration that refuses to overwrite or remove a
+  different existing entry.
 
 Automatic source edits, remote UI access, and cloud sync remain out of scope.
 
@@ -41,6 +44,7 @@ budgets. See [`SUPPORT.md`](SUPPORT.md) for the precise support boundary.
 ## Project policies
 
 - [Local use and data removal](docs/LOCAL_USAGE.md)
+- [Task-oriented Change Brief contract](docs/CHANGE_BRIEF.md)
 - [Privacy and local data](PRIVACY.md)
 - [Security policy](SECURITY.md)
 - [Support and compatibility](SUPPORT.md)
@@ -63,6 +67,9 @@ codebase-atlas init
 codebase-atlas index
 codebase-atlas doctor
 codebase-atlas ui                    # local read-only graph UI; Ctrl-C stops it
+codebase-atlas analyze-change LocalUiServer.close \
+  --target-path src/codebase_atlas/web_ui.py --intent change_behavior
+codebase-atlas codex plan            # no configuration write
 
 # After source changes:
 codebase-atlas update
@@ -87,6 +94,8 @@ editor, or MCP configuration.
 `ui` binds only to `127.0.0.1`, opens a session-token-protected browser page,
 and reuses the same index and query service. Use `ui --no-open` in headless
 environments. It does not expose source contents or perform index/config writes.
+Close it before starting a separate MCP session that uses the same upstream
+Provider; a competing query now returns explicit `provider_busy` quickly.
 
 When source and Provider storage are already current, `update` takes an
 Atlas-owned fast path without starting the Provider. Configured queries expose
@@ -120,7 +129,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
 The product service supports `definition`, `references`, `callers`, `callees`,
-`related_tests`, and `impact`. Use `codebase-atlas ui --help` for the visual
+`related_tests`, `impact`, and the shared `analyze_change` composition. Use
+`codebase-atlas analyze-change --help` for an actionable Change Brief,
+`codebase-atlas codex plan --help` for a read-only Codex integration preview,
+or `codebase-atlas ui --help` for the visual
 interface, `codebase-atlas query --help` for one query,
 `query-batch --help` for a reusable JSON-lines session, or `mcp --help` for the
 read-only stdio MCP server. All interfaces share `AtlasService` and stop

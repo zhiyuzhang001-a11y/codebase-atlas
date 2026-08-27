@@ -145,6 +145,30 @@ def source_snapshot(fingerprint: str | None = "source-a") -> RepositorySnapshot:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_provider_lock_conflict_is_explicit(self) -> None:
+        class BusyLifecycle(FakeLifecycle):
+            def start(self, *, timeout_seconds=None):
+                self.starts += 1
+                self.last_timeout = timeout_seconds
+                raise TimeoutError("busy")
+
+        lifecycle = BusyLifecycle()
+        service = AtlasService(
+            impact_provider=FakeImpactProvider(), lifecycle=lifecycle
+        )
+        with service:
+            response = service.query(QueryRequest(
+                "definition", "target", {"timeout_ms": 60_000}
+            ))
+            repeated = service.query(QueryRequest(
+                "callers", "target", {"timeout_ms": 60_000}
+            ))
+        self.assertTrue(response.truncated)
+        self.assertEqual(response.truncation["reasons"], ("provider_busy",))
+        self.assertEqual(repeated.truncation["reasons"], ("provider_busy",))
+        self.assertEqual(lifecycle.starts, 1)
+        self.assertEqual(lifecycle.last_timeout, 2.0)
+
     @staticmethod
     def _registration_index(repository: Path):
         return PythonRegistrationProvider(repository, "p").scan()
