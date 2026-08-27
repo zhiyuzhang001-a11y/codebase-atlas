@@ -3,19 +3,30 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 from io import StringIO
 import json
+import signal
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from codebase_atlas.cli import main
+from codebase_atlas.cli import _run_mcp_with_graceful_termination, main
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.index_state import record_index_state, state_path
 from codebase_atlas.python_registration_store import registration_index_path
 
 
 class CliOperationTests(unittest.TestCase):
+    def test_mcp_sigterm_unwinds_and_restores_handler(self) -> None:
+        previous = signal.getsignal(signal.SIGTERM)
+
+        def terminate_during_stdio(_server) -> None:
+            signal.raise_signal(signal.SIGTERM)
+
+        with patch("codebase_atlas.cli.run_stdio", side_effect=terminate_during_stdio):
+            _run_mcp_with_graceful_termination(object())
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous)
+
     def config(self, root: Path) -> tuple[AtlasConfig, Path]:
         repository = root / "repo"
         repository.mkdir()

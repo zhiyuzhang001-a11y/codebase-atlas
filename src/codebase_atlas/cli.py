@@ -7,6 +7,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import shlex
+import signal
 import stat
 import sys
 import time
@@ -45,6 +46,23 @@ from .python_registration_store import (
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
 from .web_ui import LocalUiServer
+
+
+def _run_mcp_with_graceful_termination(server: McpServer) -> None:
+    """Turn client SIGTERM into normal unwinding so Provider ownership is released."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def terminate(_signum, _frame) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, terminate)
+    try:
+        try:
+            run_stdio(server)
+        except KeyboardInterrupt:
+            pass
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -825,7 +843,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         with service:
             if args.command == "mcp":
-                run_stdio(McpServer(service, args.index_status, args.stale_policy))
+                _run_mcp_with_graceful_termination(
+                    McpServer(service, args.index_status, args.stale_policy)
+                )
             elif args.command == "query":
                 response = service.query(
                     QueryRequest(
