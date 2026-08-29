@@ -197,7 +197,7 @@ for _tool in TOOLS:
 class McpServer:
     def __init__(
         self,
-        service: AtlasService,
+        service: AtlasService | None,
         index_status: dict[str, Any] | None = None,
         stale_policy: str = "ignore",
         instructions: str = "",
@@ -261,6 +261,34 @@ class McpServer:
                         "content": [{"type": "text", "text": json.dumps(status, ensure_ascii=False)}],
                         "structuredContent": status,
                         "isError": False,
+                    },
+                }
+            if self.service is None:
+                unavailable = dict(self.index_status or {
+                    "status": "not_configured",
+                    "ok": False,
+                    "reason": "project_configuration_not_loaded",
+                })
+                structured = {
+                    "schema_version": 1,
+                    "status": "error",
+                    "code": str(unavailable.get("status", "project_unavailable")),
+                    "message": (
+                        "Codebase Atlas is unavailable for this project; call "
+                        "project_status and follow next_action."
+                    ),
+                    "project": unavailable,
+                }
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps(structured, ensure_ascii=False),
+                        }],
+                        "structuredContent": structured,
+                        "isError": True,
                     },
                 }
             policy_error = stale_policy_error(

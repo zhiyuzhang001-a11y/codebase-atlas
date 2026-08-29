@@ -38,6 +38,7 @@ from .operations import (
 )
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
+from .project_discovery import resolve_project
 from .python_registration_store import (
     RegistrationIndexError,
     load_registration_index_state,
@@ -209,6 +210,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     mcp.add_argument("--auto-update-timeout", type=float, default=60.0)
     mcp.add_argument("--version-check", choices=("off", "notify"), default="off")
+    mcp_auto = commands.add_parser(
+        "mcp-auto", help="run a fail-closed MCP for the current Codex project"
+    )
+    mcp_auto.add_argument("--root", type=Path)
+    mcp_auto.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    mcp_auto.add_argument(
+        "--auto-update", choices=("off", "session-start"), default="session-start"
+    )
+    mcp_auto.add_argument("--auto-update-timeout", type=float, default=60.0)
+    mcp_auto.add_argument("--version-check", choices=("off", "notify"), default="notify")
     ui = commands.add_parser("ui", help="open the lightweight read-only local browser UI")
     ui.add_argument("--config", type=Path)
     ui.add_argument("--repo", type=Path)
@@ -392,6 +403,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         config.write(config_path)
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
+        return 0
+    if args.command == "mcp-auto":
+        resolution = resolve_project(args.root or Path.cwd())
+        if resolution.status == "configured":
+            forwarded = [
+                "mcp", "--config", str(resolution.config),
+                "--stale-policy", args.stale_policy,
+                "--auto-update", args.auto_update,
+                "--auto-update-timeout", str(args.auto_update_timeout),
+                "--version-check", args.version_check,
+            ]
+            return main(forwarded)
+        status = resolution.operational_status()
+        instructions = (
+            f"Codebase Atlas is {resolution.status} for {resolution.root}. "
+            "Call project_status and follow next_action. Never use results from "
+            "another repository."
+        )
+        _run_mcp_with_graceful_termination(
+            McpServer(None, status, "error", instructions=instructions)
+        )
         return 0
     if args.command == "inspect":
         config = AtlasConfig.load(args.config)
