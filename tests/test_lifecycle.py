@@ -7,7 +7,11 @@ import threading
 import time
 import unittest
 
-from codebase_atlas.lifecycle import CodebaseMemoryDaemon, GlobalCbmLock
+from codebase_atlas.lifecycle import (
+    CodebaseMemoryDaemon,
+    GlobalCbmLock,
+    SharedCodebaseMemorySession,
+)
 
 
 class FakeRunner:
@@ -103,6 +107,48 @@ class LifecycleTests(unittest.TestCase):
                     second.acquire(timeout_seconds=0.05)
             finally:
                 first.release()
+
+    def test_shared_sessions_use_short_admission_and_never_stop_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "cbm.lock"
+            cache = Path(raw) / "shared-cache"
+            runner = FakeRunner(False)
+            first = SharedCodebaseMemorySession(
+                Path("binary"), Path("repo-a"), cache,
+                runner=runner, lock=GlobalCbmLock(path),
+            )
+            second = SharedCodebaseMemorySession(
+                Path("binary"), Path("repo-b"), cache,
+                runner=runner, lock=GlobalCbmLock(path),
+            )
+
+            self.assertTrue(first.start())
+            # Admission is already released: B joins before A closes.
+            self.assertFalse(second.start(timeout_seconds=0.05))
+            first.close()
+            second.close()
+
+            self.assertEqual(runner.actions, ["start", "start"])
+            self.assertEqual(
+                [environment["CBM_ALLOWED_ROOT"] for environment in runner.environments],
+                [str(first.repository), str(second.repository)],
+            )
+            self.assertTrue(all(
+                environment["CBM_CACHE_DIR"] == str(cache.resolve())
+                for environment in runner.environments
+            ))
+
+    def test_shared_session_close_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            runner = FakeRunner(False)
+            session = SharedCodebaseMemorySession(
+                Path("binary"), Path("repo"), Path("cache"), runner=runner,
+                lock=GlobalCbmLock(Path(raw) / "cbm.lock"),
+            )
+            session.start()
+            session.close()
+            session.close()
+            self.assertEqual(runner.actions, ["start"])
 
 
 if __name__ == "__main__":

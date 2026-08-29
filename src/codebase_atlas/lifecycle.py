@@ -159,3 +159,38 @@ class CodebaseMemoryDaemon:
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.close()
+
+
+class SharedCodebaseMemorySession(CodebaseMemoryDaemon):
+    """Join a shared Provider daemon without owning its process lifetime.
+
+    The account lock protects only daemon admission. It is released as soon as
+    the Provider confirms that the compatible daemon is running, so an idle
+    Atlas client cannot serialize another project's work.
+    """
+
+    def start(self, *, timeout_seconds: float | None = None) -> bool:
+        if self.active:
+            return False
+        self.lock.acquire(timeout_seconds=timeout_seconds)
+        try:
+            started = self._run("start")
+            output = f"{started.stdout}\n{started.stderr}".lower()
+            if "already active" in output or "already running" in output:
+                created = False
+            elif "started" in output:
+                created = True
+            else:
+                raise RuntimeError("daemon start did not report shared admission state")
+            self.owned = False
+            self.active = True
+            return created
+        finally:
+            self.lock.release()
+
+    def close(self) -> None:
+        # The Provider owns shared-daemon retirement. Stopping it here could
+        # interrupt unrelated repositories that joined after this session.
+        self.owned = False
+        self.active = False
+        self.lock.release()
