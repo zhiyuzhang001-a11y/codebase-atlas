@@ -34,7 +34,9 @@ query budgets, index freshness, and product interfaces.
   exposed by CLI, JSON-lines batch API, read-only MCP, and a dependency-free
   loopback browser UI;
 - dry-run-first Codex MCP registration that refuses to overwrite or remove a
-  different existing entry.
+  different existing entry. The unreleased M30 candidate also supports a
+  project-scoped managed block, exact active-project status, bounded
+  session-start index refresh, and non-blocking notify-only release awareness.
 
 Automatic source edits, remote UI access, and cloud sync remain out of scope.
 
@@ -71,6 +73,7 @@ codebase-atlas ui                    # local read-only graph UI; Ctrl-C stops it
 codebase-atlas analyze-change LocalUiServer.close \
   --target-path src/codebase_atlas/web_ui.py --intent change_behavior
 codebase-atlas codex plan            # no configuration write
+codebase-atlas codex plan --scope project
 
 # After source changes:
 codebase-atlas update
@@ -107,6 +110,36 @@ The structural Provider chooses an incremental, no-op, or safe full-rebuild
 route. Atlas records freshness only after successful publication and preserves
 the previous state when an update fails or the repository changes mid-run.
 
+For Codex project switching, preview and then explicitly apply project scope.
+It writes only an Atlas-managed block in the repository's
+`.codex/config.toml`, preserves unrelated valid TOML bytes, and never changes
+the global MCP entry:
+
+```bash
+codebase-atlas codex plan --scope project
+codebase-atlas codex apply --scope project
+```
+
+If the Codex project root is an ancestor of the indexed repository, pass it
+explicitly to both commands, for example
+`--codex-project-root /path/to/workspace`. Codex loads project configuration
+only for a trusted project. Trust the folder when Codex first opens it; Atlas
+does not edit the global trust list.
+
+Each new Codex task rooted at that trusted repository starts the matching Atlas
+server and performs one bounded freshness gate. A fresh index does not start the
+Provider; a stale index is updated when the Provider is available. Contention,
+timeout, or update failure starts MCP with the prior index and an explicit
+status. The `project_status` MCP tool reports the resolved repository, project,
+config, refresh result, and notify-only software update state. Release checks
+run asynchronously, use a 24-hour cache, and never install software. Set
+`CODEBASE_ATLAS_NO_UPDATE_CHECK=1` to disable them. Because the managed config
+contains machine-local absolute paths, do not commit it.
+
+Use `project_status` in a newly opened task as the authoritative verification.
+The `codex mcp get` management command may show only the global layer and is not
+proof that a project-local override was or was not loaded.
+
 For Python repositories, `index`, stale/forced `update`, repair, and guided
 onboarding also build a source-bound registration sidecar. A scoped
 `--relation registers` callers/callees query treats that validated sidecar as
@@ -129,8 +162,9 @@ and applies only the exact file identities reported by its dry run.
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-The product service supports `definition`, `references`, `callers`, `callees`,
-`related_tests`, `impact`, and the shared `analyze_change` composition. Use
+The product MCP surface supports `project_status`, `definition`, `references`,
+`callers`, `callees`, `related_tests`, `impact`, and the shared
+`analyze_change` composition. Use
 `codebase-atlas analyze-change --help` for an actionable Change Brief,
 `codebase-atlas codex plan --help` for a read-only Codex integration preview,
 or `codebase-atlas ui --help` for the visual

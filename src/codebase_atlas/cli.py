@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -17,7 +18,7 @@ import webbrowser
 
 from . import __version__
 from .change_analysis import CHANGE_INTENTS, analyze_change
-from .codex_integration import codex_apply, codex_plan, codex_remove
+from .codex_integration import PROJECT_RULE, codex_apply, codex_plan, codex_remove
 from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
 from .index_state import (
     index_freshness,
@@ -45,11 +46,14 @@ from .python_registration_store import (
 )
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
+from .session_update import disabled_session_update, session_start_update
+from .version_check import VersionNotifier
 from .web_ui import LocalUiServer
 
 
-def _run_mcp_with_graceful_termination(server: McpServer) -> None:
-    """Turn client SIGTERM into normal unwinding so Provider ownership is released."""
+@contextmanager
+def _graceful_termination():
+    """Turn SIGTERM into normal unwinding so Provider ownership is released."""
     previous = signal.getsignal(signal.SIGTERM)
 
     def terminate(_signum, _frame) -> None:
@@ -57,12 +61,17 @@ def _run_mcp_with_graceful_termination(server: McpServer) -> None:
 
     signal.signal(signal.SIGTERM, terminate)
     try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _run_mcp_with_graceful_termination(server: McpServer) -> None:
+    with _graceful_termination():
         try:
             run_stdio(server)
         except KeyboardInterrupt:
             pass
-    finally:
-        signal.signal(signal.SIGTERM, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
         codex_action.add_argument("--name", default="codebase_atlas")
         codex_action.add_argument("--codex-binary", type=Path)
         codex_action.add_argument("--atlas-executable", type=Path)
+        codex_action.add_argument(
+            "--scope", choices=("global", "project"), default="global"
+        )
+        codex_action.add_argument("--codex-project-root", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     inspect = commands.add_parser("inspect", help="inspect index health and storage without modifying it")
@@ -191,6 +204,11 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--node-bin-dir", type=Path)
     mcp.add_argument("--tsconfig", type=Path)
     mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    mcp.add_argument(
+        "--auto-update", choices=("off", "session-start"), default="off"
+    )
+    mcp.add_argument("--auto-update-timeout", type=float, default=60.0)
+    mcp.add_argument("--version-check", choices=("off", "notify"), default="off")
     ui = commands.add_parser("ui", help="open the lightweight read-only local browser UI")
     ui.add_argument("--config", type=Path)
     ui.add_argument("--repo", type=Path)
@@ -293,6 +311,8 @@ def main(argv: list[str] | None = None) -> int:
                 name=args.name,
                 codex_binary=args.codex_binary,
                 atlas_executable=args.atlas_executable,
+                scope=args.scope,
+                codex_project_root=args.codex_project_root,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({
@@ -635,7 +655,17 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         try:
-            payload = _index_repository(config, args.mode)
+            with _graceful_termination():
+                payload = _index_repository(config, args.mode)
+        except KeyboardInterrupt:
+            if staged_registrations is not None:
+                staged_registrations.close()
+            print(json.dumps({
+                "status": "failed",
+                "error": "index update interrupted; the previous Atlas state was preserved",
+                "atlas_state_advanced": False,
+            }, indent=2))
+            return 130
         except BaseException:
             if staged_registrations is not None:
                 staged_registrations.close()
@@ -781,7 +811,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command in {"mcp", "query", "query-batch", "ui", "analyze-change"}:
+        auto_update_status = disabled_session_update()
+        if args.command == "mcp" and args.auto_update == "session-start":
+            selected_config = args.config or Path.cwd() / CONFIG_NAME
+            if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
+                raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
+            auto_update_status = session_start_update(
+                selected_config, timeout_seconds=args.auto_update_timeout
+            )
         _apply_project_config(args)
+        if args.command == "mcp":
+            args.index_status["identity"] = {
+                "repository": str(args.repo.resolve()),
+                "project": args.project,
+                "config": str((args.config or args.repo / CONFIG_NAME).resolve()),
+            }
+            args.index_status["auto_update"] = auto_update_status
         if args.command in {"query", "analyze-change"}:
             policy_error = stale_policy_error(args.index_status, args.stale_policy)
             if policy_error:
@@ -843,8 +888,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         with service:
             if args.command == "mcp":
+                notifier = VersionNotifier(
+                    __version__, args.data_dir,
+                    enabled=args.version_check == "notify",
+                )
                 _run_mcp_with_graceful_termination(
-                    McpServer(service, args.index_status, args.stale_policy)
+                    McpServer(
+                        service, args.index_status, args.stale_policy,
+                        instructions=(
+                            f"This server is only for repository {args.repo.resolve()}; "
+                            f"never use it for another repository. {PROJECT_RULE}"
+                        ),
+                        version_notifier=notifier,
+                    )
                 )
             elif args.command == "query":
                 response = service.query(

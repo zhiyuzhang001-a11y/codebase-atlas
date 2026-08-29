@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from codebase_atlas.config import AtlasConfig
+from codebase_atlas.codex_integration import codex_apply
 from codebase_atlas.index_state import (
     index_freshness,
     provider_database_health,
@@ -85,6 +86,35 @@ class IndexStateTests(unittest.TestCase):
             after = repository_snapshot(repository)
             self.assertNotEqual(after.fingerprint, before.fingerprint)
             self.assertEqual(after.changed_paths, 1)
+
+    def test_managed_project_codex_config_is_operational_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            config = AtlasConfig(
+                repository, "python", root / "node", root / "cbm",
+                root / "serena", root / "data", project="indexed",
+            )
+            config_path = repository / ".codebase-atlas.toml"
+            config.write(config_path)
+            atlas = root / "codebase-atlas"
+            atlas.write_text("")
+            before = repository_snapshot(repository)
+            codex_apply(config_path, scope="project", atlas_executable=atlas)
+            after = repository_snapshot(repository)
+            self.assertEqual(after.fingerprint, before.fingerprint)
+            self.assertEqual(after.changed_paths, before.changed_paths)
+
+    def test_unmanaged_project_codex_config_remains_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            before = repository_snapshot(repository)
+            target = repository / ".codex/config.toml"
+            target.parent.mkdir()
+            target.write_text('model = "custom"\n', encoding="utf-8")
+            after = repository_snapshot(repository)
+            self.assertNotEqual(after.fingerprint, before.fingerprint)
 
     def test_invalid_default_config_and_symlink_are_source(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

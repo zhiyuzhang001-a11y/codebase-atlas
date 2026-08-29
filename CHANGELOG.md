@@ -4,6 +4,19 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## Unreleased
+
+- Add dry-run-first project-scoped Codex integration that preserves unrelated
+  `.codex/config.toml` bytes, refuses foreign/unsafe entries, and removes only
+  its exact managed block without changing global configuration.
+- Add exact `project_status` and MCP initialize guidance so an agent can verify
+  the resolved repository before using Atlas after an A→B→A project switch.
+- Add opt-in bounded session-start index refresh with a no-Provider fresh path,
+  fast `provider_busy` fallback, explicit failure metadata, and preservation of
+  the previous index.
+- Add asynchronous, 24-hour-cached GitHub Release awareness that only notifies,
+  never installs, and can be disabled without affecting MCP or queries.
+
 ## 0.20.0 — 2026-08-27
 
 - Add one bounded `analyze_change` product operation across CLI and MCP. It

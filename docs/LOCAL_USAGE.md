@@ -12,8 +12,10 @@ For the task-oriented workflow and result interpretation, also see
 - a Python environment with Serena installed
 
 Atlas does not edit global MCP/editor configuration unless the user explicitly
-runs `codebase-atlas codex apply`; `codex plan` is read-only and shows the exact
-change first. Provider caches are stored
+runs global-scope `codebase-atlas codex apply`; `codex plan` is read-only and
+shows the exact change first. The recommended multi-project form uses explicit
+`--scope project`, which writes only a managed block under the selected
+repository. Provider caches are stored
 under `~/.local/share/codebase-atlas/` by default and user source files remain
 unchanged.
 The wheel includes the pinned TypeScript 5.9.3 runtime used by the exact test
@@ -193,9 +195,11 @@ targets. A separate UI and MCP/query process cannot own the Provider
 simultaneously; close the old session when `provider_busy` is reported.
 
 Long-lived batch and MCP sessions expose the state captured at session startup
-without adding Git work to every warm query. Restart the session after editing,
-or run `doctor`/`update` first. Query commands never update the index
-automatically.
+without adding Git work to every warm query. A project-scoped M30 MCP transport
+performs one bounded update before the service starts; the default/global and
+older transports remain explicit-update only. Restart the session after editing,
+or run `doctor`/`update` first. No permanent watcher or per-query Git scan is
+added.
 
 Otherwise provide the runtime locations once:
 
@@ -353,6 +357,37 @@ long-lived JSON-lines interface is `codebase-atlas query-batch`; the read-only M
 server is `codebase-atlas mcp`.
 
 ## MCP connection
+
+For normal Codex use across several projects, preview and explicitly apply the
+project-local transport from each repository:
+
+```bash
+codebase-atlas codex plan --scope project
+codebase-atlas codex apply --scope project
+```
+
+When Codex opens a workspace above the indexed repository, add
+`--codex-project-root /absolute/workspace/path` to both commands. The selected
+Codex project must be trusted; accept Codex's normal trust prompt on first open.
+Atlas never edits the global trust list.
+
+This creates or appends one marker-delimited block in `.codex/config.toml`,
+preserves unrelated valid TOML bytes, refuses symlinks/foreign Atlas entries,
+and never changes `~/.codex/config.toml`. The file contains absolute local paths
+and should not be committed. Start a new Codex task rooted at the repository and
+call `project_status` to verify the resolved repository, index freshness and
+session-start update result. Remove only Atlas's matching block with
+`codebase-atlas codex remove --scope project`.
+
+Treat that real `project_status` call as the verification gate. `codex mcp get`
+can report only the global management layer and therefore is not sufficient to
+verify project-local switching.
+
+The session-start refresh is not a permanent watcher. If another Atlas UI/MCP
+owns the Provider, the new server reports `provider_busy` and uses the previous
+index rather than waiting indefinitely. Close the old session and start a new
+task to retry. Software release checks are asynchronous, cached for 24 hours,
+notify-only, and disabled by `CODEBASE_ATLAS_NO_UPDATE_CHECK=1`.
 
 Point an MCP client at the executable and project configuration without changing
 the configuration automatically:

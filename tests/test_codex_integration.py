@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -119,6 +120,128 @@ class CodexIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "remove"):
                 codex_remove(
                     config, codex_binary=codex, atlas_executable=atlas, runner=runner
+                )
+
+    def project_paths(self, root: Path):
+        repository = root / "项目 with spaces"
+        repository.mkdir()
+        config = repository / ".codebase-atlas.toml"
+        config.write_text(
+            "schema_version = 1\n\n[project]\n"
+            f'repository = "{repository}"\n'
+            'language = "python"\n'
+            f'data_dir = "{root / "data"}"\n'
+            'cbm_project = "project"\n'
+            'tsconfig = ""\n\n[runtime]\n'
+            f'node = "{root / "node"}"\n'
+            f'node_bin_dir = "{root}"\n'
+            f'cbm_binary = "{root / "cbm"}"\n'
+            f'serena_python = "{root / "python"}"\n',
+            encoding="utf-8",
+        )
+        atlas = root / "atlas executable"
+        atlas.write_text("")
+        return repository, config, atlas
+
+    def test_project_scope_plan_apply_remove_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, atlas = self.project_paths(Path(raw))
+            plan = codex_plan(config, scope="project", atlas_executable=atlas)
+            self.assertEqual(plan["existing"], "absent")
+            self.assertFalse(plan["global_config_mutation"])
+            applied = codex_apply(config, scope="project", atlas_executable=atlas)
+            target = repository / ".codex/config.toml"
+            parsed = tomllib.loads(target.read_text(encoding="utf-8"))
+            entry = parsed["mcp_servers"]["codebase_atlas"]
+            self.assertEqual(entry["command"], str(atlas.resolve()))
+            self.assertIn("session-start", entry["args"])
+            self.assertEqual(applied["existing"], "matching")
+            repeated = codex_apply(config, scope="project", atlas_executable=atlas)
+            self.assertFalse(repeated["mutates"])
+            removed = codex_remove(config, scope="project", atlas_executable=atlas)
+            self.assertTrue(removed["mutates"])
+            self.assertFalse(target.exists())
+
+    def test_project_scope_preserves_foreign_config_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, atlas = self.project_paths(Path(raw))
+            target = repository / ".codex/config.toml"
+            target.parent.mkdir()
+            original = 'model = "gpt-test"\n[features]\nexample = true\n'
+            target.write_text(original, encoding="utf-8")
+            codex_apply(config, scope="project", atlas_executable=atlas)
+            self.assertTrue(target.read_text(encoding="utf-8").startswith(original))
+            codex_remove(config, scope="project", atlas_executable=atlas)
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_project_scope_refuses_foreign_or_invalid_atlas_config(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, atlas = self.project_paths(Path(raw))
+            target = repository / ".codex/config.toml"
+            target.parent.mkdir()
+            foreign = (
+                '[mcp_servers.codebase_atlas]\ncommand = "/other"\nargs = []\n'
+            )
+            target.write_text(foreign, encoding="utf-8")
+            plan = codex_plan(config, scope="project", atlas_executable=atlas)
+            self.assertEqual(plan["status"], "blocked")
+            with self.assertRaisesRegex(RuntimeError, "overwrite"):
+                codex_apply(config, scope="project", atlas_executable=atlas)
+            self.assertEqual(target.read_text(encoding="utf-8"), foreign)
+            target.write_text("not = [valid", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "invalid TOML"):
+                codex_plan(config, scope="project", atlas_executable=atlas)
+
+    def test_project_scope_refuses_symlinks_and_outside_config(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, atlas = self.project_paths(root)
+            foreign_dir = root / "foreign-codex"
+            foreign_dir.mkdir()
+            (repository / ".codex").symlink_to(foreign_dir)
+            with self.assertRaisesRegex(RuntimeError, "real directory"):
+                codex_plan(config, scope="project", atlas_executable=atlas)
+            (repository / ".codex").unlink()
+            outside = root / ".codebase-atlas.toml"
+            outside.write_text(config.read_text(encoding="utf-8"), encoding="utf-8")
+            plan = codex_plan(outside, scope="project", atlas_executable=atlas)
+            self.assertEqual(plan["repository"], str(repository.resolve()))
+
+    def test_project_scope_can_target_an_explicit_ancestor_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            repository, config, atlas = self.project_paths(workspace)
+            plan = codex_plan(
+                config, scope="project", atlas_executable=atlas,
+                codex_project_root=workspace,
+            )
+            self.assertEqual(plan["codex_project_root"], str(workspace.resolve()))
+            self.assertEqual(
+                plan["target"], str((workspace / ".codex/config.toml").resolve())
+            )
+            codex_apply(
+                config, scope="project", atlas_executable=atlas,
+                codex_project_root=workspace,
+            )
+            self.assertTrue((workspace / ".codex/config.toml").is_file())
+            codex_remove(
+                config, scope="project", atlas_executable=atlas,
+                codex_project_root=workspace,
+            )
+            self.assertFalse((workspace / ".codex/config.toml").exists())
+
+    def test_project_scope_refuses_non_ancestor_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _repository, config, atlas = self.project_paths(root)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "ancestor"):
+                codex_plan(
+                    config, scope="project", atlas_executable=atlas,
+                    codex_project_root=foreign,
                 )
 
 

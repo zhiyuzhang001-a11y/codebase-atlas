@@ -80,8 +80,11 @@ def _paths(output: bytes) -> list[str]:
 
 def _is_atlas_runtime_config(repository: Path, relative: str) -> bool:
     """Recognize only a regular Atlas config for this exact repository."""
+    return _atlas_config_targets_repository(repository / relative, repository)
+
+
+def _atlas_config_targets_repository(path: Path, repository: Path) -> bool:
     try:
-        path = repository / relative
         if not stat.S_ISREG(os.lstat(path).st_mode):
             return False
         value = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -96,6 +99,41 @@ def _is_atlas_runtime_config(repository: Path, relative: str) -> bool:
         if not all(isinstance(runtime.get(key), str) for key in required_runtime):
             return False
         return Path(project["repository"]).resolve() == repository
+    except (OSError, TypeError, ValueError, tomllib.TOMLDecodeError):
+        return False
+
+
+def _is_atlas_project_codex_config(repository: Path, relative: str) -> bool:
+    """Recognize only a Codex config containing Atlas's exact managed marker."""
+    if Path(relative).as_posix() != ".codex/config.toml":
+        return False
+    try:
+        path = repository / relative
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+        text = path.read_text(encoding="utf-8")
+        if (
+            text.count("# >>> codebase-atlas managed project mcp v1 >>>") != 1
+            or text.count("# <<< codebase-atlas managed project mcp v1 <<<") != 1
+        ):
+            return False
+        value = tomllib.loads(text)
+        servers = value.get("mcp_servers")
+        if not isinstance(servers, dict):
+            return False
+        for entry in servers.values():
+            if not isinstance(entry, dict):
+                continue
+            args = entry.get("args")
+            if not isinstance(args, list) or "--config" not in args:
+                continue
+            position = args.index("--config")
+            if position + 1 >= len(args) or not isinstance(args[position + 1], str):
+                continue
+            atlas_config = Path(args[position + 1])
+            if _atlas_config_targets_repository(atlas_config, repository):
+                return True
+        return False
     except (OSError, TypeError, ValueError, tomllib.TOMLDecodeError):
         return False
 
@@ -149,6 +187,7 @@ def repository_snapshot(repository: Path) -> RepositorySnapshot:
         path
         for path in set(_paths(tracked.stdout) + _paths(untracked.stdout))
         if not _is_atlas_runtime_config(repository, path)
+        and not _is_atlas_project_codex_config(repository, path)
     )
     digest = hashlib.sha256()
     digest.update(b"codebase-atlas-source-v1\0")
