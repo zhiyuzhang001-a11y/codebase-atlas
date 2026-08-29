@@ -9,6 +9,8 @@ import tempfile
 import time
 from typing import Callable, Any
 
+from .provider_layout import provider_environment
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - exercised only on Windows
@@ -105,9 +107,7 @@ class CodebaseMemoryDaemon:
         self.active = False
 
     def _run(self, action: str):
-        environment = os.environ.copy()
-        environment["CBM_CACHE_DIR"] = str(self.cache_dir)
-        environment["CBM_ALLOWED_ROOT"] = str(self.repository.parent)
+        environment = provider_environment(self.cache_dir, self.repository)
         completed = self.runner(
             [str(self.binary), "daemon", action],
             check=False,

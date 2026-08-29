@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -13,6 +12,7 @@ from typing import Any
 
 from ..contracts import Edge, Node, SourceRange
 from ..graph import EvidenceGraph, ImpactHit, ImpactTraversal
+from ..provider_layout import provider_environment
 
 
 CODE_EXTENSIONS = {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
@@ -75,9 +75,7 @@ class CodebaseMemoryImpactProvider:
         self._cache_fingerprint = fingerprint
 
     def _run(self, tool: str, *args: str, timeout_seconds: float | None = None) -> dict[str, Any]:
-        environment = os.environ.copy()
-        environment["CBM_CACHE_DIR"] = str(self.cache_dir)
-        environment["CBM_ALLOWED_ROOT"] = str(self.repository.parent)
+        environment = provider_environment(self.cache_dir, self.repository)
         try:
             completed = subprocess.run(
                 [str(self.binary), "cli", "--json", tool, *args],

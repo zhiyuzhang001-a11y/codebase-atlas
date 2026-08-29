@@ -39,6 +39,7 @@ from .operations import (
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
+from .provider_layout import provider_environment
 from .python_registration_store import (
     RegistrationIndexError,
     load_registration_index_state,
@@ -1083,9 +1084,7 @@ def _apply_project_config(args) -> None:
 
 def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     config.cache_dir.mkdir(parents=True, exist_ok=True)
-    environment = os.environ.copy()
-    environment["CBM_CACHE_DIR"] = str(config.cache_dir)
-    environment["CBM_ALLOWED_ROOT"] = str(config.repository.parent)
+    environment = provider_environment(config.cache_dir, config.repository)
     # Own the daemon when indexing starts it, so a one-shot index/repair does
     # not leave a background Provider behind. A pre-existing daemon remains
     # unowned and is deliberately not stopped.

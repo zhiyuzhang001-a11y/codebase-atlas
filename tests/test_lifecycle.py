@@ -14,10 +14,12 @@ class FakeRunner:
     def __init__(self, running: bool) -> None:
         self.running = running
         self.actions: list[str] = []
+        self.environments: list[dict[str, str]] = []
 
-    def __call__(self, command, **_kwargs):
+    def __call__(self, command, **kwargs):
         action = command[-1]
         self.actions.append(action)
+        self.environments.append(kwargs["env"])
         if action == "status":
             message = "daemon: running" if self.running else "daemon: not running"
         elif action == "start":
@@ -44,6 +46,11 @@ class LifecycleTests(unittest.TestCase):
             daemon.start()
             daemon.close()
             self.assertEqual(runner.actions, ["start", "stop"])
+            self.assertTrue(all(
+                environment["CBM_ALLOWED_ROOT"] == str(daemon.repository)
+                and environment["CBM_CACHE_DIR"] == str(daemon.cache_dir)
+                for environment in runner.environments
+            ))
 
     def test_does_not_stop_preexisting_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
