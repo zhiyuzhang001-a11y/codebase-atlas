@@ -7,6 +7,7 @@ from io import StringIO
 from pathlib import Path
 import sqlite3
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -103,6 +104,50 @@ class ProviderMigrationPlanTests(unittest.TestCase):
                 (plan.status, plan.action), ("blocked", "repair_legacy_before_migration")
             )
             self.assertIn("database_invalid", plan.reason)
+
+    def test_legacy_repository_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            root = Path(raw)
+            config = self._config(root)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            _database(config.legacy_cache_dir, config.project, foreign)
+            plan = plan_provider_migration(config)
+            self.assertEqual(plan.status, "blocked")
+            self.assertIn("identity_mismatch", plan.reason)
+
+    def test_partial_shared_generation_requires_explicit_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            config.shared_cache_dir.mkdir(parents=True, mode=0o700)
+            if os.name != "nt":
+                config.shared_cache_dir.chmod(0o700)
+            residue = config.shared_cache_dir / f"{config.shared_project}.db.stage.interrupted"
+            residue.write_bytes(b"partial")
+            plan = plan_provider_migration(config)
+            self.assertEqual(
+                (plan.status, plan.action),
+                ("blocked", "resume_or_quarantine_partial"),
+            )
+            self.assertEqual(plan.staging_residue, (str(residue),))
+
+    def test_insufficient_disk_blocks_before_worker_start(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            _database(config.legacy_cache_dir, config.project, config.repository)
+            plan = plan_provider_migration(
+                config, disk_usage=lambda _path: SimpleNamespace(free=1)
+            )
+            self.assertEqual(
+                (plan.status, plan.action), ("blocked", "free_space_before_rebuild")
+            )
+            self.assertFalse(plan.disk_preflight["ok"])
 
     @unittest.skipIf(os.name == "nt", "POSIX permission contract")
     def test_unsafe_shared_root_blocks_before_any_migration(self) -> None:
@@ -223,6 +268,28 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(config_path.read_bytes(), original)
             self.assertEqual(AtlasConfig.load(config_path).provider_layout, "legacy-project-v0")
+
+    def test_interrupt_preserves_config_and_leaves_shared_unpublished(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            legacy = _database(config.legacy_cache_dir, config.project, config.repository)
+            config_path = config.repository / ".codebase-atlas.toml"
+            config.write(config_path)
+            original = config_path.read_bytes()
+            output = StringIO()
+            with patch(
+                "codebase_atlas.cli._index_repository", side_effect=KeyboardInterrupt
+            ), redirect_stdout(output):
+                code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 130)
+            self.assertEqual(payload["status"], "interrupted")
+            self.assertEqual(config_path.read_bytes(), original)
+            self.assertTrue(legacy.exists())
 
 
 if __name__ == "__main__":
