@@ -359,7 +359,31 @@ server is `codebase-atlas mcp`.
 ## MCP connection
 
 For normal Codex use across several projects, preview and explicitly apply the
-project-local transport from each repository:
+automatic global transport once:
+
+```bash
+codebase-atlas codex plan --scope global-auto
+codebase-atlas codex apply --scope global-auto
+```
+
+It resolves only the MCP process startup directory and its ancestors up to the
+innermost Git root. It does not search sibling or recently opened projects. A
+missing, incomplete, invalid, mismatched, or ambiguous project keeps
+`project_status` available and makes code queries fail with that structured
+status. Applying can migrate only the exact older Atlas transport fixed to one
+valid config; a foreign entry is refused and a failed migration restores and
+verifies the old entry. Start a new Codex task after changing the registration.
+
+Index each repository once before first use:
+
+```bash
+cd /absolute/path/to/repository
+codebase-atlas onboard --apply
+# or, when configuration already exists:
+codebase-atlas index
+```
+
+Use project-local scope only when a repository needs a deliberate override:
 
 ```bash
 codebase-atlas codex plan --scope project

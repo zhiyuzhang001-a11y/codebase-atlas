@@ -105,7 +105,20 @@ existing MCP session; a second session reports `provider_busy` quickly.
 
 ## Connect Codex safely
 
-For automatic project selection, preview the project-local MCP block first:
+For automatic project selection across normal Codex projects, preview and apply
+the fail-closed global transport once:
+
+```bash
+codebase-atlas codex plan --scope global-auto
+codebase-atlas codex apply --scope global-auto
+```
+
+Then start a new task in the repository and call `project_status`. Atlas never
+falls back to another repository: an unconfigured or unsafe directory exposes
+only its structured status until that repository is configured and indexed.
+Existing tasks do not hot-reload the changed MCP transport.
+
+For a deliberate project-local override, preview the MCP block first:
 
 ```bash
 codebase-atlas codex plan --scope project \

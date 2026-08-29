@@ -2,9 +2,10 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release candidate: **0.21.0**, adding safe project-scoped Codex
-switching, bounded session-start index freshness and notify-only software update
-awareness while retaining the task-oriented Change Brief, lightweight local UI,
+Current release candidate: **0.21.0**, adding fail-closed automatic Codex project
+discovery, safe migration from a fixed global Atlas registration, bounded
+session-start index freshness and notify-only software update awareness while
+retaining the task-oriented Change Brief, lightweight local UI,
 resumable exact TypeScript references, exact Python registration relationships,
 and transactional onboarding.
 
@@ -35,8 +36,8 @@ query budgets, index freshness, and product interfaces.
   exposed by CLI, JSON-lines batch API, read-only MCP, and a dependency-free
   loopback browser UI;
 - dry-run-first Codex MCP registration that refuses to overwrite or remove a
-  different existing entry, plus a project-scoped managed block, exact
-  active-project status, bounded
+  different existing entry, plus automatic cwd-based project discovery, a
+  project-scoped managed block, exact active-project status, bounded
   session-start index refresh, and non-blocking notify-only release awareness.
 
 Automatic source edits, remote UI access, and cloud sync remain out of scope.
@@ -74,6 +75,7 @@ codebase-atlas ui                    # local read-only graph UI; Ctrl-C stops it
 codebase-atlas analyze-change LocalUiServer.close \
   --target-path src/codebase_atlas/web_ui.py --intent change_behavior
 codebase-atlas codex plan            # no configuration write
+codebase-atlas codex plan --scope global-auto
 codebase-atlas codex plan --scope project
 
 # After source changes:
@@ -111,7 +113,33 @@ The structural Provider chooses an incremental, no-op, or safe full-rebuild
 route. Atlas records freshness only after successful publication and preserves
 the previous state when an update fails or the repository changes mid-run.
 
-For Codex project switching, preview and then explicitly apply project scope.
+For ordinary Codex switching across repositories, preview and then explicitly
+apply the automatic global transport once:
+
+```bash
+codebase-atlas codex plan --scope global-auto
+codebase-atlas codex apply --scope global-auto
+```
+
+The plan recognizes the exact older Atlas registration fixed to one repository.
+Apply replaces only that recognized entry, verifies the new transport through
+Codex, and restores the old entry if either add or verification fails. A foreign
+or ambiguous entry is refused. The automatic server searches only from its
+startup working directory to the innermost Git root (or only that directory for
+non-Git work), rejects symlink roots, multiple configurations, and repository
+identity mismatches, and never guesses from siblings, descendants, or recent
+projects. When no safe project is available, `project_status` stays available
+and every code query returns a structured unavailable status instead of using
+another repository.
+
+Start a new Codex task after applying because existing tasks do not hot-reload
+MCP configuration. Index each repository once with `codebase-atlas onboard
+--apply` or `codebase-atlas index`; later task starts can perform the bounded
+freshness update. Use `project_status` to confirm the exact repository.
+
+For a deliberate per-project override, preview and explicitly apply project
+scope. It takes precedence when Codex loads that trusted project:
+
 It writes only an Atlas-managed block in the repository's
 `.codex/config.toml`, preserves unrelated valid TOML bytes, and never changes
 the global MCP entry:

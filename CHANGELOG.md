@@ -6,6 +6,12 @@ boundary.
 
 ## 0.21.0 — 2026-08-29
 
+- Add fail-closed `mcp-auto` discovery from the MCP startup directory to the
+  innermost Git root, with explicit unconfigured, incomplete, invalid,
+  mismatched, and ambiguous project states and no cross-project fallback.
+- Add dry-run-first `global-auto` Codex registration and verified migration of
+  the exact legacy fixed-repository Atlas transport, including exact rollback
+  on add or read-back failure and refusal of foreign entries.
 - Add dry-run-first project-scoped Codex integration that preserves unrelated
   `.codex/config.toml` bytes, refuses foreign/unsafe entries, and removes only
   its exact managed block without changing global configuration.
