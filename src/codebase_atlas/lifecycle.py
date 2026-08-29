@@ -162,11 +162,12 @@ class CodebaseMemoryDaemon:
 
 
 class SharedCodebaseMemorySession(CodebaseMemoryDaemon):
-    """Join a shared Provider daemon without owning its process lifetime.
+    """Admit work to the Provider's shared, frontend-owned daemon generation.
 
-    The account lock protects only daemon admission. It is released as soon as
-    the Provider confirms that the compatible daemon is running, so an idle
-    Atlas client cannot serialize another project's work.
+    Atlas deliberately does not run ``daemon start`` here because that creates
+    a permanent generation. Provider CLI frontends bootstrap one shared,
+    non-permanent generation and its final disconnect performs bounded cleanup.
+    The Atlas lock is therefore only a short local admission barrier.
     """
 
     def start(self, *, timeout_seconds: float | None = None) -> bool:
@@ -174,23 +175,15 @@ class SharedCodebaseMemorySession(CodebaseMemoryDaemon):
             return False
         self.lock.acquire(timeout_seconds=timeout_seconds)
         try:
-            started = self._run("start")
-            output = f"{started.stdout}\n{started.stderr}".lower()
-            if "already active" in output or "already running" in output:
-                created = False
-            elif "started" in output:
-                created = True
-            else:
-                raise RuntimeError("daemon start did not report shared admission state")
             self.owned = False
             self.active = True
-            return created
+            return False
         finally:
             self.lock.release()
 
     def close(self) -> None:
-        # The Provider owns shared-daemon retirement. Stopping it here could
-        # interrupt unrelated repositories that joined after this session.
+        # Frontend disconnects, not Atlas's structural lifetime, determine the
+        # non-permanent Provider generation's bounded retirement.
         self.owned = False
         self.active = False
         self.lock.release()

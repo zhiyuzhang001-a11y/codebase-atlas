@@ -19,14 +19,20 @@ import webbrowser
 from . import __version__
 from .change_analysis import CHANGE_INTENTS, analyze_change
 from .codex_integration import PROJECT_RULE, codex_apply, codex_plan, codex_remove
-from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
+from .config import (
+    AtlasConfig,
+    CONFIG_NAME,
+    SHARED_PROVIDER_LAYOUT,
+    _asset,
+    diagnose,
+)
 from .index_state import (
     index_freshness,
     provider_database_health,
     record_index_state,
     repository_snapshot,
 )
-from .lifecycle import CodebaseMemoryDaemon
+from .lifecycle import CodebaseMemoryDaemon, SharedCodebaseMemorySession
 from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
 from .operations import (
@@ -40,7 +46,11 @@ from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
 from .provider_layout import provider_environment
-from .provider_migration import plan_provider_migration
+from .provider_migration import (
+    plan_provider_migration,
+    prepare_shared_provider_root,
+    shared_provider_config,
+)
 from .python_registration_store import (
     RegistrationIndexError,
     load_registration_index_state,
@@ -144,6 +154,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     migrate_provider.add_argument(
         "--config", type=Path, default=Path.cwd() / CONFIG_NAME
+    )
+    migrate_provider.add_argument(
+        "--mode", choices=("fast", "moderate", "full"), default="fast"
+    )
+    migrate_provider.add_argument(
+        "--apply", action="store_true",
+        help="rebuild/verify the shared index, then publish the project switch",
     )
     repair = commands.add_parser(
         "repair", help="diagnose recovery; use --apply for an explicit safe Provider update"
@@ -442,13 +459,110 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "migrate-provider":
         config = AtlasConfig.load(args.config)
         plan = plan_provider_migration(config)
-        payload = plan.as_dict() | {
-            "mode": "read_only",
-            "apply_command": "",
-            "note": "Stage 3 preview never creates, moves, adopts, or deletes an index",
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0 if plan.status != "blocked" else 2
+        apply_command = (
+            "codebase-atlas migrate-provider --config "
+            f"{shlex.quote(str(args.config))} --mode {args.mode} --apply"
+            if plan.status != "blocked" and plan.action != "already_active" else ""
+        )
+        if not args.apply or plan.status == "blocked" or plan.action == "already_active":
+            payload = plan.as_dict() | {
+                "mode": "read_only",
+                "apply_command": apply_command,
+                "note": "preview never creates, moves, adopts, or deletes an index",
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0 if plan.status != "blocked" else 2
+
+        config_identity, config_bytes = _config_publication_snapshot(args.config)
+        source_before = repository_snapshot(config.repository)
+        candidate = shared_provider_config(config)
+        root_created = False
+        indexed = False
+        config_published = False
+        staged_registrations = None
+        try:
+            if plan.action in {"fresh_shared_index", "rebuild_into_shared"}:
+                root_created = prepare_shared_provider_root(candidate.cache_dir)
+                provider_result = _index_repository(candidate, args.mode)
+                if str(provider_result.get("project", "")) != candidate.project:
+                    raise RuntimeError("Provider returned a different shared project identity")
+                indexed = True
+            verified = plan_provider_migration(candidate)
+            if verified.shared.get("status") != "healthy":
+                raise RuntimeError(
+                    "shared Provider database did not pass identity and quick-check validation"
+                )
+            source_after = repository_snapshot(config.repository)
+            if (
+                source_before.kind == "git"
+                and source_after.kind == "git"
+                and source_before.fingerprint != source_after.fingerprint
+            ):
+                raise RuntimeError(
+                    "repository changed during Provider migration; legacy state was preserved"
+                )
+            if config.language == "python" and source_after.fingerprint:
+                staged_registrations = stage_registration_index(
+                    candidate.data_dir,
+                    candidate.repository,
+                    candidate.project,
+                    source_after.fingerprint,
+                )
+                staged_registrations.publish()
+            candidate.write_verified(args.config, config_identity)
+            config_published = True
+            record_index_state(
+                candidate.data_dir,
+                candidate.repository,
+                candidate.project,
+                args.mode,
+                snapshot=source_after,
+            )
+            if staged_registrations is not None:
+                staged_registrations.commit()
+        except BaseException as exc:
+            if staged_registrations is not None:
+                try:
+                    staged_registrations.rollback()
+                except OSError:
+                    pass
+            if config_published:
+                try:
+                    AtlasConfig.restore_verified(args.config, config_identity, config_bytes)
+                except (OSError, ValueError):
+                    pass
+            if isinstance(exc, KeyboardInterrupt):
+                print(json.dumps({
+                    "status": "interrupted",
+                    "mode": "applied",
+                    "legacy_preserved": True,
+                    "shared_published": False,
+                }, ensure_ascii=False, indent=2))
+                return 130
+            if not isinstance(exc, (OSError, RuntimeError, ValueError, RegistrationIndexError)):
+                raise
+            print(json.dumps({
+                "status": "failed",
+                "mode": "applied",
+                "error": str(exc),
+                "legacy_preserved": True,
+                "shared_published": False,
+                "root_created": root_created,
+                "index_completed": indexed,
+            }, ensure_ascii=False, indent=2))
+            return 2
+        print(json.dumps({
+            "status": "migrated",
+            "mode": "applied",
+            "repository": str(candidate.repository),
+            "project": candidate.project,
+            "shared_cache_dir": str(candidate.cache_dir),
+            "legacy_cache_dir": str(candidate.legacy_cache_dir),
+            "legacy_preserved": True,
+            "root_created": root_created,
+            "index_completed": indexed,
+        }, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "repair":
         config = AtlasConfig.load(args.config)
         before = inspect_installation(config)
@@ -822,7 +936,10 @@ def main(argv: list[str] | None = None) -> int:
             args.cache_dir,
             args.project,
         )
-        lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
+        lifecycle = _provider_lifecycle(
+            args.binary, args.repo, args.cache_dir,
+            getattr(args, "provider_layout", "legacy-project-v0"),
+        )
         with lifecycle:
             hits = provider.impact(
                 args.symbol,
@@ -887,7 +1004,10 @@ def main(argv: list[str] | None = None) -> int:
                     args.stale_policy,
                 ), ensure_ascii=False, indent=2))
                 return 3
-        lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
+        lifecycle = _provider_lifecycle(
+            args.binary, args.repo, args.cache_dir,
+            getattr(args, "provider_layout", "legacy-project-v0"),
+        )
         structural = CodebaseMemoryImpactProvider(
             args.binary,
             args.repo,
@@ -1083,9 +1203,11 @@ def _apply_project_config(args) -> None:
             config.project,
         )
         args.data_dir = config.data_dir
+        args.provider_layout = config.provider_layout
     else:
         args.index_status = unknown_operational_status()
         args.data_dir = None
+        args.provider_layout = "legacy-project-v0"
     required = {
         "repo": args.repo, "node": args.node, "binary": args.binary,
         "cache_dir": args.cache_dir, "project": args.project,
@@ -1106,14 +1228,17 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     # Own the daemon when indexing starts it, so a one-shot index/repair does
     # not leave a background Provider behind. A pre-existing daemon remains
     # unowned and is deliberately not stopped.
-    with CodebaseMemoryDaemon(
-        config.cbm_binary, config.repository, config.cache_dir
+    with _provider_lifecycle(
+        config.cbm_binary, config.repository, config.cache_dir, config.provider_layout
     ):
+        command = [
+            str(config.cbm_binary), "cli", "--json", "index_repository",
+            "--repo-path", str(config.repository), "--mode", mode,
+        ]
+        if config.project:
+            command.extend(["--name", config.project])
         completed = subprocess.run(
-            [
-                str(config.cbm_binary), "cli", "--json", "index_repository",
-                "--repo-path", str(config.repository), "--mode", mode,
-            ],
+            command,
             check=False, capture_output=True, text=True, env=environment,
         )
     if completed.returncode != 0:
@@ -1126,6 +1251,17 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     if payload.get("status") != "indexed":
         raise RuntimeError(str(payload.get("hint", f"index status is {payload.get('status', 'unknown')}")))
     return payload
+
+
+def _provider_lifecycle(
+    binary: Path, repository: Path, cache_dir: Path, provider_layout: str
+):
+    lifecycle = (
+        SharedCodebaseMemorySession
+        if provider_layout == SHARED_PROVIDER_LAYOUT
+        else CodebaseMemoryDaemon
+    )
+    return lifecycle(binary, repository, cache_dir)
 
 
 def _run_query_batch(

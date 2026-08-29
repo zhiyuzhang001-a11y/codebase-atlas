@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 
-from .config import AtlasConfig
+from .config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from .maintenance import inspect_provider_database_at
 from .provider_layout import inspect_provider_root
 
@@ -34,14 +35,23 @@ def plan_provider_migration(
 ) -> ProviderMigrationPlan:
     """Return a mutation-free migration decision for one exact repository."""
     root = inspect_provider_root(config.shared_cache_dir)
+    legacy_project = config.legacy_project or config.project
     legacy = inspect_provider_database_at(
-        config.cache_dir, config.project, config.repository, deep=deep
+        config.legacy_cache_dir, legacy_project, config.repository, deep=deep
     )
     shared = inspect_provider_database_at(
         config.shared_cache_dir, config.shared_project, config.repository, deep=deep
     )
 
-    if not root.ready:
+    if (
+        config.provider_layout == SHARED_PROVIDER_LAYOUT
+        and config.project == config.shared_project
+        and shared["status"] == "healthy"
+    ):
+        status, action, writes, reason = (
+            "ready", "already_active", False, "shared_layout_already_active"
+        )
+    elif not root.ready:
         status, action, writes, reason = (
             "blocked", "repair_shared_root", False, f"shared_root_{root.status}"
         )
@@ -74,8 +84,8 @@ def plan_provider_migration(
         action=action,
         writes_required=writes,
         repository=str(config.repository),
-        legacy_cache_dir=str(config.cache_dir),
-        legacy_project=config.project,
+        legacy_cache_dir=str(config.legacy_cache_dir),
+        legacy_project=legacy_project,
         shared_cache_dir=str(config.shared_cache_dir),
         shared_project=config.shared_project,
         legacy=legacy,
@@ -88,3 +98,28 @@ def plan_provider_migration(
         },
         reason=reason,
     )
+
+
+def shared_provider_config(config: AtlasConfig) -> AtlasConfig:
+    """Build the publishable shared-layout config without writing it."""
+    legacy_project = config.legacy_project or config.project
+    return replace(
+        config,
+        project=config.shared_project,
+        provider_layout=SHARED_PROVIDER_LAYOUT,
+        legacy_project=legacy_project,
+    )
+
+
+def prepare_shared_provider_root(path: Path) -> bool:
+    """Create only a missing final shared root and verify its exact safety."""
+    before = inspect_provider_root(path)
+    if before.status == "ready":
+        return False
+    if before.status != "missing":
+        raise RuntimeError(f"unsafe shared Provider root: {before.status}")
+    path.mkdir(parents=True, mode=0o700, exist_ok=False)
+    after = inspect_provider_root(path)
+    if after.status != "ready":
+        raise RuntimeError(f"shared Provider root creation failed safety check: {after.status}")
+    return True

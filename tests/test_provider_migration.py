@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from codebase_atlas.config import AtlasConfig
+from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.cli import main
 from codebase_atlas.provider_migration import plan_provider_migration
 
@@ -131,9 +131,98 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(payload["mode"], "read_only")
             self.assertEqual(payload["action"], "fresh_shared_index")
-            self.assertEqual(payload["apply_command"], "")
+            self.assertIn("migrate-provider", payload["apply_command"])
             self.assertEqual(config_path.read_bytes(), before)
             self.assertFalse(config.shared_cache_dir.exists())
+
+    def test_apply_rebuilds_validates_and_publishes_without_deleting_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            legacy = _database(config.legacy_cache_dir, config.project, config.repository)
+            legacy_bytes = legacy.read_bytes()
+            config_path = config.repository / ".codebase-atlas.toml"
+            config.write(config_path)
+
+            def indexer(candidate: AtlasConfig, _mode: str) -> dict[str, object]:
+                _database(candidate.cache_dir, candidate.project, candidate.repository)
+                return {"status": "indexed", "project": candidate.project}
+
+            output = StringIO()
+            with patch("codebase_atlas.cli._index_repository", side_effect=indexer) as called, redirect_stdout(output):
+                code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+            payload = json.loads(output.getvalue())
+            migrated = AtlasConfig.load(config_path)
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["status"], "migrated")
+            self.assertEqual(migrated.provider_layout, SHARED_PROVIDER_LAYOUT)
+            self.assertEqual(migrated.project, migrated.shared_project)
+            self.assertEqual(migrated.legacy_project, config.project)
+            self.assertEqual(migrated.cache_dir, migrated.shared_cache_dir)
+            self.assertEqual(legacy.read_bytes(), legacy_bytes)
+            called.assert_called_once()
+
+            second = StringIO()
+            with patch("codebase_atlas.cli._index_repository") as repeated, redirect_stdout(second):
+                second_code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+            second_payload = json.loads(second.getvalue())
+            self.assertEqual(second_code, 0)
+            self.assertEqual(second_payload["action"], "already_active")
+            repeated.assert_not_called()
+
+    def test_worker_failure_preserves_exact_config_and_legacy_database(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            legacy = _database(config.legacy_cache_dir, config.project, config.repository)
+            config_path = config.repository / ".codebase-atlas.toml"
+            config.write(config_path)
+            config_bytes = config_path.read_bytes()
+            legacy_bytes = legacy.read_bytes()
+            output = StringIO()
+            with patch(
+                "codebase_atlas.cli._index_repository", side_effect=RuntimeError("worker failed")
+            ), redirect_stdout(output):
+                code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+            payload = json.loads(output.getvalue())
+            self.assertEqual(code, 2)
+            self.assertEqual(payload["status"], "failed")
+            self.assertTrue(payload["legacy_preserved"])
+            self.assertEqual(config_path.read_bytes(), config_bytes)
+            self.assertEqual(legacy.read_bytes(), legacy_bytes)
+
+    def test_publication_failure_restores_exact_legacy_config(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            _database(config.legacy_cache_dir, config.project, config.repository)
+            config_path = config.repository / ".codebase-atlas.toml"
+            config.write(config_path)
+            original = config_path.read_bytes()
+
+            def indexer(candidate: AtlasConfig, _mode: str) -> dict[str, object]:
+                _database(candidate.cache_dir, candidate.project, candidate.repository)
+                return {"status": "indexed", "project": candidate.project}
+
+            output = StringIO()
+            with patch("codebase_atlas.cli._index_repository", side_effect=indexer), patch(
+                "codebase_atlas.cli.record_index_state", side_effect=OSError("publish failed")
+            ), redirect_stdout(output):
+                code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+            self.assertEqual(code, 2)
+            self.assertEqual(config_path.read_bytes(), original)
+            self.assertEqual(AtlasConfig.load(config_path).provider_layout, "legacy-project-v0")
 
 
 if __name__ == "__main__":

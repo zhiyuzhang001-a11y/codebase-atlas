@@ -97,6 +97,7 @@ class ProviderLayoutTests(unittest.TestCase):
                 root / "project-data",
             )
             self.assertEqual(config.cache_dir, (root / "project-data/codebase-memory").resolve())
+            self.assertEqual(config.legacy_cache_dir, config.cache_dir)
             self.assertEqual(config.shared_cache_dir, shared_provider_root())
             self.assertEqual(config.shared_project, provider_project_identity(repository))
 

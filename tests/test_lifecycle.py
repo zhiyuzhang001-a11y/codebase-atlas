@@ -12,6 +12,7 @@ from codebase_atlas.lifecycle import (
     GlobalCbmLock,
     SharedCodebaseMemorySession,
 )
+from codebase_atlas.cli import _provider_lifecycle
 
 
 class FakeRunner:
@@ -122,21 +123,13 @@ class LifecycleTests(unittest.TestCase):
                 runner=runner, lock=GlobalCbmLock(path),
             )
 
-            self.assertTrue(first.start())
+            self.assertFalse(first.start())
             # Admission is already released: B joins before A closes.
             self.assertFalse(second.start(timeout_seconds=0.05))
             first.close()
             second.close()
 
-            self.assertEqual(runner.actions, ["start", "start"])
-            self.assertEqual(
-                [environment["CBM_ALLOWED_ROOT"] for environment in runner.environments],
-                [str(first.repository), str(second.repository)],
-            )
-            self.assertTrue(all(
-                environment["CBM_CACHE_DIR"] == str(cache.resolve())
-                for environment in runner.environments
-            ))
+            self.assertEqual(runner.actions, [])
 
     def test_shared_session_close_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -148,7 +141,18 @@ class LifecycleTests(unittest.TestCase):
             session.start()
             session.close()
             session.close()
-            self.assertEqual(runner.actions, ["start"])
+            self.assertEqual(runner.actions, [])
+
+    def test_product_selects_shared_lifecycle_only_for_published_layout(self) -> None:
+        legacy = _provider_lifecycle(
+            Path("binary"), Path("repo"), Path("cache"), "legacy-project-v0"
+        )
+        shared = _provider_lifecycle(
+            Path("binary"), Path("repo"), Path("cache"), "shared-v1"
+        )
+        self.assertIsInstance(legacy, CodebaseMemoryDaemon)
+        self.assertNotIsInstance(legacy, SharedCodebaseMemorySession)
+        self.assertIsInstance(shared, SharedCodebaseMemorySession)
 
 
 if __name__ == "__main__":

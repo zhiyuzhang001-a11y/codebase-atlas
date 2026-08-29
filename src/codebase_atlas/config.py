@@ -20,6 +20,8 @@ from .provider_layout import (
 
 
 CONFIG_NAME = ".codebase-atlas.toml"
+LEGACY_PROVIDER_LAYOUT = "legacy-project-v0"
+SHARED_PROVIDER_LAYOUT = "shared-v1"
 
 
 def _require_regular_identity(path: Path, expected_identity: tuple[int, int]) -> None:
@@ -59,6 +61,8 @@ class AtlasConfig:
     project: str = ""
     node_bin_dir: Path | None = None
     tsconfig: Path | None = None
+    provider_layout: str = LEGACY_PROVIDER_LAYOUT
+    legacy_project: str = ""
 
     def __post_init__(self) -> None:
         for name in ("repository", "data_dir"):
@@ -71,9 +75,21 @@ class AtlasConfig:
             object.__setattr__(self, "node_bin_dir", self.node_bin_dir.absolute())
         if self.tsconfig is not None:
             object.__setattr__(self, "tsconfig", self.tsconfig)
+        if self.provider_layout not in {LEGACY_PROVIDER_LAYOUT, SHARED_PROVIDER_LAYOUT}:
+            raise ValueError(f"unsupported Provider layout: {self.provider_layout}")
+        if self.provider_layout == SHARED_PROVIDER_LAYOUT and self.project != self.shared_project:
+            raise ValueError("shared Provider layout requires the deterministic project identity")
 
     @property
     def cache_dir(self) -> Path:
+        return (
+            self.shared_cache_dir
+            if self.provider_layout == SHARED_PROVIDER_LAYOUT
+            else self.legacy_cache_dir
+        )
+
+    @property
+    def legacy_cache_dir(self) -> Path:
         return self.data_dir / "codebase-memory"
 
     @property
@@ -153,6 +169,8 @@ class AtlasConfig:
             Path(runtime["serena_python"]), Path(project["data_dir"]),
             project.get("cbm_project", ""), Path(node_bin) if node_bin else None,
             Path(tsconfig) if tsconfig else None,
+            project.get("provider_layout", LEGACY_PROVIDER_LAYOUT),
+            project.get("legacy_cbm_project", ""),
         )
 
     def with_project(self, project: str) -> "AtlasConfig":
@@ -167,6 +185,8 @@ class AtlasConfig:
             f'language = "{self.language}"\n'
             f'data_dir = "{quote(self.data_dir)}"\n'
             f'cbm_project = "{quote(self.project)}"\n'
+            f'provider_layout = "{self.provider_layout}"\n'
+            f'legacy_cbm_project = "{quote(self.legacy_project)}"\n'
             f'tsconfig = "{quote(self.tsconfig) if self.tsconfig else ""}"\n\n[runtime]\n'
             f'node = "{quote(self.node)}"\n'
             f'node_bin_dir = "{node_bin}"\n'

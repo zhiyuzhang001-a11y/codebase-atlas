@@ -12,6 +12,36 @@ from codebase_atlas.index_state import record_index_state
 
 
 class ConfigTests(unittest.TestCase):
+    def test_old_config_without_layout_marker_remains_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            path = repository / ".codebase-atlas.toml"
+            path.write_text(
+                "schema_version = 1\n\n[project]\n"
+                f'repository = "{repository}"\nlanguage = "python"\n'
+                f'data_dir = "{root / "data"}"\ncbm_project = "legacy"\ntsconfig = ""\n\n'
+                "[runtime]\n"
+                f'node = "{root / "node"}"\nnode_bin_dir = "{root}"\n'
+                f'cbm_binary = "{root / "cbm"}"\nserena_python = "{root / "serena"}"\n',
+                encoding="utf-8",
+            )
+            loaded = AtlasConfig.load(path)
+            self.assertEqual(loaded.provider_layout, "legacy-project-v0")
+            self.assertEqual(loaded.cache_dir, loaded.legacy_cache_dir)
+
+    def test_unknown_or_mismatched_shared_layout_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            values = (repository, "python", root / "node", root / "cbm", root / "serena", root / "data")
+            with self.assertRaisesRegex(ValueError, "unsupported Provider layout"):
+                AtlasConfig(*values, provider_layout="future-v9")
+            with self.assertRaisesRegex(ValueError, "deterministic project identity"):
+                AtlasConfig(*values, project="wrong", provider_layout="shared-v1")
+
     def test_round_trip_and_derived_runtime_paths(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
