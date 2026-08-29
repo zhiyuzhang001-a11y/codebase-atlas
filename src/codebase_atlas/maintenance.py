@@ -60,14 +60,31 @@ def _storage(config: AtlasConfig) -> dict[str, object]:
 
 
 def _database_path(config: AtlasConfig) -> Path | None:
-    if not config.project or Path(config.project).name != config.project:
+    return _provider_database_path(config.cache_dir, config.project)
+
+
+def _provider_database_path(cache_dir: Path, project: str) -> Path | None:
+    if not project or Path(project).name != project:
         return None
-    return config.cache_dir / f"{config.project}.db"
+    return cache_dir.resolve() / f"{project}.db"
 
 
 def inspect_provider_database(config: AtlasConfig, *, deep: bool = False) -> dict[str, object]:
     """Inspect the Provider database through a read-only SQLite connection."""
-    database = _database_path(config)
+    return inspect_provider_database_at(
+        config.cache_dir, config.project, config.repository, deep=deep
+    )
+
+
+def inspect_provider_database_at(
+    cache_dir: Path,
+    project: str,
+    repository: Path,
+    *,
+    deep: bool = False,
+) -> dict[str, object]:
+    """Inspect one exact Provider database without mutating or adopting it."""
+    database = _provider_database_path(cache_dir, project)
     if database is None:
         return {
             "status": "invalid",
@@ -113,8 +130,8 @@ def inspect_provider_database(config: AtlasConfig, *, deep: bool = False) -> dic
             projects = [(str(name), str(root)) for name, root in connection.execute(
                 "SELECT name, root_path FROM projects"
             )]
-            primary = [row for row in projects if row[0] == config.project]
-            allowed_projects = {config.project, config.project + "::missed"}
+            primary = [row for row in projects if row[0] == project]
+            allowed_projects = {project, project + "::missed"}
             unexpected = [row for row in projects if row[0] not in allowed_projects]
             if len(primary) != 1 or unexpected:
                 return result | {
@@ -125,7 +142,7 @@ def inspect_provider_database(config: AtlasConfig, *, deep: bool = False) -> dic
                     "unexpected_projects": [row[0] for row in unexpected],
                 }
             stored_project, stored_root = primary[0]
-            if stored_project != config.project or Path(stored_root).resolve() != config.repository:
+            if stored_project != project or Path(stored_root).resolve() != repository.resolve():
                 return result | {
                     "status": "incompatible", "ok": False,
                     "reason": "provider_project_identity_mismatch",
@@ -156,9 +173,9 @@ def inspect_provider_database(config: AtlasConfig, *, deep: bool = False) -> dic
         "status": "healthy", "ok": True,
         "reason": "provider_database_verified",
         "project_rows": len(projects),
-        "auxiliary_projects": [row[0] for row in projects if row[0] != config.project],
-        "stored_project": config.project,
-        "stored_repository": str(config.repository),
+        "auxiliary_projects": [row[0] for row in projects if row[0] != project],
+        "stored_project": project,
+        "stored_repository": str(repository.resolve()),
     }
 
 

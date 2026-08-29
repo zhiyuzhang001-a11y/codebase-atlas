@@ -40,6 +40,7 @@ from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
 from .provider_layout import provider_environment
+from .provider_migration import plan_provider_migration
 from .python_registration_store import (
     RegistrationIndexError,
     load_registration_index_state,
@@ -136,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument(
         "--deep", action="store_true",
         help="also run SQLite quick_check; this may take time for a large index",
+    )
+    migrate_provider = commands.add_parser(
+        "migrate-provider",
+        help="preview the legacy-to-shared Provider migration without modifying it",
+    )
+    migrate_provider.add_argument(
+        "--config", type=Path, default=Path.cwd() / CONFIG_NAME
     )
     repair = commands.add_parser(
         "repair", help="diagnose recovery; use --apply for an explicit safe Provider update"
@@ -431,6 +439,16 @@ def main(argv: list[str] | None = None) -> int:
         report = inspect_installation(config, deep=args.deep)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] else 2
+    if args.command == "migrate-provider":
+        config = AtlasConfig.load(args.config)
+        plan = plan_provider_migration(config)
+        payload = plan.as_dict() | {
+            "mode": "read_only",
+            "apply_command": "",
+            "note": "Stage 3 preview never creates, moves, adopts, or deletes an index",
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if plan.status != "blocked" else 2
     if args.command == "repair":
         config = AtlasConfig.load(args.config)
         before = inspect_installation(config)
