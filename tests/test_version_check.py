@@ -88,6 +88,32 @@ class VersionCheckTests(unittest.TestCase):
         self.assertTrue(result["checksum_available"])
         self.assertEqual(len(calls), 1)
 
+    def test_cache_is_refreshed_after_installed_version_changes(self) -> None:
+        calls = []
+
+        def opener(_request, **_kwargs):
+            calls.append(True)
+            return Response(json.dumps({
+                "tag_name": "v0.20.0",
+                "html_url": "https://example.test/release",
+                "assets": [{"name": "SHA256SUMS.txt"}],
+            }).encode())
+
+        with tempfile.TemporaryDirectory() as raw:
+            data = Path(raw)
+            old = fetch_release_status(
+                "0.20.0", data, opener=opener, now=1000
+            )
+            upgraded = fetch_release_status(
+                "0.21.0", data, opener=opener, now=1001
+            )
+        self.assertEqual(old["current_version"], "0.20.0")
+        self.assertEqual(upgraded["current_version"], "0.21.0")
+        self.assertEqual(upgraded["latest_version"], "0.20.0")
+        self.assertEqual(upgraded["status"], "current")
+        self.assertEqual(upgraded["source"], "network")
+        self.assertEqual(len(calls), 2)
+
     def test_notifier_can_be_disabled_without_fetch(self) -> None:
         called = []
         notifier = VersionNotifier(

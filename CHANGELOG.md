@@ -4,7 +4,7 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
-## Unreleased
+## 0.21.0 — 2026-08-29
 
 - Add dry-run-first project-scoped Codex integration that preserves unrelated
   `.codex/config.toml` bytes, refuses foreign/unsafe entries, and removes only

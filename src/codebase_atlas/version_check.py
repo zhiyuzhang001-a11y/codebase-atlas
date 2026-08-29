@@ -32,7 +32,9 @@ def _cache_path(data_dir: Path) -> Path:
     return data_dir / "version-check.json"
 
 
-def _read_cache(data_dir: Path, now: float) -> dict[str, Any] | None:
+def _read_cache(
+    data_dir: Path, now: float, current_version: str
+) -> dict[str, Any] | None:
     path = _cache_path(data_dir)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -42,6 +44,8 @@ def _read_cache(data_dir: Path, now: float) -> dict[str, Any] | None:
     ttl = value.get("ttl_seconds")
     if (
         value.get("schema_version") != CACHE_SCHEMA_VERSION
+        or
+        value.get("current_version") != current_version
         or
         not isinstance(checked_epoch, (int, float))
         or not isinstance(ttl, int)
@@ -79,7 +83,7 @@ def fetch_release_status(
     now: float | None = None,
 ) -> dict[str, Any]:
     timestamp = time.time() if now is None else now
-    cached = _read_cache(data_dir, timestamp)
+    cached = _read_cache(data_dir, timestamp, current_version)
     if cached is not None:
         return cached
     try:

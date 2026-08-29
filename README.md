@@ -2,8 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release line: **0.20.0**, adding a bounded task-oriented Change Brief
-and dry-run-first Codex integration while retaining the lightweight local UI,
+Current release candidate: **0.21.0**, adding safe project-scoped Codex
+switching, bounded session-start index freshness and notify-only software update
+awareness while retaining the task-oriented Change Brief, lightweight local UI,
 resumable exact TypeScript references, exact Python registration relationships,
 and transactional onboarding.
 
@@ -34,8 +35,8 @@ query budgets, index freshness, and product interfaces.
   exposed by CLI, JSON-lines batch API, read-only MCP, and a dependency-free
   loopback browser UI;
 - dry-run-first Codex MCP registration that refuses to overwrite or remove a
-  different existing entry. The unreleased M30 candidate also supports a
-  project-scoped managed block, exact active-project status, bounded
+  different existing entry, plus a project-scoped managed block, exact
+  active-project status, bounded
   session-start index refresh, and non-blocking notify-only release awareness.
 
 Automatic source edits, remote UI access, and cloud sync remain out of scope.
