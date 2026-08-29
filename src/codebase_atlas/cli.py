@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         codex_action.add_argument("--codex-binary", type=Path)
         codex_action.add_argument("--atlas-executable", type=Path)
         codex_action.add_argument(
-            "--scope", choices=("global", "project"), default="global"
+            "--scope", choices=("global", "global-auto", "project"), default="global"
         )
         codex_action.add_argument("--codex-project-root", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")

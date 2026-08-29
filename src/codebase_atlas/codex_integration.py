@@ -23,6 +23,7 @@ PROJECT_RULE = """At task start, call project_status once. Stop if its repositor
 PROJECT_SCOPE_BEGIN = "# >>> codebase-atlas managed project mcp v1 >>>"
 PROJECT_SCOPE_END = "# <<< codebase-atlas managed project mcp v1 <<<"
 PROJECT_CODEX_CONFIG = Path(".codex/config.toml")
+GLOBAL_AUTO_SCOPE = "global-auto"
 
 
 def _executable(value: str | Path | None, fallback: str) -> str:
@@ -56,6 +57,21 @@ def _atlas_transport(
     ]
 
 
+def _auto_transport(atlas_executable: str | Path | None) -> tuple[str, list[str]]:
+    tail = [
+        "mcp-auto",
+        "--auto-update", "session-start",
+        "--auto-update-timeout", "60",
+        "--version-check", "notify",
+    ]
+    if atlas_executable is not None:
+        return _executable(atlas_executable, "codebase-atlas"), tail
+    discovered = shutil.which("codebase-atlas")
+    if discovered:
+        return str(Path(discovered).resolve()), tail
+    return str(Path(sys.executable).absolute()), ["-m", "codebase_atlas.cli", *tail]
+
+
 def _read_existing(
     codex: str, name: str, *, runner: Runner = subprocess.run
 ) -> dict[str, Any] | None:
@@ -87,6 +103,43 @@ def _matches(existing: dict[str, Any], command: str, args: list[str]) -> bool:
         and transport.get("command") == command
         and transport.get("args") == args
     )
+
+
+def _legacy_fixed_atlas(existing: dict[str, Any]) -> bool:
+    transport = existing.get("transport")
+    if not isinstance(transport, dict) or transport.get("type") != "stdio":
+        return False
+    command = transport.get("command")
+    args = transport.get("args")
+    environment = transport.get("env")
+    if not isinstance(command, str) or not isinstance(args, list):
+        return False
+    if not all(isinstance(value, str) for value in args):
+        return False
+    if environment not in (None, {}):
+        return False
+    module_shape = args[:3] == ["-m", "codebase_atlas.cli", "mcp"]
+    executable_shape = bool(args) and args[0] == "mcp"
+    if not (module_shape or executable_shape) or args.count("--config") != 1:
+        return False
+    position = args.index("--config")
+    if position + 1 >= len(args):
+        return False
+    config = Path(args[position + 1]).expanduser()
+    try:
+        if config.is_symlink() or not config.is_file():
+            return False
+        AtlasConfig.load(config)
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _transport_add_argv(codex: str, name: str, transport: dict[str, Any]) -> list[str]:
+    return [
+        codex, "mcp", "add", name, "--",
+        str(transport["command"]), *[str(value) for value in transport["args"]],
+    ]
 
 
 def _toml_string(value: str) -> str:
@@ -287,19 +340,30 @@ def codex_plan(
             config, name=name, atlas_executable=atlas_executable,
             codex_project_root=codex_project_root,
         )
-    if scope != "global":
-        raise ValueError("Codex integration scope must be 'global' or 'project'")
+    if scope not in {"global", GLOBAL_AUTO_SCOPE}:
+        raise ValueError(
+            "Codex integration scope must be 'global', 'global-auto', or 'project'"
+        )
     codex = _executable(codex_binary, "codex")
-    command, args = _atlas_transport(config, atlas_executable)
-    existing = _read_existing(codex, name, runner=runner)
-    state = "absent" if existing is None else (
-        "matching" if _matches(existing, command, args) else "conflict"
+    command, args = (
+        _auto_transport(atlas_executable)
+        if scope == GLOBAL_AUTO_SCOPE
+        else _atlas_transport(config, atlas_executable)
     )
-    return {
+    existing = _read_existing(codex, name, runner=runner)
+    if existing is None:
+        state = "absent"
+    elif _matches(existing, command, args):
+        state = "matching"
+    elif scope == GLOBAL_AUTO_SCOPE and _legacy_fixed_atlas(existing):
+        state = "legacy_fixed_atlas"
+    else:
+        state = "conflict"
+    plan = {
         "schema_version": 1,
         "status": "planned" if state != "conflict" else "blocked",
         "mode": "dry_run",
-        "scope": "global",
+        "scope": scope,
         "name": name,
         "existing": state,
         "transport": {"type": "stdio", "command": command, "args": args},
@@ -314,6 +378,11 @@ def codex_plan(
         ],
         "project_rule": PROJECT_RULE,
     }
+    if state == "legacy_fixed_atlas" and existing is not None:
+        legacy = dict(existing["transport"])
+        plan["legacy_transport"] = legacy
+        plan["rollback_argv"] = _transport_add_argv(codex, name, legacy)
+    return plan
 
 
 def codex_apply(
@@ -338,6 +407,48 @@ def codex_apply(
         raise RuntimeError("refusing to overwrite an existing different MCP configuration")
     if plan["existing"] == "matching":
         return plan | {"status": "ready", "mode": "applied", "mutates": False}
+    legacy = plan.get("legacy_transport")
+    if plan["scope"] == GLOBAL_AUTO_SCOPE and legacy is not None:
+        removed = runner(
+            plan["remove_argv"], check=False, capture_output=True, text=True
+        )
+        if removed.returncode != 0:
+            raise RuntimeError(removed.stderr.strip() or "codex mcp remove failed")
+        completed = runner(
+            plan["apply_argv"], check=False, capture_output=True, text=True
+        )
+        if completed.returncode != 0:
+            rollback = runner(
+                plan["rollback_argv"], check=False, capture_output=True, text=True
+            )
+            restored = _read_existing(
+                str(plan["remove_argv"][0]), str(plan["name"]), runner=runner
+            )
+            if rollback.returncode != 0 or restored is None or not _matches(
+                restored, str(legacy["command"]), list(legacy["args"])
+            ):
+                raise RuntimeError("global Atlas migration failed and exact rollback failed")
+            raise RuntimeError(
+                (completed.stderr.strip() or "codex mcp add failed")
+                + "; exact legacy transport restored"
+            )
+        verified = codex_plan(config, runner=runner, **kwargs)
+        if verified["existing"] != "matching":
+            runner(
+                verified["remove_argv"], check=False, capture_output=True, text=True
+            )
+            rollback = runner(
+                plan["rollback_argv"], check=False, capture_output=True, text=True
+            )
+            restored = _read_existing(
+                str(plan["remove_argv"][0]), str(plan["name"]), runner=runner
+            )
+            if rollback.returncode != 0 or restored is None or not _matches(
+                restored, str(legacy["command"]), list(legacy["args"])
+            ):
+                raise RuntimeError("global Atlas verification failed and exact rollback failed")
+            raise RuntimeError("global Atlas verification failed; exact legacy transport restored")
+        return verified | {"status": "ready", "mode": "applied", "mutates": True}
     completed = runner(
         plan["apply_argv"], check=False, capture_output=True, text=True
     )
@@ -398,6 +509,8 @@ def codex_remove(
         if verified["existing"] != "absent":
             raise RuntimeError("project Codex MCP removal verification failed")
         return verified | {"status": "absent", "mode": "removed", "mutates": True}
+    if plan["scope"] == GLOBAL_AUTO_SCOPE and plan["existing"] == "legacy_fixed_atlas":
+        raise RuntimeError("refusing to remove a legacy fixed Atlas entry; apply migration first")
     if plan["existing"] == "conflict":
         raise RuntimeError("refusing to remove a different MCP configuration")
     if plan["existing"] == "absent":

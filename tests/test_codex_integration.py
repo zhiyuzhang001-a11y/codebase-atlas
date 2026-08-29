@@ -12,8 +12,9 @@ from codebase_atlas.codex_integration import codex_apply, codex_plan, codex_remo
 
 
 class FakeRunner:
-    def __init__(self, existing=None) -> None:
+    def __init__(self, existing=None, fail_adds=0) -> None:
         self.existing = existing
+        self.fail_adds = fail_adds
         self.calls = []
 
     def __call__(self, argv, **_kwargs):
@@ -25,6 +26,9 @@ class FakeRunner:
                 )
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.existing), "")
         if argv[1:3] == ["mcp", "add"]:
+            if self.fail_adds:
+                self.fail_adds -= 1
+                return subprocess.CompletedProcess(argv, 1, "", "simulated add failure")
             separator = argv.index("--")
             self.existing = {
                 "transport": {
@@ -243,6 +247,101 @@ class CodexIntegrationTests(unittest.TestCase):
                     config, scope="project", atlas_executable=atlas,
                     codex_project_root=foreign,
                 )
+
+    def legacy_entry(self, config: Path, command: Path):
+        return {
+            "transport": {
+                "type": "stdio",
+                "command": str(command),
+                "args": [
+                    "-m", "codebase_atlas.cli", "mcp", "--config", str(config)
+                ],
+                "env": None,
+            }
+        }
+
+    def test_global_auto_plan_and_legacy_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _repository, config, atlas = self.project_paths(root)
+            codex = root / "codex"
+            codex.write_text("")
+            old_python = root / "old-python"
+            old_python.write_text("")
+            runner = FakeRunner(self.legacy_entry(config, old_python))
+            plan = codex_plan(
+                config, scope="global-auto", codex_binary=codex,
+                atlas_executable=atlas, runner=runner,
+            )
+            self.assertEqual(plan["existing"], "legacy_fixed_atlas")
+            self.assertNotIn("--config", plan["transport"]["args"])
+            applied = codex_apply(
+                config, scope="global-auto", codex_binary=codex,
+                atlas_executable=atlas, runner=runner,
+            )
+            self.assertEqual(applied["existing"], "matching")
+            self.assertEqual(runner.existing["transport"]["args"][0], "mcp-auto")
+
+    def test_global_auto_rolls_back_exact_legacy_after_add_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _repository, config, atlas = self.project_paths(root)
+            codex = root / "codex"
+            codex.write_text("")
+            old_python = root / "old-python"
+            old_python.write_text("")
+            legacy = self.legacy_entry(config, old_python)
+            runner = FakeRunner(legacy, fail_adds=1)
+            with self.assertRaisesRegex(RuntimeError, "exact legacy transport restored"):
+                codex_apply(
+                    config, scope="global-auto", codex_binary=codex,
+                    atlas_executable=atlas, runner=runner,
+                )
+            self.assertEqual(
+                runner.existing["transport"]["command"],
+                legacy["transport"]["command"],
+            )
+            self.assertEqual(
+                runner.existing["transport"]["args"], legacy["transport"]["args"]
+            )
+
+    def test_global_auto_refuses_foreign_entry_and_legacy_remove(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _repository, config, atlas = self.project_paths(root)
+            codex = root / "codex"
+            codex.write_text("")
+            foreign = FakeRunner({
+                "transport": {"type": "stdio", "command": "/other", "args": []}
+            })
+            plan = codex_plan(
+                config, scope="global-auto", codex_binary=codex,
+                atlas_executable=atlas, runner=foreign,
+            )
+            self.assertEqual(plan["status"], "blocked")
+            legacy = FakeRunner(self.legacy_entry(config, root / "old-python"))
+            with self.assertRaisesRegex(RuntimeError, "apply migration first"):
+                codex_remove(
+                    config, scope="global-auto", codex_binary=codex,
+                    atlas_executable=atlas, runner=legacy,
+                )
+
+    def test_global_auto_matching_remove_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            _repository, config, atlas = self.project_paths(root)
+            codex = root / "codex"
+            codex.write_text("")
+            runner = FakeRunner()
+            codex_apply(
+                config, scope="global-auto", codex_binary=codex,
+                atlas_executable=atlas, runner=runner,
+            )
+            removed = codex_remove(
+                config, scope="global-auto", codex_binary=codex,
+                atlas_executable=atlas, runner=runner,
+            )
+            self.assertEqual(removed["existing"], "absent")
 
 
 if __name__ == "__main__":
