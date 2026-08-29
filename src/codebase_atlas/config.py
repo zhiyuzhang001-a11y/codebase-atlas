@@ -11,6 +11,8 @@ import stat
 import sys
 import tomllib
 
+from .provider_layout import atlas_data_root, provider_project_identity, shared_provider_root
+
 
 CONFIG_NAME = ".codebase-atlas.toml"
 
@@ -38,8 +40,7 @@ def _which(name: str, environment_name: str) -> Path | None:
 
 def default_data_dir(repository: Path) -> Path:
     digest = hashlib.sha256(str(repository.resolve()).encode()).hexdigest()[:12]
-    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    return root / "codebase-atlas" / f"{repository.name}-{digest}"
+    return atlas_data_root() / f"{repository.name}-{digest}"
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,15 @@ class AtlasConfig:
     @property
     def cache_dir(self) -> Path:
         return self.data_dir / "codebase-memory"
+
+    @property
+    def shared_cache_dir(self) -> Path:
+        """M32 account-level target; activation remains an explicit migration step."""
+        return shared_provider_root()
+
+    @property
+    def shared_project(self) -> str:
+        return provider_project_identity(self.repository)
 
     @property
     def serena_home(self) -> Path:
