@@ -11,7 +11,12 @@ import stat
 import sys
 import tomllib
 
-from .provider_layout import atlas_data_root, provider_project_identity, shared_provider_root
+from .provider_layout import (
+    atlas_data_root,
+    inspect_provider_root,
+    provider_project_identity,
+    shared_provider_root,
+)
 
 
 CONFIG_NAME = ".codebase-atlas.toml"
@@ -250,6 +255,7 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
 
     freshness = index_freshness(config.data_dir, config.repository, config.project)
     provider_database = provider_database_health(config.cache_dir, config.project)
+    shared_root = inspect_provider_root(config.shared_cache_dir)
     kwargs = {} if runner is None else {"runner": runner}
     checks = runtime_checks(
         config.repository,
@@ -279,6 +285,18 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
             "path": str(config.cache_dir), "version": "",
             "detail": f"{provider_database['status']}: {provider_database['reason']}",
             "remediation": "" if provider_database["ok"] else "run 'codebase-atlas index'",
+        },
+        {
+            "name": "shared_provider_target", "ok": shared_root.ready, "required": False,
+            "path": str(shared_root.path), "version": "v1",
+            "detail": (
+                f"{shared_root.status}; project={config.shared_project}; "
+                "target is not activated until M32 migration"
+            ),
+            "remediation": (
+                "" if shared_root.ready else
+                "do not change this path manually; run the future explicit M32 repair/migration"
+            ),
         },
     ])
     return checks

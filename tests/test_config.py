@@ -51,6 +51,11 @@ class ConfigTests(unittest.TestCase):
             ):
                 checks = diagnose(loaded, runner=runner)
             self.assertTrue(all(item["ok"] for item in checks if item["required"]))
+            shared = next(item for item in checks if item["name"] == "shared_provider_target")
+            self.assertFalse(shared["required"])
+            self.assertEqual(shared["path"], str(loaded.shared_cache_dir))
+            self.assertIn(f"project={loaded.shared_project}", shared["detail"])
+            self.assertIn("not activated", shared["detail"])
 
     def test_default_data_dir_is_stable_and_repository_specific(self) -> None:
         first = default_data_dir(Path("/tmp/example-a"))
