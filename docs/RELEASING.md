@@ -29,6 +29,21 @@ publish to PyPI.
 Release builds set a fixed `SOURCE_DATE_EPOCH`; rebuilding identical tagged
 source therefore produces identical wheel bytes and SHA-256.
 
+Setuptools currently stamps generated sdist tar metadata with build time. If an
+sdist is produced for local verification, normalize two independent builds and
+compare them before distribution:
+
+```bash
+python scripts/normalize_sdist.py dist-a/codebase_atlas-0.21.0.tar.gz \
+  normalized-a.tar.gz --epoch "$SOURCE_DATE_EPOCH"
+python scripts/normalize_sdist.py dist-b/codebase_atlas-0.21.0.tar.gz \
+  normalized-b.tar.gz --epoch "$SOURCE_DATE_EPOCH"
+cmp normalized-a.tar.gz normalized-b.tar.gz
+```
+
+The public GitHub Release workflow currently distributes only the verified
+wheel and its checksum file.
+
 ## License boundary
 
 The Apache License 2.0 product license, TypeScript runtime license, and third-party
