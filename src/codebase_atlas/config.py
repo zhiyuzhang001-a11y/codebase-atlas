@@ -311,11 +311,15 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
             "path": str(shared_root.path), "version": "v1",
             "detail": (
                 f"{shared_root.status}; project={config.shared_project}; "
-                "target is not activated until M32 migration"
+                + (
+                    "shared layout is active for this project"
+                    if config.provider_layout == SHARED_PROVIDER_LAYOUT
+                    else "target is not activated until explicit Provider migration"
+                )
             ),
             "remediation": (
                 "" if shared_root.ready else
-                "do not change this path manually; run the future explicit M32 repair/migration"
+                "do not change this path manually; run the explicit Provider migration"
             ),
         },
     ])

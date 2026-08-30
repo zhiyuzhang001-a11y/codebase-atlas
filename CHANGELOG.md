@@ -38,6 +38,8 @@ boundary.
 - Document project-maintained, reproducible Codebase Memory bundles as an
   independent fallback channel with exact source, checksum, license and rollback
   evidence; upstream merge remains optional.
+- Report an activated shared Provider layout accurately in `doctor`, rather
+  than continuing to describe the already-migrated project as a future target.
 
 ## 0.20.0 — 2026-08-27
 

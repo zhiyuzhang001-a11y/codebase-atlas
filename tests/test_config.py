@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -89,6 +90,23 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(shared["path"], str(loaded.shared_cache_dir))
             self.assertIn(f"project={loaded.shared_project}", shared["detail"])
             self.assertIn("not activated", shared["detail"])
+
+            active = replace(
+                loaded,
+                project=loaded.shared_project,
+                provider_layout="shared-v1",
+                legacy_project=loaded.project,
+            )
+            with patch(
+                "codebase_atlas.runtime.shutil.which",
+                side_effect=lambda command, **_kwargs: str(root / "npm") if command == "npm" else None,
+            ):
+                active_checks = diagnose(active, runner=runner)
+            active_shared = next(
+                item for item in active_checks if item["name"] == "shared_provider_target"
+            )
+            self.assertIn("shared layout is active", active_shared["detail"])
+            self.assertNotIn("not activated", active_shared["detail"])
 
     def test_default_data_dir_is_stable_and_repository_specific(self) -> None:
         first = default_data_dir(Path("/tmp/example-a"))
