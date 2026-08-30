@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -20,11 +21,13 @@ class ConfigTests(unittest.TestCase):
             path = repository / ".codebase-atlas.toml"
             path.write_text(
                 "schema_version = 1\n\n[project]\n"
-                f'repository = "{repository}"\nlanguage = "python"\n'
-                f'data_dir = "{root / "data"}"\ncbm_project = "legacy"\ntsconfig = ""\n\n'
+                f'repository = {json.dumps(str(repository))}\nlanguage = "python"\n'
+                f'data_dir = {json.dumps(str(root / "data"))}\ncbm_project = "legacy"\ntsconfig = ""\n\n'
                 "[runtime]\n"
-                f'node = "{root / "node"}"\nnode_bin_dir = "{root}"\n'
-                f'cbm_binary = "{root / "cbm"}"\nserena_python = "{root / "serena"}"\n',
+                f'node = {json.dumps(str(root / "node"))}\n'
+                f'node_bin_dir = {json.dumps(str(root))}\n'
+                f'cbm_binary = {json.dumps(str(root / "cbm"))}\n'
+                f'serena_python = {json.dumps(str(root / "serena"))}\n',
                 encoding="utf-8",
             )
             loaded = AtlasConfig.load(path)

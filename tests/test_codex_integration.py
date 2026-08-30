@@ -132,15 +132,15 @@ class CodexIntegrationTests(unittest.TestCase):
         config = repository / ".codebase-atlas.toml"
         config.write_text(
             "schema_version = 1\n\n[project]\n"
-            f'repository = "{repository}"\n'
+            f'repository = {json.dumps(str(repository))}\n'
             'language = "python"\n'
-            f'data_dir = "{root / "data"}"\n'
+            f'data_dir = {json.dumps(str(root / "data"))}\n'
             'cbm_project = "project"\n'
             'tsconfig = ""\n\n[runtime]\n'
-            f'node = "{root / "node"}"\n'
-            f'node_bin_dir = "{root}"\n'
-            f'cbm_binary = "{root / "cbm"}"\n'
-            f'serena_python = "{root / "python"}"\n',
+            f'node = {json.dumps(str(root / "node"))}\n'
+            f'node_bin_dir = {json.dumps(str(root))}\n'
+            f'cbm_binary = {json.dumps(str(root / "cbm"))}\n'
+            f'serena_python = {json.dumps(str(root / "python"))}\n',
             encoding="utf-8",
         )
         atlas = root / "atlas executable"
