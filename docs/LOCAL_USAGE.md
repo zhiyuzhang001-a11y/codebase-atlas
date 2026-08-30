@@ -239,6 +239,11 @@ produce identical binaries and the frozen M17/M19 gates pass from an installed
 Codebase Atlas wheel. Upstream review remains useful feedback but is not an
 installation or release dependency.
 
+Public 0.21.0 assets use these target names: `linux-x86_64`, `linux-arm64`,
+`macos-x86_64`, `macos-arm64`, `windows-x86_64`, and `windows-arm64`. Download
+the archive and adjacent `.sha256` file for exactly one matching target from the
+same Atlas Release. `PROVIDER_SHA256SUMS.txt` covers the complete set.
+
 For TypeScript repositories, `--node-bin-dir` must contain
 `typescript-language-server` when it is not beside the configured Node executable.
 

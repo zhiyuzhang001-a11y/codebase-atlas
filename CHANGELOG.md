@@ -40,6 +40,9 @@ boundary.
   evidence; upstream merge remains optional.
 - Report an activated shared Provider layout accurately in `doctor`, rather
   than continuing to describe the already-migrated project as a future target.
+- Publish separately licensed, exact-source managed Provider bundles for Linux
+  x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x86_64/ARM64, with two-build
+  reproducibility checks, embedded manifests and SHA-256 verification.
 
 ## 0.20.0 — 2026-08-27
 

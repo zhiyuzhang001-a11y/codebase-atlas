@@ -40,9 +40,12 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 - [x] Two independent macOS arm64 Provider builds are byte-identical.
 - [x] The exact installed Atlas wheel passes M17 504/504 and M19 147/147 with
   zero errors or unstable answers.
-- [x] Product 237/237 and evaluation 49/49 tests pass after the final exact-edge
+- [x] Product 239/239 and evaluation 49/49 tests pass after the final exact-edge
   correction.
 - [ ] Produce and verify separately downloadable managed Provider bundles for
   every publicly supported platform, or explicitly narrow the release platform.
-- [ ] Obtain owner authorization for the final version/tag/Release and public
+- [x] Obtain owner authorization for the final version/tag/Release and public
   managed-binary channel. Upstream merge is not required.
+- [ ] Merge the exact candidate, pass `main` CI, create the draft tag release,
+  attach and reverify all Provider assets, complete clean-room download/install/
+  query/uninstall, and only then publish the draft.

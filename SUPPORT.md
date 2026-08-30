@@ -19,6 +19,11 @@ commits are recorded in the release evidence; a public Atlas release must pin an
 installable upstream or maintained build rather than silently accepting an
 older incompatible executable.
 
+The 0.21.0 release provides exact-source managed Provider bundles for Linux
+x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x86_64/ARM64. Each bundle
+contains its own MIT license and manifest and remains a separate program rather
+than becoming part of the Apache-2.0 Atlas wheel.
+
 Only the latest release is the primary support target. A passing setup
 check verifies discoverable capabilities, not every Provider/repository version.
 

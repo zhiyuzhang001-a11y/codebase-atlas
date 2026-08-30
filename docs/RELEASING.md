@@ -12,6 +12,8 @@ Codebase Atlas releases from its public GitHub repository under Apache License
    its license, and the third-party notice.
 5. The tag is exactly `v<version>`.
 6. `scripts/check_publication_readiness.py --mode public` passes.
+7. The `Managed Provider Bundles` workflow passes on the final candidate and
+   produces all six exact-source bundles plus `PROVIDER_SHA256SUMS.txt`.
 
 ## Release
 
@@ -24,8 +26,25 @@ git push origin v0.21.0
 ```
 
 The tag workflow rebuilds the wheel, rejects version/tag or packaged-asset
-mismatches, writes `SHA256SUMS.txt`, and creates a GitHub release. It does not
-publish to PyPI.
+mismatches, writes `SHA256SUMS.txt`, and creates a **draft** GitHub release. It
+does not publish to PyPI. Download the final candidate's
+`managed-provider-release-assets` workflow artifact, verify it again, and add
+all of its files to the draft:
+
+```bash
+python scripts/verify_managed_provider_bundles.py provider-assets
+gh release upload v0.21.0 provider-assets/*
+```
+
+From the draft assets, verify the wheel checksum and install it into a new
+virtual environment. Extract the Provider bundle matching the current platform,
+verify its adjacent checksum and embedded manifest/binary digest, then run
+`--version`, one isolated project onboarding/query, and uninstall. Publish only
+after this exact public-download candidate passes:
+
+```bash
+gh release edit v0.21.0 --draft=false --latest
+```
 Release builds set a fixed `SOURCE_DATE_EPOCH`; rebuilding identical tagged
 source therefore produces identical wheel bytes and SHA-256.
 
@@ -41,8 +60,9 @@ python scripts/normalize_sdist.py dist-b/codebase_atlas-0.21.0.tar.gz \
 cmp normalized-a.tar.gz normalized-b.tar.gz
 ```
 
-The public GitHub Release workflow currently distributes only the verified
-wheel and its checksum file.
+The published GitHub Release contains the verified Atlas wheel/checksum and six
+separately licensed managed Provider bundles/checksums. The Provider bundles are
+not embedded in the wheel and do not replace an unrelated global installation.
 
 ## License boundary
 
