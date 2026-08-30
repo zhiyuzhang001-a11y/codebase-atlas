@@ -408,7 +408,15 @@ class CodebaseMemoryImpactProvider:
                 rows = self._trace_rows(payload, section)
                 if len(rows) >= 100:
                     reasons.append("provider_result_limit")
-                exact_rows = tuple(row for row in rows if row.get("strategy") == "lsp")
+                exact_rows = tuple(
+                    row
+                    for row in rows
+                    if row.get("strategy") == "lsp"
+                    and (
+                        not isinstance(row.get("confidence"), (int, float))
+                        or float(row["confidence"]) >= 0.9
+                    )
+                )
                 remaining_node_slots = max_nodes - (len(discovered) - len(seeds))
                 remaining_edge_slots = max_edges - len(edge_ids)
                 selected_rows: list[dict[str, Any]] = []
