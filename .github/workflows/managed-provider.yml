@@ -2,6 +2,12 @@ name: Managed Provider Bundles
 
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/m32-shared-provider]
+    paths:
+      - .github/workflows/managed-provider.yml
+      - scripts/build_managed_provider.py
+      - scripts/verify_managed_provider_bundles.py
 
 permissions:
   contents: read
