@@ -17,10 +17,12 @@ primitive queries under one shared deadline. Its Change Brief preserves
 provenance and reports `complete`, `partial`, `not_run`, or `error` for every
 subquery. It does not interpret arbitrary natural language or modify source.
 
-Only one local Atlas session may own the upstream Provider at a time. Reuse one
-MCP session for daily work and close a running UI before starting a separate MCP
-client. A competing process returns explicit `provider_busy` truncation after a
-short wait instead of consuming the full query budget.
+Shared-layout Atlas sessions for different repositories reuse the account-level
+Provider daemon and can execute concurrently. Same-project mutating indexes are
+serialized, daily indexes use adaptive bounded slots, and a large-repository
+index uses one exclusive index slot while queries remain available. A legacy
+layout or a short migration/admission conflict returns explicit `provider_busy`
+instead of consuming the full query budget.
 
 Budget-truncated exact TypeScript `references` results may return an opaque
 `truncation.continuation`. Call `references` again with that token and the same

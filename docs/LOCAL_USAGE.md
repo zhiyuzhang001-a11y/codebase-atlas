@@ -191,8 +191,11 @@ codebase-atlas analyze-change Class.method \
 
 The response distinguishes unresolved/ambiguous identity from partial evidence,
 preserves every subquery's truncation, and lists evidence-backed source/test
-targets. A separate UI and MCP/query process cannot own the Provider
-simultaneously; close the old session when `provider_busy` is reported.
+targets. Shared-layout UI, MCP and query sessions for different repositories may
+reuse the same Provider daemon concurrently. Same-project writes remain
+serialized. A legacy-layout or short admission conflict returns
+`provider_busy`; inspect and explicitly migrate that project instead of deleting
+its old cache.
 
 Long-lived batch and MCP sessions expose the state captured at session startup
 without adding Git work to every warm query. A project-scoped M30 MCP transport
@@ -344,13 +347,16 @@ index database's modification fingerprint changes. TypeScript continuation
 entries use a 16 MiB per-entry, 64 MiB total, 32-entry byte-weighted LRU and are
 also cleared on close.
 
-Atlas serializes CBM use across local Atlas processes because the upstream Provider
-supports only one global daemon at a time, even when repositories use different
-cache directories. A second query waits for the first session to release the lock;
-that wait counts against `timeout_ms` and returns explicit time truncation if the
-budget expires. The per-user lock lives in `XDG_RUNTIME_DIR` or the system temporary
-directory. Set `ATLAS_RUNTIME_DIR` only when a different runtime directory is
-required. Atlas does not stop a daemon it did not start.
+Atlas joins compatible shared-layout projects to one account-level Provider
+daemon. Each session keeps an exact allowed root and deterministic project
+identity, so unrelated repositories can query and index concurrently while
+same-project writes remain serialized. Daily indexes use adaptive memory-aware
+slots; large repositories use a bounded two-pass path and one exclusive index
+slot while queries retain capacity. Legacy-layout projects continue using their
+preserved per-project cache until an explicit migration. The short per-user
+admission lock lives in `XDG_RUNTIME_DIR` or the system temporary directory.
+Set `ATLAS_RUNTIME_DIR` only when a different runtime directory is required.
+Atlas does not stop a daemon it did not start.
 
 Use `--config /path/to/config.toml` when running outside the repository. The
 long-lived JSON-lines interface is `codebase-atlas query-batch`; the read-only MCP
@@ -407,11 +413,12 @@ Treat that real `project_status` call as the verification gate. `codex mcp get`
 can report only the global management layer and therefore is not sufficient to
 verify project-local switching.
 
-The session-start refresh is not a permanent watcher. If another Atlas UI/MCP
-owns the Provider, the new server reports `provider_busy` and uses the previous
-index rather than waiting indefinitely. Close the old session and start a new
-task to retry. Software release checks are asynchronous, cached for 24 hours,
-notify-only, and disabled by `CODEBASE_ATLAS_NO_UPDATE_CHECK=1`.
+The session-start refresh is not a permanent watcher. If a legacy layout or
+short migration/admission operation blocks startup, the new server reports
+`provider_busy` and uses the previous index rather than waiting indefinitely.
+Retry after that operation completes. Software release checks are asynchronous,
+cached for 24 hours, notify-only, and disabled by
+`CODEBASE_ATLAS_NO_UPDATE_CHECK=1`.
 
 Point an MCP client at the executable and project configuration without changing
 the configuration automatically:

@@ -5,7 +5,9 @@ Local, explainable code intelligence built from proven provider components plus 
 Current release candidate: **0.21.0**, adding fail-closed automatic Codex project
 discovery, safe migration from a fixed global Atlas registration, bounded
 session-start index freshness and notify-only software update awareness while
-retaining the task-oriented Change Brief, lightweight local UI,
+adding a shared multi-project Provider layout, bounded large-repository indexing
+and memory-aware global scheduling, while retaining the task-oriented Change
+Brief, lightweight local UI,
 resumable exact TypeScript references, exact Python registration relationships,
 and transactional onboarding.
 
@@ -101,8 +103,11 @@ editor, or MCP configuration.
 `ui` binds only to `127.0.0.1`, opens a session-token-protected browser page,
 and reuses the same index and query service. Use `ui --no-open` in headless
 environments. It does not expose source contents or perform index/config writes.
-Close it before starting a separate MCP session that uses the same upstream
-Provider; a competing query now returns explicit `provider_busy` quickly.
+Shared-layout Atlas sessions for different repositories reuse one Provider
+daemon and may query or index concurrently. Same-project writes remain safely
+serialized; daily indexes adapt to observed memory, and large indexes use one
+bounded exclusive slot while queries remain available. Legacy-layout projects
+still return explicit `provider_busy` instead of waiting indefinitely.
 
 When source and Provider storage are already current, `update` takes an
 Atlas-owned fast path without starting the Provider. Configured queries expose

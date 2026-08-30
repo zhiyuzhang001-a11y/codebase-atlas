@@ -99,9 +99,12 @@ Run `codebase-atlas doctor` after installation or configuration changes. Atlas i
 read-only: it should leave repository source and global editor/MCP settings
 unchanged, and Provider processes should stop with the session.
 
-The upstream Provider is process-global. Do not keep the browser UI and a
-separate MCP server active at the same time. Close the UI first or reuse the
-existing MCP session; a second session reports `provider_busy` quickly.
+The Provider daemon is account-global, but shared-layout Atlas sessions retain
+exact per-project identity and can remain active for different repositories.
+Same-project writes still serialize. Daily indexes use bounded adaptive slots;
+large indexes queue in one exclusive index lane while queries remain available.
+Legacy-layout sessions can still report `provider_busy` until explicitly
+migrated.
 
 ## Connect Codex safely
 

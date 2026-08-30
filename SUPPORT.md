@@ -12,6 +12,13 @@ long-term-support guarantee.
 - local CLI, JSON-lines batch, and read-only stdio MCP use;
 - explicitly configured Codebase Memory and Serena runtimes.
 
+The M32 multi-project and bounded-large-repository candidate requires a
+Codebase Memory build containing the session-scoped worker boundary, bounded
+two-pass pipeline and memory-aware global scheduler. The exact locally accepted
+commits are recorded in the release evidence; a public Atlas release must pin an
+installable upstream or maintained build rather than silently accepting an
+older incompatible executable.
+
 Only the latest release is the primary support target. A passing setup
 check verifies discoverable capabilities, not every Provider/repository version.
 

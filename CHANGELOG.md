@@ -22,6 +22,16 @@ boundary.
   the previous index.
 - Add asynchronous, 24-hour-cached GitHub Release awareness that only notifies,
   never installs, and can be disabled without affecting MCP or queries.
+- Add explicit migration from preserved per-project Provider caches to one
+  deterministic account-level shared layout with exact session roots, rollback,
+  conflict and disk-safety gates.
+- Allow unrelated Atlas projects to query and index concurrently while keeping
+  same-project mutation serial, cancellation isolated and project stores
+  separate.
+- Add complete 512-file two-pass large-repository indexing plus memory-aware
+  daily/large admission, FIFO cancellation-safe queueing and contained
+  process-tree RSS feedback. The frozen TypeScript graph stays exactly equal
+  while peak RSS falls below the separate 3 GiB gate.
 
 ## 0.20.0 — 2026-08-27
 
