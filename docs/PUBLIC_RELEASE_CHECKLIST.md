@@ -42,10 +42,16 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
   zero errors or unstable answers.
 - [x] Product 239/239 and evaluation 49/49 tests pass after the final exact-edge
   correction.
-- [ ] Produce and verify separately downloadable managed Provider bundles for
+- [x] Produce and verify separately downloadable managed Provider bundles for
   every publicly supported platform, or explicitly narrow the release platform.
 - [x] Obtain owner authorization for the final version/tag/Release and public
   managed-binary channel. Upstream merge is not required.
 - [ ] Merge the exact candidate, pass `main` CI, create the draft tag release,
   attach and reverify all Provider assets, complete clean-room download/install/
   query/uninstall, and only then publish the draft.
+
+The six-platform managed-Provider gate passed in GitHub Actions run
+`33335042265`: Linux x86_64/ARM64, macOS Intel/Apple Silicon, and Windows
+x86_64/ARM64 each produced byte-identical binaries from two independent builds.
+The aggregate verifier accepted all six archives, embedded manifests, MIT
+licenses, exact source/version identities, binary digests and sidecar checksums.
