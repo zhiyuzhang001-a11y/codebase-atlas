@@ -15,3 +15,12 @@ installed Provider projects:
 Those Provider projects remain governed by their own packages, notices, and
 licenses. This notice does not select or grant a license for Codebase Atlas
 itself; that product-license decision remains pending.
+
+Codebase Atlas may publish a separately downloadable, project-maintained
+Codebase Memory build when released upstream binaries do not yet contain the
+required concurrency fixes. Such a build is produced from the public fork at
+`zhiyuzhang001-a11y/codebase-memory-mcp`, records its exact source commit and
+SHA-256 in `manifest.json`, and carries the complete Codebase Memory MIT
+`LICENSE` beside the executable. It is not embedded in the Codebase Atlas wheel,
+does not imply a partnership with the upstream project, and does not require the
+upstream project to merge the corresponding contribution.

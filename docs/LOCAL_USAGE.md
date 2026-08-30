@@ -218,6 +218,27 @@ This creates `.codebase-atlas.toml`. It contains paths only; indexes and logs go
 to the Atlas data directory. Add this configuration to version control only when
 its paths are portable for the intended users.
 
+### Project-maintained Codebase Memory build
+
+Codebase Atlas does not require its Codebase Memory changes to be merged by the
+upstream project. When using a project-maintained Provider bundle:
+
+1. Verify the adjacent archive `.sha256` file and the executable digest recorded
+   in `manifest.json`.
+2. Keep the included MIT `LICENSE` with the executable.
+3. Extract it into a versioned local directory and pass that executable through
+   `--cbm-binary`; do not overwrite an unrelated global Provider installation.
+4. Keep the previous verified bundle until the new version has indexed and
+   queried successfully. Roll back by restoring the prior `cbm_binary` path;
+   never delete an existing index merely to change Provider versions.
+
+The manifest identifies the fork, upstream source, exact commit, managed version,
+platform/architecture, reproducible build command, binary SHA-256 and validation
+evidence. A new managed version is accepted only after two independent builds
+produce identical binaries and the frozen M17/M19 gates pass from an installed
+Codebase Atlas wheel. Upstream review remains useful feedback but is not an
+installation or release dependency.
+
 For TypeScript repositories, `--node-bin-dir` must contain
 `typescript-language-server` when it is not beside the configured Node executable.
 

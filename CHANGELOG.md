@@ -32,6 +32,12 @@ boundary.
   daily/large admission, FIFO cancellation-safe queueing and contained
   process-tree RSS feedback. The frozen TypeScript graph stays exactly equal
   while peak RSS falls below the separate 3 GiB gate.
+- Keep the exact-only impact contract when Codebase Memory labels an LSP edge
+  below the 0.9 confidence floor; the final installed candidate preserves M17
+  504/504 and M19 147/147 exact results.
+- Document project-maintained, reproducible Codebase Memory bundles as an
+  independent fallback channel with exact source, checksum, license and rollback
+  evidence; upstream merge remains optional.
 
 ## 0.20.0 — 2026-08-27
 
