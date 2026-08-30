@@ -46,7 +46,7 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
   every publicly supported platform, or explicitly narrow the release platform.
 - [x] Obtain owner authorization for the final version/tag/Release and public
   managed-binary channel. Upstream merge is not required.
-- [ ] Merge the exact candidate, pass `main` CI, create the draft tag release,
+- [x] Merge the exact candidate, pass `main` CI, create the draft tag release,
   attach and reverify all Provider assets, complete clean-room download/install/
   query/uninstall, and only then publish the draft.
 
@@ -55,3 +55,11 @@ The six-platform managed-Provider gate passed in GitHub Actions run
 x86_64/ARM64 each produced byte-identical binaries from two independent builds.
 The aggregate verifier accepted all six archives, embedded manifests, MIT
 licenses, exact source/version identities, binary digests and sidecar checksums.
+
+Codebase Atlas 0.21.0 was released from exact commit
+`c0b2934974f69fc98ea51c31983d5030a08f0c37` after public-main CI run
+`33335927225` passed 13/13 and release run `33336023937` passed. The published
+Release has 15 assets. Unauthenticated public downloads passed their SHA-256
+checks and were byte-identical to the clean-room-tested draft assets; fresh
+install, full Flask onboarding, deep inspection, exact definition query,
+process cleanup and uninstall all passed.
