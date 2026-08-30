@@ -11,8 +11,17 @@ import stat
 import sys
 import tomllib
 
+from .provider_layout import (
+    atlas_data_root,
+    inspect_provider_root,
+    provider_project_identity,
+    shared_provider_root,
+)
+
 
 CONFIG_NAME = ".codebase-atlas.toml"
+LEGACY_PROVIDER_LAYOUT = "legacy-project-v0"
+SHARED_PROVIDER_LAYOUT = "shared-v1"
 
 
 def _require_regular_identity(path: Path, expected_identity: tuple[int, int]) -> None:
@@ -38,8 +47,7 @@ def _which(name: str, environment_name: str) -> Path | None:
 
 def default_data_dir(repository: Path) -> Path:
     digest = hashlib.sha256(str(repository.resolve()).encode()).hexdigest()[:12]
-    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
-    return root / "codebase-atlas" / f"{repository.name}-{digest}"
+    return atlas_data_root() / f"{repository.name}-{digest}"
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,8 @@ class AtlasConfig:
     project: str = ""
     node_bin_dir: Path | None = None
     tsconfig: Path | None = None
+    provider_layout: str = LEGACY_PROVIDER_LAYOUT
+    legacy_project: str = ""
 
     def __post_init__(self) -> None:
         for name in ("repository", "data_dir"):
@@ -65,10 +75,31 @@ class AtlasConfig:
             object.__setattr__(self, "node_bin_dir", self.node_bin_dir.absolute())
         if self.tsconfig is not None:
             object.__setattr__(self, "tsconfig", self.tsconfig)
+        if self.provider_layout not in {LEGACY_PROVIDER_LAYOUT, SHARED_PROVIDER_LAYOUT}:
+            raise ValueError(f"unsupported Provider layout: {self.provider_layout}")
+        if self.provider_layout == SHARED_PROVIDER_LAYOUT and self.project != self.shared_project:
+            raise ValueError("shared Provider layout requires the deterministic project identity")
 
     @property
     def cache_dir(self) -> Path:
+        return (
+            self.shared_cache_dir
+            if self.provider_layout == SHARED_PROVIDER_LAYOUT
+            else self.legacy_cache_dir
+        )
+
+    @property
+    def legacy_cache_dir(self) -> Path:
         return self.data_dir / "codebase-memory"
+
+    @property
+    def shared_cache_dir(self) -> Path:
+        """M32 account-level target; activation remains an explicit migration step."""
+        return shared_provider_root()
+
+    @property
+    def shared_project(self) -> str:
+        return provider_project_identity(self.repository)
 
     @property
     def serena_home(self) -> Path:
@@ -138,6 +169,8 @@ class AtlasConfig:
             Path(runtime["serena_python"]), Path(project["data_dir"]),
             project.get("cbm_project", ""), Path(node_bin) if node_bin else None,
             Path(tsconfig) if tsconfig else None,
+            project.get("provider_layout", LEGACY_PROVIDER_LAYOUT),
+            project.get("legacy_cbm_project", ""),
         )
 
     def with_project(self, project: str) -> "AtlasConfig":
@@ -152,6 +185,8 @@ class AtlasConfig:
             f'language = "{self.language}"\n'
             f'data_dir = "{quote(self.data_dir)}"\n'
             f'cbm_project = "{quote(self.project)}"\n'
+            f'provider_layout = "{self.provider_layout}"\n'
+            f'legacy_cbm_project = "{quote(self.legacy_project)}"\n'
             f'tsconfig = "{quote(self.tsconfig) if self.tsconfig else ""}"\n\n[runtime]\n'
             f'node = "{quote(self.node)}"\n'
             f'node_bin_dir = "{node_bin}"\n'
@@ -240,6 +275,7 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
 
     freshness = index_freshness(config.data_dir, config.repository, config.project)
     provider_database = provider_database_health(config.cache_dir, config.project)
+    shared_root = inspect_provider_root(config.shared_cache_dir)
     kwargs = {} if runner is None else {"runner": runner}
     checks = runtime_checks(
         config.repository,
@@ -269,6 +305,22 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
             "path": str(config.cache_dir), "version": "",
             "detail": f"{provider_database['status']}: {provider_database['reason']}",
             "remediation": "" if provider_database["ok"] else "run 'codebase-atlas index'",
+        },
+        {
+            "name": "shared_provider_target", "ok": shared_root.ready, "required": False,
+            "path": str(shared_root.path), "version": "v1",
+            "detail": (
+                f"{shared_root.status}; project={config.shared_project}; "
+                + (
+                    "shared layout is active for this project"
+                    if config.provider_layout == SHARED_PROVIDER_LAYOUT
+                    else "target is not activated until explicit Provider migration"
+                )
+            ),
+            "remediation": (
+                "" if shared_root.ready else
+                "do not change this path manually; run the explicit Provider migration"
+            ),
         },
     ])
     return checks

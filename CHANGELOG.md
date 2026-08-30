@@ -4,6 +4,46 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.21.0 — 2026-08-29
+
+- Add fail-closed `mcp-auto` discovery from the MCP startup directory to the
+  innermost Git root, with explicit unconfigured, incomplete, invalid,
+  mismatched, and ambiguous project states and no cross-project fallback.
+- Add dry-run-first `global-auto` Codex registration and verified migration of
+  the exact legacy fixed-repository Atlas transport, including exact rollback
+  on add or read-back failure and refusal of foreign entries.
+- Add dry-run-first project-scoped Codex integration that preserves unrelated
+  `.codex/config.toml` bytes, refuses foreign/unsafe entries, and removes only
+  its exact managed block without changing global configuration.
+- Add exact `project_status` and MCP initialize guidance so an agent can verify
+  the resolved repository before using Atlas after an A→B→A project switch.
+- Add opt-in bounded session-start index refresh with a no-Provider fresh path,
+  fast `provider_busy` fallback, explicit failure metadata, and preservation of
+  the previous index.
+- Add asynchronous, 24-hour-cached GitHub Release awareness that only notifies,
+  never installs, and can be disabled without affecting MCP or queries.
+- Add explicit migration from preserved per-project Provider caches to one
+  deterministic account-level shared layout with exact session roots, rollback,
+  conflict and disk-safety gates.
+- Allow unrelated Atlas projects to query and index concurrently while keeping
+  same-project mutation serial, cancellation isolated and project stores
+  separate.
+- Add complete 512-file two-pass large-repository indexing plus memory-aware
+  daily/large admission, FIFO cancellation-safe queueing and contained
+  process-tree RSS feedback. The frozen TypeScript graph stays exactly equal
+  while peak RSS falls below the separate 3 GiB gate.
+- Keep the exact-only impact contract when Codebase Memory labels an LSP edge
+  below the 0.9 confidence floor; the final installed candidate preserves M17
+  504/504 and M19 147/147 exact results.
+- Document project-maintained, reproducible Codebase Memory bundles as an
+  independent fallback channel with exact source, checksum, license and rollback
+  evidence; upstream merge remains optional.
+- Report an activated shared Provider layout accurately in `doctor`, rather
+  than continuing to describe the already-migrated project as a future target.
+- Publish separately licensed, exact-source managed Provider bundles for Linux
+  x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x86_64/ARM64, with two-build
+  reproducibility checks, embedded manifests and SHA-256 verification.
+
 ## 0.20.0 — 2026-08-27
 
 - Add one bounded `analyze_change` product operation across CLI and MCP. It

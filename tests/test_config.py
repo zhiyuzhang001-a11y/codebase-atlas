@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +14,38 @@ from codebase_atlas.index_state import record_index_state
 
 
 class ConfigTests(unittest.TestCase):
+    def test_old_config_without_layout_marker_remains_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            path = repository / ".codebase-atlas.toml"
+            path.write_text(
+                "schema_version = 1\n\n[project]\n"
+                f'repository = {json.dumps(str(repository))}\nlanguage = "python"\n'
+                f'data_dir = {json.dumps(str(root / "data"))}\ncbm_project = "legacy"\ntsconfig = ""\n\n'
+                "[runtime]\n"
+                f'node = {json.dumps(str(root / "node"))}\n'
+                f'node_bin_dir = {json.dumps(str(root))}\n'
+                f'cbm_binary = {json.dumps(str(root / "cbm"))}\n'
+                f'serena_python = {json.dumps(str(root / "serena"))}\n',
+                encoding="utf-8",
+            )
+            loaded = AtlasConfig.load(path)
+            self.assertEqual(loaded.provider_layout, "legacy-project-v0")
+            self.assertEqual(loaded.cache_dir, loaded.legacy_cache_dir)
+
+    def test_unknown_or_mismatched_shared_layout_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            values = (repository, "python", root / "node", root / "cbm", root / "serena", root / "data")
+            with self.assertRaisesRegex(ValueError, "unsupported Provider layout"):
+                AtlasConfig(*values, provider_layout="future-v9")
+            with self.assertRaisesRegex(ValueError, "deterministic project identity"):
+                AtlasConfig(*values, project="wrong", provider_layout="shared-v1")
+
     def test_round_trip_and_derived_runtime_paths(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -51,6 +85,28 @@ class ConfigTests(unittest.TestCase):
             ):
                 checks = diagnose(loaded, runner=runner)
             self.assertTrue(all(item["ok"] for item in checks if item["required"]))
+            shared = next(item for item in checks if item["name"] == "shared_provider_target")
+            self.assertFalse(shared["required"])
+            self.assertEqual(shared["path"], str(loaded.shared_cache_dir))
+            self.assertIn(f"project={loaded.shared_project}", shared["detail"])
+            self.assertIn("not activated", shared["detail"])
+
+            active = replace(
+                loaded,
+                project=loaded.shared_project,
+                provider_layout="shared-v1",
+                legacy_project=loaded.project,
+            )
+            with patch(
+                "codebase_atlas.runtime.shutil.which",
+                side_effect=lambda command, **_kwargs: str(root / "npm") if command == "npm" else None,
+            ):
+                active_checks = diagnose(active, runner=runner)
+            active_shared = next(
+                item for item in active_checks if item["name"] == "shared_provider_target"
+            )
+            self.assertIn("shared layout is active", active_shared["detail"])
+            self.assertNotIn("not activated", active_shared["detail"])
 
     def test_default_data_dir_is_stable_and_repository_specific(self) -> None:
         first = default_data_dir(Path("/tmp/example-a"))

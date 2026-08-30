@@ -70,7 +70,11 @@ class MixedResolutionProvider(WideProvider):
                 "cols": ["name", "confidence", "strategy"],
                 "groups": [{
                     "qn_prefix": "pkg",
-                    "rows": [["a", 0.01, "heuristic"], ["b", 0.95, "lsp"]],
+                    "rows": [
+                        ["a", 0.01, "heuristic"],
+                        ["b", 0.95, "lsp"],
+                        ["c", 0.88, "lsp"],
+                    ],
                 }],
             }
         }

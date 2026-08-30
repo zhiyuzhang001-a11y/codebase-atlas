@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -17,15 +18,21 @@ import webbrowser
 
 from . import __version__
 from .change_analysis import CHANGE_INTENTS, analyze_change
-from .codex_integration import codex_apply, codex_plan, codex_remove
-from .config import AtlasConfig, CONFIG_NAME, _asset, diagnose
+from .codex_integration import PROJECT_RULE, codex_apply, codex_plan, codex_remove
+from .config import (
+    AtlasConfig,
+    CONFIG_NAME,
+    SHARED_PROVIDER_LAYOUT,
+    _asset,
+    diagnose,
+)
 from .index_state import (
     index_freshness,
     provider_database_health,
     record_index_state,
     repository_snapshot,
 )
-from .lifecycle import CodebaseMemoryDaemon
+from .lifecycle import CodebaseMemoryDaemon, SharedCodebaseMemorySession
 from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
 from .operations import (
@@ -37,6 +44,13 @@ from .operations import (
 )
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
+from .project_discovery import resolve_project
+from .provider_layout import provider_environment
+from .provider_migration import (
+    plan_provider_migration,
+    prepare_shared_provider_root,
+    shared_provider_config,
+)
 from .python_registration_store import (
     RegistrationIndexError,
     load_registration_index_state,
@@ -45,11 +59,14 @@ from .python_registration_store import (
 )
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
+from .session_update import disabled_session_update, session_start_update
+from .version_check import VersionNotifier
 from .web_ui import LocalUiServer
 
 
-def _run_mcp_with_graceful_termination(server: McpServer) -> None:
-    """Turn client SIGTERM into normal unwinding so Provider ownership is released."""
+@contextmanager
+def _graceful_termination():
+    """Turn SIGTERM into normal unwinding so Provider ownership is released."""
     previous = signal.getsignal(signal.SIGTERM)
 
     def terminate(_signum, _frame) -> None:
@@ -57,12 +74,17 @@ def _run_mcp_with_graceful_termination(server: McpServer) -> None:
 
     signal.signal(signal.SIGTERM, terminate)
     try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _run_mcp_with_graceful_termination(server: McpServer) -> None:
+    with _graceful_termination():
         try:
             run_stdio(server)
         except KeyboardInterrupt:
             pass
-    finally:
-        signal.signal(signal.SIGTERM, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,6 +136,10 @@ def main(argv: list[str] | None = None) -> int:
         codex_action.add_argument("--name", default="codebase_atlas")
         codex_action.add_argument("--codex-binary", type=Path)
         codex_action.add_argument("--atlas-executable", type=Path)
+        codex_action.add_argument(
+            "--scope", choices=("global", "global-auto", "project"), default="global"
+        )
+        codex_action.add_argument("--codex-project-root", type=Path)
     doctor = commands.add_parser("doctor", help="check configured runtimes and index state")
     doctor.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     inspect = commands.add_parser("inspect", help="inspect index health and storage without modifying it")
@@ -121,6 +147,20 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument(
         "--deep", action="store_true",
         help="also run SQLite quick_check; this may take time for a large index",
+    )
+    migrate_provider = commands.add_parser(
+        "migrate-provider",
+        help="preview the legacy-to-shared Provider migration without modifying it",
+    )
+    migrate_provider.add_argument(
+        "--config", type=Path, default=Path.cwd() / CONFIG_NAME
+    )
+    migrate_provider.add_argument(
+        "--mode", choices=("fast", "moderate", "full"), default="fast"
+    )
+    migrate_provider.add_argument(
+        "--apply", action="store_true",
+        help="rebuild/verify the shared index, then publish the project switch",
     )
     repair = commands.add_parser(
         "repair", help="diagnose recovery; use --apply for an explicit safe Provider update"
@@ -191,6 +231,21 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--node-bin-dir", type=Path)
     mcp.add_argument("--tsconfig", type=Path)
     mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    mcp.add_argument(
+        "--auto-update", choices=("off", "session-start"), default="off"
+    )
+    mcp.add_argument("--auto-update-timeout", type=float, default=60.0)
+    mcp.add_argument("--version-check", choices=("off", "notify"), default="off")
+    mcp_auto = commands.add_parser(
+        "mcp-auto", help="run a fail-closed MCP for the current Codex project"
+    )
+    mcp_auto.add_argument("--root", type=Path)
+    mcp_auto.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
+    mcp_auto.add_argument(
+        "--auto-update", choices=("off", "session-start"), default="session-start"
+    )
+    mcp_auto.add_argument("--auto-update-timeout", type=float, default=60.0)
+    mcp_auto.add_argument("--version-check", choices=("off", "notify"), default="notify")
     ui = commands.add_parser("ui", help="open the lightweight read-only local browser UI")
     ui.add_argument("--config", type=Path)
     ui.add_argument("--repo", type=Path)
@@ -293,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
                 name=args.name,
                 codex_binary=args.codex_binary,
                 atlas_executable=args.atlas_executable,
+                scope=args.scope,
+                codex_project_root=args.codex_project_root,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             print(json.dumps({
@@ -373,11 +430,139 @@ def main(argv: list[str] | None = None) -> int:
         config.write(config_path)
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
         return 0
+    if args.command == "mcp-auto":
+        resolution = resolve_project(args.root or Path.cwd())
+        if resolution.status == "configured":
+            forwarded = [
+                "mcp", "--config", str(resolution.config),
+                "--stale-policy", args.stale_policy,
+                "--auto-update", args.auto_update,
+                "--auto-update-timeout", str(args.auto_update_timeout),
+                "--version-check", args.version_check,
+            ]
+            return main(forwarded)
+        status = resolution.operational_status()
+        instructions = (
+            f"Codebase Atlas is {resolution.status} for {resolution.root}. "
+            "Call project_status and follow next_action. Never use results from "
+            "another repository."
+        )
+        _run_mcp_with_graceful_termination(
+            McpServer(None, status, "error", instructions=instructions)
+        )
+        return 0
     if args.command == "inspect":
         config = AtlasConfig.load(args.config)
         report = inspect_installation(config, deep=args.deep)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] else 2
+    if args.command == "migrate-provider":
+        config = AtlasConfig.load(args.config)
+        plan = plan_provider_migration(config)
+        apply_command = (
+            "codebase-atlas migrate-provider --config "
+            f"{shlex.quote(str(args.config))} --mode {args.mode} --apply"
+            if plan.status != "blocked" and plan.action != "already_active" else ""
+        )
+        if not args.apply or plan.status == "blocked" or plan.action == "already_active":
+            payload = plan.as_dict() | {
+                "mode": "read_only",
+                "apply_command": apply_command,
+                "note": "preview never creates, moves, adopts, or deletes an index",
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0 if plan.status != "blocked" else 2
+
+        config_identity, config_bytes = _config_publication_snapshot(args.config)
+        source_before = repository_snapshot(config.repository)
+        candidate = shared_provider_config(config)
+        root_created = False
+        indexed = False
+        config_published = False
+        staged_registrations = None
+        try:
+            if plan.action in {"fresh_shared_index", "rebuild_into_shared"}:
+                root_created = prepare_shared_provider_root(candidate.cache_dir)
+                provider_result = _index_repository(candidate, args.mode)
+                if str(provider_result.get("project", "")) != candidate.project:
+                    raise RuntimeError("Provider returned a different shared project identity")
+                indexed = True
+            verified = plan_provider_migration(candidate)
+            if verified.shared.get("status") != "healthy":
+                raise RuntimeError(
+                    "shared Provider database did not pass identity and quick-check validation"
+                )
+            source_after = repository_snapshot(config.repository)
+            if (
+                source_before.kind == "git"
+                and source_after.kind == "git"
+                and source_before.fingerprint != source_after.fingerprint
+            ):
+                raise RuntimeError(
+                    "repository changed during Provider migration; legacy state was preserved"
+                )
+            if config.language == "python" and source_after.fingerprint:
+                staged_registrations = stage_registration_index(
+                    candidate.data_dir,
+                    candidate.repository,
+                    candidate.project,
+                    source_after.fingerprint,
+                )
+                staged_registrations.publish()
+            candidate.write_verified(args.config, config_identity)
+            config_published = True
+            record_index_state(
+                candidate.data_dir,
+                candidate.repository,
+                candidate.project,
+                args.mode,
+                snapshot=source_after,
+            )
+            if staged_registrations is not None:
+                staged_registrations.commit()
+        except BaseException as exc:
+            if staged_registrations is not None:
+                try:
+                    staged_registrations.rollback()
+                except OSError:
+                    pass
+            if config_published:
+                try:
+                    AtlasConfig.restore_verified(args.config, config_identity, config_bytes)
+                except (OSError, ValueError):
+                    pass
+            if isinstance(exc, KeyboardInterrupt):
+                print(json.dumps({
+                    "status": "interrupted",
+                    "mode": "applied",
+                    "legacy_preserved": True,
+                    "shared_published": False,
+                }, ensure_ascii=False, indent=2))
+                return 130
+            if not isinstance(exc, (OSError, RuntimeError, ValueError, RegistrationIndexError)):
+                raise
+            print(json.dumps({
+                "status": "failed",
+                "mode": "applied",
+                "error": str(exc),
+                "legacy_preserved": True,
+                "shared_published": False,
+                "root_created": root_created,
+                "index_completed": indexed,
+            }, ensure_ascii=False, indent=2))
+            return 2
+        print(json.dumps({
+            "status": "migrated",
+            "mode": "applied",
+            "repository": str(candidate.repository),
+            "project": candidate.project,
+            "shared_cache_dir": str(candidate.cache_dir),
+            "legacy_cache_dir": str(candidate.legacy_cache_dir),
+            "legacy_preserved": True,
+            "root_created": root_created,
+            "index_completed": indexed,
+        }, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "repair":
         config = AtlasConfig.load(args.config)
         before = inspect_installation(config)
@@ -635,7 +820,17 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         try:
-            payload = _index_repository(config, args.mode)
+            with _graceful_termination():
+                payload = _index_repository(config, args.mode)
+        except KeyboardInterrupt:
+            if staged_registrations is not None:
+                staged_registrations.close()
+            print(json.dumps({
+                "status": "failed",
+                "error": "index update interrupted; the previous Atlas state was preserved",
+                "atlas_state_advanced": False,
+            }, indent=2))
+            return 130
         except BaseException:
             if staged_registrations is not None:
                 staged_registrations.close()
@@ -741,7 +936,10 @@ def main(argv: list[str] | None = None) -> int:
             args.cache_dir,
             args.project,
         )
-        lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
+        lifecycle = _provider_lifecycle(
+            args.binary, args.repo, args.cache_dir,
+            getattr(args, "provider_layout", "legacy-project-v0"),
+        )
         with lifecycle:
             hits = provider.impact(
                 args.symbol,
@@ -781,7 +979,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command in {"mcp", "query", "query-batch", "ui", "analyze-change"}:
+        auto_update_status = disabled_session_update()
+        if args.command == "mcp" and args.auto_update == "session-start":
+            selected_config = args.config or Path.cwd() / CONFIG_NAME
+            if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
+                raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
+            auto_update_status = session_start_update(
+                selected_config, timeout_seconds=args.auto_update_timeout
+            )
         _apply_project_config(args)
+        if args.command == "mcp":
+            args.index_status["identity"] = {
+                "repository": str(args.repo.resolve()),
+                "project": args.project,
+                "config": str((args.config or args.repo / CONFIG_NAME).resolve()),
+            }
+            args.index_status["auto_update"] = auto_update_status
         if args.command in {"query", "analyze-change"}:
             policy_error = stale_policy_error(args.index_status, args.stale_policy)
             if policy_error:
@@ -791,7 +1004,10 @@ def main(argv: list[str] | None = None) -> int:
                     args.stale_policy,
                 ), ensure_ascii=False, indent=2))
                 return 3
-        lifecycle = CodebaseMemoryDaemon(args.binary, args.repo, args.cache_dir)
+        lifecycle = _provider_lifecycle(
+            args.binary, args.repo, args.cache_dir,
+            getattr(args, "provider_layout", "legacy-project-v0"),
+        )
         structural = CodebaseMemoryImpactProvider(
             args.binary,
             args.repo,
@@ -843,8 +1059,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         with service:
             if args.command == "mcp":
+                notifier = VersionNotifier(
+                    __version__, args.data_dir,
+                    enabled=args.version_check == "notify",
+                )
                 _run_mcp_with_graceful_termination(
-                    McpServer(service, args.index_status, args.stale_policy)
+                    McpServer(
+                        service, args.index_status, args.stale_policy,
+                        instructions=(
+                            f"This server is only for repository {args.repo.resolve()}; "
+                            f"never use it for another repository. {PROJECT_RULE}"
+                        ),
+                        version_notifier=notifier,
+                    )
                 )
             elif args.command == "query":
                 response = service.query(
@@ -976,9 +1203,11 @@ def _apply_project_config(args) -> None:
             config.project,
         )
         args.data_dir = config.data_dir
+        args.provider_layout = config.provider_layout
     else:
         args.index_status = unknown_operational_status()
         args.data_dir = None
+        args.provider_layout = "legacy-project-v0"
     required = {
         "repo": args.repo, "node": args.node, "binary": args.binary,
         "cache_dir": args.cache_dir, "project": args.project,
@@ -995,20 +1224,21 @@ def _apply_project_config(args) -> None:
 
 def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     config.cache_dir.mkdir(parents=True, exist_ok=True)
-    environment = os.environ.copy()
-    environment["CBM_CACHE_DIR"] = str(config.cache_dir)
-    environment["CBM_ALLOWED_ROOT"] = str(config.repository.parent)
+    environment = provider_environment(config.cache_dir, config.repository)
     # Own the daemon when indexing starts it, so a one-shot index/repair does
     # not leave a background Provider behind. A pre-existing daemon remains
     # unowned and is deliberately not stopped.
-    with CodebaseMemoryDaemon(
-        config.cbm_binary, config.repository, config.cache_dir
+    with _provider_lifecycle(
+        config.cbm_binary, config.repository, config.cache_dir, config.provider_layout
     ):
+        command = [
+            str(config.cbm_binary), "cli", "--json", "index_repository",
+            "--repo-path", str(config.repository), "--mode", mode,
+        ]
+        if config.project:
+            command.extend(["--name", config.project])
         completed = subprocess.run(
-            [
-                str(config.cbm_binary), "cli", "--json", "index_repository",
-                "--repo-path", str(config.repository), "--mode", mode,
-            ],
+            command,
             check=False, capture_output=True, text=True, env=environment,
         )
     if completed.returncode != 0:
@@ -1021,6 +1251,17 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     if payload.get("status") != "indexed":
         raise RuntimeError(str(payload.get("hint", f"index status is {payload.get('status', 'unknown')}")))
     return payload
+
+
+def _provider_lifecycle(
+    binary: Path, repository: Path, cache_dir: Path, provider_layout: str
+):
+    lifecycle = (
+        SharedCodebaseMemorySession
+        if provider_layout == SHARED_PROVIDER_LAYOUT
+        else CodebaseMemoryDaemon
+    )
+    return lifecycle(binary, repository, cache_dir)
 
 
 def _run_query_batch(

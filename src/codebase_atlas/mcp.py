@@ -14,6 +14,7 @@ from .operations import (
     stale_policy_error,
 )
 from .service import AtlasService, QueryRequest, QueryResponse
+from .version_check import VersionNotifier
 
 
 PROTOCOL_VERSION = "2025-11-25"
@@ -59,6 +60,18 @@ def _brief_tool_result(brief: dict[str, Any]) -> dict[str, Any]:
 
 
 TOOLS = [
+    {
+        "name": "project_status",
+        "title": "Check the active Atlas project",
+        "description": (
+            "Return the resolved repository, project identity, index freshness, "
+            "session-start update result, and notify-only software version status."
+        ),
+        "inputSchema": {
+            "type": "object", "properties": {}, "additionalProperties": False
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
     *[
         {
             "name": name,
@@ -184,13 +197,17 @@ for _tool in TOOLS:
 class McpServer:
     def __init__(
         self,
-        service: AtlasService,
+        service: AtlasService | None,
         index_status: dict[str, Any] | None = None,
         stale_policy: str = "ignore",
+        instructions: str = "",
+        version_notifier: VersionNotifier | None = None,
     ) -> None:
         self.service = service
         self.index_status = index_status
         self.stale_policy = stale_policy
+        self.instructions = instructions
+        self.version_notifier = version_notifier
 
     @staticmethod
     def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -202,6 +219,8 @@ class McpServer:
         if method == "notifications/initialized":
             return None
         if method == "initialize":
+            if self.version_notifier is not None:
+                self.version_notifier.start()
             requested = message.get("params", {}).get("protocolVersion")
             protocol = requested if requested == PROTOCOL_VERSION else PROTOCOL_VERSION
             return {
@@ -216,6 +235,7 @@ class McpServer:
                         "version": __version__,
                         "description": "Read-only local code intelligence with exact provenance",
                     },
+                    "instructions": self.instructions,
                 },
             }
         if method == "ping":
@@ -230,6 +250,47 @@ class McpServer:
         if not isinstance(arguments, dict):
             return self._error(request_id, -32602, "Tool arguments must be an object")
         try:
+            if self.version_notifier is not None and self.index_status is not None:
+                self.index_status["software_update"] = self.version_notifier.current()
+            if name == "project_status":
+                status = dict(self.index_status or {"status": "unknown", "ok": True})
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(status, ensure_ascii=False)}],
+                        "structuredContent": status,
+                        "isError": False,
+                    },
+                }
+            if self.service is None:
+                unavailable = dict(self.index_status or {
+                    "status": "not_configured",
+                    "ok": False,
+                    "reason": "project_configuration_not_loaded",
+                })
+                structured = {
+                    "schema_version": 1,
+                    "status": "error",
+                    "code": str(unavailable.get("status", "project_unavailable")),
+                    "message": (
+                        "Codebase Atlas is unavailable for this project; call "
+                        "project_status and follow next_action."
+                    ),
+                    "project": unavailable,
+                }
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps(structured, ensure_ascii=False),
+                        }],
+                        "structuredContent": structured,
+                        "isError": True,
+                    },
+                }
             policy_error = stale_policy_error(
                 self.index_status or {"ok": True}, self.stale_policy
             )

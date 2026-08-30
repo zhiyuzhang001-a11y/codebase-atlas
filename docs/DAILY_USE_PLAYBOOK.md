@@ -99,28 +99,64 @@ Run `codebase-atlas doctor` after installation or configuration changes. Atlas i
 read-only: it should leave repository source and global editor/MCP settings
 unchanged, and Provider processes should stop with the session.
 
-The upstream Provider is process-global. Do not keep the browser UI and a
-separate MCP server active at the same time. Close the UI first or reuse the
-existing MCP session; a second session reports `provider_busy` quickly.
+The Provider daemon is account-global, but shared-layout Atlas sessions retain
+exact per-project identity and can remain active for different repositories.
+Same-project writes still serialize. Daily indexes use bounded adaptive slots;
+large indexes queue in one exclusive index lane while queries remain available.
+Legacy-layout sessions can still report `provider_busy` until explicitly
+migrated.
 
 ## Connect Codex safely
 
-Preview the exact MCP registration first:
+For automatic project selection across normal Codex projects, preview and apply
+the fail-closed global transport once:
 
 ```bash
-codebase-atlas codex plan --config /path/to/.codebase-atlas.toml
+codebase-atlas codex plan --scope global-auto
+codebase-atlas codex apply --scope global-auto
 ```
 
-The plan reports the current name, full stdio command/arguments, existing-entry
-state, rollback command, project rule, and verification steps. It performs no
-write. Apply or remove only with the explicit subcommand:
+Then start a new task in the repository and call `project_status`. Atlas never
+falls back to another repository: an unconfigured or unsafe directory exposes
+only its structured status until that repository is configured and indexed.
+Existing tasks do not hot-reload the changed MCP transport.
+
+For a deliberate project-local override, preview the MCP block first:
 
 ```bash
-codebase-atlas codex apply --config /path/to/.codebase-atlas.toml
-codebase-atlas codex remove --config /path/to/.codebase-atlas.toml
+codebase-atlas codex plan --scope project \
+  --config /path/to/.codebase-atlas.toml
 ```
 
-Apply refuses to overwrite a same-name different transport; remove refuses to
-delete one. Codex does not hot-load a newly registered MCP into an already
-running task, so start a new task or refresh the local client and verify one
-real `analyze_change` call.
+If Codex opens a parent workspace instead of the indexed repository itself,
+also pass `--codex-project-root /path/to/workspace`. Trust that project through
+Codex's normal first-open prompt; Atlas intentionally does not change global
+trust settings.
+
+The plan reports the exact repository, target `.codex/config.toml`, full stdio
+command/arguments, existing-entry state, managed block, project rule, and
+verification steps. It performs no write and never changes global Codex state.
+Apply or remove only with the explicit subcommand:
+
+```bash
+codebase-atlas codex apply --scope project --config /path/to/.codebase-atlas.toml
+codebase-atlas codex remove --scope project --config /path/to/.codebase-atlas.toml
+```
+
+Apply preserves unrelated valid TOML bytes and refuses a same-name foreign
+transport, invalid config, symlink, or repository mismatch; remove touches only
+the exact Atlas-managed block. Do not commit the generated machine-specific
+absolute paths. Codex does not hot-load a new MCP into an already running task,
+so start a new task rooted at the project, call `project_status` to verify the
+exact repository and session-start freshness result, then run one real
+`analyze_change` call. The automatic refresh runs once per new MCP session; it
+does not watch edits later in that task. The software check only notifies and
+never installs.
+
+Do not use `codex mcp get` alone as the project-switching test: it may expose
+only the global management layer. The in-task `project_status` result is the
+authoritative check.
+
+The legacy single global registration is still available with `--scope global`,
+but it remains fixed to one repository and is not recommended for project
+switching.

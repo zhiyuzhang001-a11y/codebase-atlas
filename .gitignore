@@ -6,4 +6,5 @@ build/
 *.egg-info/
 .atlas/
 .agent-token-manager/
+.codex/config.toml
 node_modules/

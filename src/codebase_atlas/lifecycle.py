@@ -9,6 +9,8 @@ import tempfile
 import time
 from typing import Callable, Any
 
+from .provider_layout import provider_environment
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - exercised only on Windows
@@ -105,9 +107,7 @@ class CodebaseMemoryDaemon:
         self.active = False
 
     def _run(self, action: str):
-        environment = os.environ.copy()
-        environment["CBM_CACHE_DIR"] = str(self.cache_dir)
-        environment["CBM_ALLOWED_ROOT"] = str(self.repository.parent)
+        environment = provider_environment(self.cache_dir, self.repository)
         completed = self.runner(
             [str(self.binary), "daemon", action],
             check=False,
@@ -159,3 +159,31 @@ class CodebaseMemoryDaemon:
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.close()
+
+
+class SharedCodebaseMemorySession(CodebaseMemoryDaemon):
+    """Admit work to the Provider's shared, frontend-owned daemon generation.
+
+    Atlas deliberately does not run ``daemon start`` here because that creates
+    a permanent generation. Provider CLI frontends bootstrap one shared,
+    non-permanent generation and its final disconnect performs bounded cleanup.
+    The Atlas lock is therefore only a short local admission barrier.
+    """
+
+    def start(self, *, timeout_seconds: float | None = None) -> bool:
+        if self.active:
+            return False
+        self.lock.acquire(timeout_seconds=timeout_seconds)
+        try:
+            self.owned = False
+            self.active = True
+            return False
+        finally:
+            self.lock.release()
+
+    def close(self) -> None:
+        # Frontend disconnects, not Atlas's structural lifetime, determine the
+        # non-permanent Provider generation's bounded retirement.
+        self.owned = False
+        self.active = False
+        self.lock.release()

@@ -1,0 +1,111 @@
+name: Managed Provider Bundles
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/m32-shared-provider]
+    paths:
+      - .github/workflows/managed-provider.yml
+      - scripts/build_managed_provider.py
+      - scripts/verify_managed_provider_bundles.py
+
+permissions:
+  contents: read
+
+env:
+  PROVIDER_COMMIT: ca90facf3f4e786236fd0e915a1ad9fe6a41b45b
+  PROVIDER_VERSION: 0.10.8-atlas.1+ca90facf
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x86_64
+            build_arg_flags: --build-arg=CC=gcc --build-arg=CXX=g++ --build-arg=STATIC=1
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            build_arg_flags: --build-arg=CC=gcc --build-arg=CXX=g++ --build-arg=STATIC=1
+          - runner: macos-15-intel
+            target: macos-x86_64
+            build_arg_flags: --build-arg=CC=cc --build-arg=CXX=c++
+          - runner: macos-14
+            target: macos-arm64
+            build_arg_flags: --build-arg=CC=cc --build-arg=CXX=c++
+          - runner: windows-latest
+            target: windows-x86_64
+            msystem: CLANG64
+            build_arg_flags: --build-arg=CC=clang --build-arg=CXX=clang++
+          - runner: windows-11-arm
+            target: windows-arm64
+            msystem: CLANGARM64
+            build_arg_flags: --build-arg=CC=clang --build-arg=CXX=clang++
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: atlas
+      - uses: actions/checkout@v7
+        with:
+          repository: zhiyuzhang001-a11y/codebase-memory-mcp
+          ref: ${{ env.PROVIDER_COMMIT }}
+          path: provider
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: ${{ matrix.msystem }}
+          path-type: inherit
+          install: >-
+            ${{ matrix.msystem == 'CLANGARM64' && 'mingw-w64-clang-aarch64-clang mingw-w64-clang-aarch64-zlib' || 'mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-zlib' }}
+            make python zip unzip
+      - name: Build reproducible Unix bundle
+        if: runner.os != 'Windows'
+        run: >-
+          python3 atlas/scripts/build_managed_provider.py
+          --source provider --target ${{ matrix.target }} --output dist
+          --expected-commit ${{ env.PROVIDER_COMMIT }}
+          --version ${{ env.PROVIDER_VERSION }}
+          ${{ matrix.build_arg_flags }}
+      - name: Build reproducible Windows bundle
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: >-
+          python atlas/scripts/build_managed_provider.py
+          --source provider --target ${{ matrix.target }} --output dist
+          --expected-commit ${{ env.PROVIDER_COMMIT }}
+          --version ${{ env.PROVIDER_VERSION }}
+          ${{ matrix.build_arg_flags }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: managed-provider-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: managed-provider-*
+          path: dist
+          merge-multiple: true
+      - name: Verify complete managed Provider set
+        run: python scripts/verify_managed_provider_bundles.py dist
+      - name: Write aggregate checksums
+        run: cd dist && sha256sum codebase-atlas-provider-*.* > PROVIDER_SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: managed-provider-release-assets
+          path: dist/*
+          if-no-files-found: error

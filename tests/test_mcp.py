@@ -33,7 +33,7 @@ class McpTests(unittest.TestCase):
         self.assertEqual(
             [tool["name"] for tool in listed["result"]["tools"]],
             [
-                "definition", "references", "callers", "callees",
+                "project_status", "definition", "references", "callers", "callees",
                 "related_tests", "impact", "analyze_change",
             ],
         )
@@ -48,6 +48,55 @@ class McpTests(unittest.TestCase):
         self.assertEqual(schemas["references"]["continuation"]["maxLength"], 512)
         self.assertNotIn("continuation", schemas["definition"])
         self.assertIn("fix_bug", schemas["analyze_change"]["intent"]["enum"])
+
+    def test_project_status_needs_no_symbol(self) -> None:
+        status = {"status": "fresh", "ok": True, "identity": {"repository": "/repo"}}
+        server = McpServer(
+            self.service, status, "warn",
+            instructions="Call project_status for /repo",
+        )
+        initialized = server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        self.assertIn("/repo", initialized["result"]["instructions"])
+        self.assertIn("project_status", initialized["result"]["instructions"])
+        response = server.handle({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "project_status", "arguments": {}},
+        })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(
+            response["result"]["structuredContent"]["identity"]["repository"],
+            "/repo",
+        )
+
+    def test_unavailable_project_keeps_status_and_refuses_queries(self) -> None:
+        status = {
+            "status": "not_configured",
+            "ok": False,
+            "reason": "atlas_config_missing",
+            "resolved_root": "/new-project",
+            "provider_started": False,
+            "next_action": "codebase-atlas onboard --repo /new-project",
+        }
+        server = McpServer(None, status, "error", instructions="Call project_status")
+        project = server.handle({
+            "jsonrpc": "2.0", "id": 20, "method": "tools/call",
+            "params": {"name": "project_status", "arguments": {}},
+        })
+        self.assertEqual(
+            project["result"]["structuredContent"]["status"], "not_configured"
+        )
+        refused = server.handle({
+            "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "LocalUiServer"}},
+        })
+        self.assertTrue(refused["result"]["isError"])
+        self.assertEqual(refused["result"]["structuredContent"]["code"], "not_configured")
+        self.assertEqual(
+            refused["result"]["structuredContent"]["project"]["resolved_root"],
+            "/new-project",
+        )
 
     def test_analyze_change_uses_shared_product_contract(self) -> None:
         response = self.server.handle({

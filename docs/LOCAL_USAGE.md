@@ -12,8 +12,10 @@ For the task-oriented workflow and result interpretation, also see
 - a Python environment with Serena installed
 
 Atlas does not edit global MCP/editor configuration unless the user explicitly
-runs `codebase-atlas codex apply`; `codex plan` is read-only and shows the exact
-change first. Provider caches are stored
+runs global-scope `codebase-atlas codex apply`; `codex plan` is read-only and
+shows the exact change first. The recommended multi-project form uses explicit
+`--scope project`, which writes only a managed block under the selected
+repository. Provider caches are stored
 under `~/.local/share/codebase-atlas/` by default and user source files remain
 unchanged.
 The wheel includes the pinned TypeScript 5.9.3 runtime used by the exact test
@@ -189,13 +191,18 @@ codebase-atlas analyze-change Class.method \
 
 The response distinguishes unresolved/ambiguous identity from partial evidence,
 preserves every subquery's truncation, and lists evidence-backed source/test
-targets. A separate UI and MCP/query process cannot own the Provider
-simultaneously; close the old session when `provider_busy` is reported.
+targets. Shared-layout UI, MCP and query sessions for different repositories may
+reuse the same Provider daemon concurrently. Same-project writes remain
+serialized. A legacy-layout or short admission conflict returns
+`provider_busy`; inspect and explicitly migrate that project instead of deleting
+its old cache.
 
 Long-lived batch and MCP sessions expose the state captured at session startup
-without adding Git work to every warm query. Restart the session after editing,
-or run `doctor`/`update` first. Query commands never update the index
-automatically.
+without adding Git work to every warm query. A project-scoped M30 MCP transport
+performs one bounded update before the service starts; the default/global and
+older transports remain explicit-update only. Restart the session after editing,
+or run `doctor`/`update` first. No permanent watcher or per-query Git scan is
+added.
 
 Otherwise provide the runtime locations once:
 
@@ -210,6 +217,32 @@ codebase-atlas init \
 This creates `.codebase-atlas.toml`. It contains paths only; indexes and logs go
 to the Atlas data directory. Add this configuration to version control only when
 its paths are portable for the intended users.
+
+### Project-maintained Codebase Memory build
+
+Codebase Atlas does not require its Codebase Memory changes to be merged by the
+upstream project. When using a project-maintained Provider bundle:
+
+1. Verify the adjacent archive `.sha256` file and the executable digest recorded
+   in `manifest.json`.
+2. Keep the included MIT `LICENSE` with the executable.
+3. Extract it into a versioned local directory and pass that executable through
+   `--cbm-binary`; do not overwrite an unrelated global Provider installation.
+4. Keep the previous verified bundle until the new version has indexed and
+   queried successfully. Roll back by restoring the prior `cbm_binary` path;
+   never delete an existing index merely to change Provider versions.
+
+The manifest identifies the fork, upstream source, exact commit, managed version,
+platform/architecture, reproducible build command, binary SHA-256 and validation
+evidence. A new managed version is accepted only after two independent builds
+produce identical binaries and the frozen M17/M19 gates pass from an installed
+Codebase Atlas wheel. Upstream review remains useful feedback but is not an
+installation or release dependency.
+
+Public 0.21.0 assets use these target names: `linux-x86_64`, `linux-arm64`,
+`macos-x86_64`, `macos-arm64`, `windows-x86_64`, and `windows-arm64`. Download
+the archive and adjacent `.sha256` file for exactly one matching target from the
+same Atlas Release. `PROVIDER_SHA256SUMS.txt` covers the complete set.
 
 For TypeScript repositories, `--node-bin-dir` must contain
 `typescript-language-server` when it is not beside the configured Node executable.
@@ -340,19 +373,78 @@ index database's modification fingerprint changes. TypeScript continuation
 entries use a 16 MiB per-entry, 64 MiB total, 32-entry byte-weighted LRU and are
 also cleared on close.
 
-Atlas serializes CBM use across local Atlas processes because the upstream Provider
-supports only one global daemon at a time, even when repositories use different
-cache directories. A second query waits for the first session to release the lock;
-that wait counts against `timeout_ms` and returns explicit time truncation if the
-budget expires. The per-user lock lives in `XDG_RUNTIME_DIR` or the system temporary
-directory. Set `ATLAS_RUNTIME_DIR` only when a different runtime directory is
-required. Atlas does not stop a daemon it did not start.
+Atlas joins compatible shared-layout projects to one account-level Provider
+daemon. Each session keeps an exact allowed root and deterministic project
+identity, so unrelated repositories can query and index concurrently while
+same-project writes remain serialized. Daily indexes use adaptive memory-aware
+slots; large repositories use a bounded two-pass path and one exclusive index
+slot while queries retain capacity. Legacy-layout projects continue using their
+preserved per-project cache until an explicit migration. The short per-user
+admission lock lives in `XDG_RUNTIME_DIR` or the system temporary directory.
+Set `ATLAS_RUNTIME_DIR` only when a different runtime directory is required.
+Atlas does not stop a daemon it did not start.
 
 Use `--config /path/to/config.toml` when running outside the repository. The
 long-lived JSON-lines interface is `codebase-atlas query-batch`; the read-only MCP
 server is `codebase-atlas mcp`.
 
 ## MCP connection
+
+For normal Codex use across several projects, preview and explicitly apply the
+automatic global transport once:
+
+```bash
+codebase-atlas codex plan --scope global-auto
+codebase-atlas codex apply --scope global-auto
+```
+
+It resolves only the MCP process startup directory and its ancestors up to the
+innermost Git root. It does not search sibling or recently opened projects. A
+missing, incomplete, invalid, mismatched, or ambiguous project keeps
+`project_status` available and makes code queries fail with that structured
+status. Applying can migrate only the exact older Atlas transport fixed to one
+valid config; a foreign entry is refused and a failed migration restores and
+verifies the old entry. Start a new Codex task after changing the registration.
+
+Index each repository once before first use:
+
+```bash
+cd /absolute/path/to/repository
+codebase-atlas onboard --apply
+# or, when configuration already exists:
+codebase-atlas index
+```
+
+Use project-local scope only when a repository needs a deliberate override:
+
+```bash
+codebase-atlas codex plan --scope project
+codebase-atlas codex apply --scope project
+```
+
+When Codex opens a workspace above the indexed repository, add
+`--codex-project-root /absolute/workspace/path` to both commands. The selected
+Codex project must be trusted; accept Codex's normal trust prompt on first open.
+Atlas never edits the global trust list.
+
+This creates or appends one marker-delimited block in `.codex/config.toml`,
+preserves unrelated valid TOML bytes, refuses symlinks/foreign Atlas entries,
+and never changes `~/.codex/config.toml`. The file contains absolute local paths
+and should not be committed. Start a new Codex task rooted at the repository and
+call `project_status` to verify the resolved repository, index freshness and
+session-start update result. Remove only Atlas's matching block with
+`codebase-atlas codex remove --scope project`.
+
+Treat that real `project_status` call as the verification gate. `codex mcp get`
+can report only the global management layer and therefore is not sufficient to
+verify project-local switching.
+
+The session-start refresh is not a permanent watcher. If a legacy layout or
+short migration/admission operation blocks startup, the new server reports
+`provider_busy` and uses the previous index rather than waiting indefinitely.
+Retry after that operation completes. Software release checks are asynchronous,
+cached for 24 hours, notify-only, and disabled by
+`CODEBASE_ATLAS_NO_UPDATE_CHECK=1`.
 
 Point an MCP client at the executable and project configuration without changing
 the configuration automatically:
