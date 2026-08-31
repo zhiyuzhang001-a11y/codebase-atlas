@@ -3,6 +3,11 @@
 For the task-oriented workflow and result interpretation, also see
 `docs/DAILY_USE_PLAYBOOK.md`.
 
+For Codex-led installation or deployment into another repository, use the
+version-controlled `docs/CODEX_DEPLOYMENT_RULES.md`. It requires stable GitHub
+Release assets, checksum verification, project isolation and an end-to-end
+identity/health/query acceptance gate.
+
 ## Requirements
 
 - Python 3.11 through 3.14

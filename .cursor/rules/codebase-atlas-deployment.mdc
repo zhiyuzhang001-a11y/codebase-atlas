@@ -1,0 +1,19 @@
+---
+description: Safe GitHub Release deployment of Codebase Atlas into a repository
+alwaysApply: true
+---
+
+# Codebase Atlas deployment
+
+When asked to install, deploy, connect, update, verify, or remove Codebase
+Atlas, follow `docs/CODEX_DEPLOYMENT_RULES.md`.
+
+- Install end-user software only from the latest stable GitHub Release.
+- Verify published checksums before installing or extracting assets.
+- Reuse a valid versioned machine installation; create separate project config,
+  identity and index data for every repository.
+- Preview onboarding and Codex integration before applying them.
+- Never copy development/evaluation paths, overwrite foreign configuration,
+  modify target source, or silently change global MCP/editor settings.
+- Require exact repository identity, `doctor=ready`, a fresh index and one real
+  project query before reporting success.
