@@ -2,7 +2,7 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current release candidate: **0.21.0**, adding fail-closed automatic Codex project
+Current stable release: **0.21.0**, adding fail-closed automatic Codex project
 discovery, safe migration from a fixed global Atlas registration, bounded
 session-start index freshness and notify-only software update awareness while
 adding a shared multi-project Provider layout, bounded large-repository indexing
@@ -63,6 +63,25 @@ budgets. See [`SUPPORT.md`](SUPPORT.md) for the precise support boundary.
 Codebase Atlas is licensed under the [Apache License 2.0](LICENSE). Bundled and
 separately installed dependencies retain their own licenses; see
 [third-party notices](THIRD_PARTY_NOTICES.md).
+
+## Deploy with Codex
+
+The canonical agent workflow is
+[`docs/CODEX_DEPLOYMENT_RULES.md`](docs/CODEX_DEPLOYMENT_RULES.md). It requires
+stable GitHub Release assets and checksums, reuses a valid machine installation,
+creates isolated project configuration/index data, and verifies repository
+identity, health, freshness and one real query before success.
+
+From another project, ask Codex:
+
+> Follow the Codebase Atlas deployment rules at
+> https://github.com/zhiyuzhang001-a11y/codebase-atlas/blob/main/docs/CODEX_DEPLOYMENT_RULES.md
+> and deploy Codebase Atlas for the current repository.
+
+For phrase-only requests in every repository, add a short global `AGENTS.md`
+instruction that points to this canonical URL. Codex reads global and
+project-level `AGENTS.md` when a new task starts; the GitHub file itself is not
+automatically discovered by unrelated repositories.
 
 ## Daily workflow
 
