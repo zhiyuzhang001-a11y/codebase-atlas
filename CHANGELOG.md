@@ -4,6 +4,15 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.22.1 — 2026-09-01
+
+- Bound Atlas-owned Python registration and exact-reference inventories to the
+  exact Git repository's tracked plus non-ignored untracked files.
+- Exclude standard Git-ignored corpora, caches and nested repositories from
+  Python facts while retaining a deterministic safe fallback for non-Git roots.
+- Reject symlinked, escaped, missing and non-regular Python inventory entries;
+  use the same boundary for onboarding sidecars and query-time reference scans.
+
 ## 0.22.0 — 2026-09-01
 
 - Add bounded `locate_files` retrieval that returns at most two heuristic,

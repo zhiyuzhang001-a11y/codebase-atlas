@@ -42,12 +42,24 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
   production process/security guards at exact commit `e088a41b`.
 - [x] Pass the final Atlas test, package, reproducibility and public-readiness
   gates on the exact `0.22.0` release commit.
-- [ ] Produce and verify all six managed Provider bundles from `e088a41b` with
+- [x] Produce and verify all six managed Provider bundles from `e088a41b` with
   managed version `0.10.8-atlas.2+e088a41b`.
-- [ ] Pass GitHub CI on the exact release commit, publish the draft tag release,
+- [x] Pass GitHub CI on the exact release commit, publish the draft tag release,
   verify public-download assets, then promote it to stable.
-- [ ] Install into a new versioned machine location while retaining and
+- [x] Install into a new versioned machine location while retaining and
   revalidating the complete `0.21.0` recovery path.
+
+## 0.22.1 Git-aware Python inventory correction
+
+- [x] Freeze regression tests that fail when Git-ignored Python facts enter
+  registration or exact-reference inventories.
+- [x] Use one deterministic tracked plus non-ignored untracked inventory for
+  both Python providers, with symlink and path-escape rejection.
+- [x] Pass full local tests and an isolated exact-root full onboarding, deep
+  inspection, real-symbol query and ignored-subrepository rejection.
+- [x] Pass package lifecycle, reproducible-wheel and public-readiness gates.
+- [ ] Pass all remote CI jobs, publish and reverify stable `v0.22.1`, install it
+  side by side and complete the exact-root deployment.
 
 ## 0.21.0 managed-Provider candidate
 
