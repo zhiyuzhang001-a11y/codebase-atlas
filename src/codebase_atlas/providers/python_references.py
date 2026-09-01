@@ -8,12 +8,7 @@ from pathlib import Path
 from time import monotonic
 
 from ..contracts import Node, SourceRange
-
-
-_EXCLUDED_PARTS = {
-    ".git", ".atlas", ".agent-token-manager", ".venv", "venv",
-    "node_modules", "build", "dist", "__pycache__",
-}
+from .python_inventory import python_source_files
 
 
 def _hash(text: str) -> str:
@@ -60,10 +55,7 @@ class PythonExactReferenceProvider:
         self.repository = repository.resolve()
 
     def _files(self) -> tuple[Path, ...]:
-        return tuple(sorted(
-            path for path in self.repository.rglob("*.py")
-            if not any(part in _EXCLUDED_PARTS for part in path.relative_to(self.repository).parts)
-        ))
+        return python_source_files(self.repository)
 
     @staticmethod
     def _module_name(path: Path) -> str:

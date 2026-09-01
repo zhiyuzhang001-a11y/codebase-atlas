@@ -6,19 +6,15 @@ import ast
 from dataclasses import dataclass
 import hashlib
 import json
-import os
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from ..contracts import Edge, Node, SourceRange
 from ..graph import ImpactHit, ImpactTraversal
+from .python_inventory import python_source_files
 
 
-_EXCLUDED_PARTS = {
-    ".git", ".atlas", ".agent-token-manager", ".venv", "venv",
-    "node_modules", "build", "dist", "__pycache__",
-}
 _CONSTRUCTORS = {"fastapi.FastAPI", "flask.Flask"}
 _CALL_SPECS = {
     "fastapi.FastAPI.add_api_route": (1, "endpoint"),
@@ -28,7 +24,6 @@ _CALL_SPECS = {
     "homeassistant.helpers.dispatcher.async_dispatcher_connect": (2, "target"),
 }
 _DECORATOR_APIS = {"flask.Flask.route"}
-_REUSE_FILE_INVENTORY = os.name != "nt"
 
 
 def _hash(value: Any) -> str:
@@ -120,53 +115,9 @@ class PythonRegistrationProvider:
         self.repository = repository.resolve()
         self.project = project
         self._known_files: tuple[Path, ...] | None = None
-        self._known_directories: tuple[Path, ...] = ()
-        self._known_directory_state: tuple[tuple[str, int, int, int], ...] = ()
-
-    def _directory_state(
-        self, directories: tuple[Path, ...]
-    ) -> tuple[tuple[str, int, int, int], ...] | None:
-        state = []
-        try:
-            for path in directories:
-                metadata = path.stat()
-                state.append((
-                    path.relative_to(self.repository).as_posix(),
-                    metadata.st_ino,
-                    metadata.st_mtime_ns,
-                    metadata.st_ctime_ns,
-                ))
-        except OSError:
-            return None
-        return tuple(state)
 
     def _files(self) -> tuple[Path, ...]:
-        if self._known_files is not None and _REUSE_FILE_INVENTORY:
-            current = self._directory_state(self._known_directories)
-            if current == self._known_directory_state:
-                return self._known_files
-
-        files: list[Path] = []
-        directories: list[Path] = []
-        for raw_directory, raw_subdirectories, raw_files in os.walk(
-            self.repository, followlinks=False
-        ):
-            directory = Path(raw_directory)
-            directories.append(directory)
-            raw_subdirectories[:] = sorted(
-                name for name in raw_subdirectories
-                if name not in _EXCLUDED_PARTS
-                and not (directory / name).is_symlink()
-            )
-            for name in sorted(raw_files):
-                path = directory / name
-                if name.endswith(".py") and not path.is_symlink():
-                    files.append(path)
-        self._known_files = tuple(files)
-        self._known_directories = tuple(directories)
-        self._known_directory_state = self._directory_state(
-            self._known_directories
-        ) or ()
+        self._known_files = python_source_files(self.repository)
         return self._known_files
 
     def source_files(self) -> tuple[Path, ...]:

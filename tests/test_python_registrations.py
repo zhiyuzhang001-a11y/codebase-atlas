@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from codebase_atlas.contracts import Node, SourceRange
 from codebase_atlas.providers.python_registrations import PythonRegistrationProvider
@@ -123,18 +122,14 @@ class PythonRegistrationTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 provider.scan(timeout_ms=0)
 
-    def test_windows_refreshes_inventory_without_directory_timestamp_cache(self) -> None:
+    def test_refreshes_inventory_after_file_addition(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository = Path(raw)
             (repository / "first.py").write_text("def first():\n    pass\n")
             provider = PythonRegistrationProvider(repository, "p")
             before = provider.source_signature()
-            with patch(
-                "codebase_atlas.providers.python_registrations._REUSE_FILE_INVENTORY",
-                False,
-            ):
-                (repository / "second.py").write_text("def second():\n    pass\n")
-                after = provider.source_signature()
+            (repository / "second.py").write_text("def second():\n    pass\n")
+            after = provider.source_signature()
             self.assertNotEqual(before, after)
 
 

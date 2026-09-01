@@ -2,8 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.22.0**, adding bounded heuristic file narrowing and
-a persistent managed Provider transport while retaining fail-closed automatic
+Current stable release: **0.22.1**, adding Git-aware Python source inventories,
+bounded heuristic file narrowing and a persistent managed Provider transport
+while retaining fail-closed automatic
 Codex project discovery, safe migration from a fixed global Atlas registration,
 bounded session-start index freshness, notify-only software update awareness, a
 shared multi-project Provider layout, bounded large-repository indexing,
@@ -31,6 +32,8 @@ query budgets, index freshness, and product interfaces.
   query scope;
 - deterministic persistent/incremental Python registration evidence published
   transactionally with configuration and index state;
+- Git-aware Python registration/reference inventories containing tracked and
+  non-ignored untracked files only, with symlink and path-escape rejection;
 - read-only index/storage inspection, explicit repair, and dry-run-first cleanup;
 - large-repository and monorepo subproject support;
 - bounded same-session continuation for wide exact TypeScript references;
