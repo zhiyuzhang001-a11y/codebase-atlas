@@ -17,8 +17,8 @@ import zipfile
 from pathlib import Path
 
 
-DEFAULT_COMMIT = "ca90facf3f4e786236fd0e915a1ad9fe6a41b45b"
-DEFAULT_VERSION = "0.10.8-atlas.1+ca90facf"
+DEFAULT_COMMIT = "e088a41b8e7619fb532afda0d611b944002cfebf"
+DEFAULT_VERSION = "0.10.8-atlas.2+e088a41b"
 FORK = "https://github.com/zhiyuzhang001-a11y/codebase-memory-mcp"
 UPSTREAM = "https://github.com/DeusData/codebase-memory-mcp"
 TARGETS = {
@@ -171,7 +171,7 @@ def main() -> int:
                 "version_output": version_output,
             },
             "verification": {
-                "source_ci": "34/34 passed at ca90facf; upstream PR run 33295286000",
+                "source_ci": "7770/7770 full local gate passed at e088a41b",
                 "bundle_build": "two independent same-runner builds are byte-identical",
             },
         }

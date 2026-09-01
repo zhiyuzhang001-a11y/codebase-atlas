@@ -9,6 +9,7 @@ from unittest.mock import patch
 from codebase_atlas.contracts import Edge, Node, SourceRange
 from codebase_atlas.graph import ImpactHit, ImpactTraversal
 from codebase_atlas.index_state import RepositorySnapshot
+from codebase_atlas.provider_transport import ProviderInitializeTimeout
 from codebase_atlas.providers.python_references import PythonExactReferenceProvider
 from codebase_atlas.providers.python_registrations import PythonRegistrationProvider
 from codebase_atlas.service import AtlasService, QueryRequest
@@ -168,6 +169,43 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(repeated.truncation["reasons"], ("provider_busy",))
         self.assertEqual(lifecycle.starts, 1)
         self.assertEqual(lifecycle.last_timeout, 2.0)
+
+    def test_locate_files_separates_lock_initialize_and_remaining_tool_budget(self) -> None:
+        class SeparatedLifecycle(FakeLifecycle):
+            def start_for_request(self, *, lock_timeout_seconds, initialize_timeout_seconds):
+                self.starts += 1
+                self.lock_timeout = lock_timeout_seconds
+                self.initialize_timeout = initialize_timeout_seconds
+
+        class LocateProvider(FakeImpactProvider):
+            def locate_files(self, _intent, **budget):
+                self.budget = budget
+                return {"status": "no_matches", "files": [], "matched_terms": [],
+                        "budget": {"provider_queries": 1, "max_internal_rows": 60,
+                                   "max_files": 2}}
+
+        lifecycle = SeparatedLifecycle()
+        provider = LocateProvider()
+        service = AtlasService(structural_provider=provider, lifecycle=lifecycle)
+        with service:
+            result = service.locate_files("synthetic", timeout_ms=30_000)
+        self.assertEqual(result["status"], "no_matches")
+        self.assertEqual(lifecycle.lock_timeout, 2.0)
+        self.assertEqual(lifecycle.initialize_timeout, 30.0)
+        self.assertGreater(provider.budget["timeout_ms"], 0)
+        self.assertLessEqual(provider.budget["timeout_ms"], 30_000)
+
+    def test_locate_files_reports_initialize_timeout_not_lock_contention(self) -> None:
+        class SlowLifecycle(FakeLifecycle):
+            def start_for_request(self, **_timeouts):
+                raise ProviderInitializeTimeout("initialize")
+
+        service = AtlasService(
+            structural_provider=FakeImpactProvider(), lifecycle=SlowLifecycle()
+        )
+        with service:
+            with self.assertRaisesRegex(RuntimeError, "startup timed out"):
+                service.locate_files("synthetic")
 
     @staticmethod
     def _registration_index(repository: Path):

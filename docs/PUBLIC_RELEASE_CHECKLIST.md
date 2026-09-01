@@ -33,6 +33,22 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.22.0 bounded file narrowing candidate
+
+- [x] The frozen Atlas and Provider patches passed independent development,
+  holdout, acceptance and clean-room upgrade/downgrade gates without changing
+  their scoring thresholds.
+- [x] Provider source integration passed 7,770 tests with zero failures and all
+  production process/security guards at exact commit `e088a41b`.
+- [x] Pass the final Atlas test, package, reproducibility and public-readiness
+  gates on the exact `0.22.0` release commit.
+- [ ] Produce and verify all six managed Provider bundles from `e088a41b` with
+  managed version `0.10.8-atlas.2+e088a41b`.
+- [ ] Pass GitHub CI on the exact release commit, publish the draft tag release,
+  verify public-download assets, then promote it to stable.
+- [ ] Install into a new versioned machine location while retaining and
+  revalidating the complete `0.21.0` recovery path.
+
 ## 0.21.0 managed-Provider candidate
 
 - [x] The exact managed Provider source, version, MIT license and SHA-256 are

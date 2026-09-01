@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from .contracts import Edge, Node, repository_path
 from .graph import ImpactHit, ImpactTraversal
 from .index_state import repository_snapshot
+from .provider_transport import ProviderInitializeTimeout
 from .providers.python_callers import PythonExactCallerProvider
 from .providers.python_references import PythonExactReferenceProvider
 from .providers.python_registrations import RegistrationIndex
@@ -167,13 +168,22 @@ class AtlasService:
     def _ensure_structural(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
         if self._structural_started:
             return True
-        if self._structural_unavailable_reason == "provider_busy":
+        if self._structural_unavailable_reason in {"provider_busy", "provider_startup_timeout"}:
             return False
         if self.lifecycle is not None:
             try:
-                self.lifecycle.start(
-                    timeout_seconds=min(timeout_ms, MAX_PROVIDER_LOCK_WAIT_MS) / 1000.0
-                )
+                lock_timeout = min(timeout_ms, MAX_PROVIDER_LOCK_WAIT_MS) / 1000.0
+                separated_start = getattr(self.lifecycle, "start_for_request", None)
+                if callable(separated_start):
+                    separated_start(
+                        lock_timeout_seconds=lock_timeout,
+                        initialize_timeout_seconds=timeout_ms / 1000.0,
+                    )
+                else:
+                    self.lifecycle.start(timeout_seconds=lock_timeout)
+            except ProviderInitializeTimeout:
+                self._structural_unavailable_reason = "provider_startup_timeout"
+                return False
             except TimeoutError:
                 self._structural_unavailable_reason = "provider_busy"
                 return False
@@ -215,6 +225,32 @@ class AtlasService:
             self._clear_ts_continuations()
             self._continuation_secret = None
             self.started = False
+
+    def locate_files(
+        self,
+        intent: str,
+        *,
+        max_files: int = 2,
+        max_internal_rows: int = 60,
+        timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    ) -> dict[str, Any]:
+        started = monotonic()
+        if not self.started:
+            self.start()
+        if self.structural_provider is None:
+            raise RuntimeError("structural provider is unavailable")
+        if not self._ensure_structural(timeout_ms):
+            if self._structural_unavailable_reason == "provider_startup_timeout":
+                raise RuntimeError("structural provider startup timed out")
+            raise RuntimeError("structural provider is busy")
+        elapsed_ms = max(0, int((monotonic() - started) * 1000.0))
+        remaining_timeout_ms = max(1, timeout_ms - elapsed_ms)
+        return self.structural_provider.locate_files(
+            intent,
+            max_files=max_files,
+            max_internal_rows=max_internal_rows,
+            timeout_ms=remaining_timeout_ms,
+        )
 
     def query(self, request: QueryRequest) -> QueryResponse:
         if not self.started:

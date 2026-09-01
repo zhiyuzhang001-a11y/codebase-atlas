@@ -104,7 +104,44 @@ class OwnerSearchProvider(CodebaseMemoryImpactProvider):
         }
 
 
+class LocateProvider(CodebaseMemoryImpactProvider):
+    def __init__(self, path: str = "src/target.py") -> None:
+        super().__init__(Path("/tmp/cbm"), Path("/tmp/repo"), Path("/tmp/cache"), "p")
+        self.path = path
+        self.arguments = ()
+
+    def _run(self, tool, *args, timeout_seconds=None):
+        self.arguments = args
+        if tool != "locate_files":
+            raise AssertionError(f"unexpected tool: {tool}")
+        return {
+            "status": "ok",
+            "files": [{"path": self.path, "rank": -10.0, "evidence_count": 2}],
+            "matched_terms": ["target"],
+            "budget": {"provider_queries": 1, "max_internal_rows": 60, "max_files": 2},
+        }
+
+
 class CodebaseMemoryBudgetTests(unittest.TestCase):
+    def test_locate_files_uses_bounded_provider_tool(self) -> None:
+        provider = LocateProvider()
+        result = provider.locate_files("target behavior")
+        self.assertEqual(result["files"][0]["path"], "src/target.py")
+        self.assertEqual(result["budget"]["provider_queries"], 1)
+        self.assertIn("--max-files", provider.arguments)
+        self.assertIn("--max-internal-rows", provider.arguments)
+
+    def test_locate_files_rejects_provider_path_escape(self) -> None:
+        with self.assertRaisesRegex(ValueError, "repository-relative"):
+            LocateProvider("../outside.py").locate_files("target")
+
+    def test_locate_files_rejects_public_budget_expansion(self) -> None:
+        provider = LocateProvider()
+        with self.assertRaisesRegex(ValueError, "between 1 and 2"):
+            provider.locate_files("target", max_files=3)
+        with self.assertRaisesRegex(ValueError, "between 1 and 60"):
+            provider.locate_files("target", max_internal_rows=61)
+
     def test_excludes_heuristic_provider_edges_from_exact_results(self) -> None:
         traversal = MixedResolutionProvider().impact(
             "target", direction="upstream", max_depth=1, timeout_ms=1000,

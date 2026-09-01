@@ -2,12 +2,12 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.21.0**, adding fail-closed automatic Codex project
-discovery, safe migration from a fixed global Atlas registration, bounded
-session-start index freshness and notify-only software update awareness while
-adding a shared multi-project Provider layout, bounded large-repository indexing
-and memory-aware global scheduling, while retaining the task-oriented Change
-Brief, lightweight local UI,
+Current stable release: **0.22.0**, adding bounded heuristic file narrowing and
+a persistent managed Provider transport while retaining fail-closed automatic
+Codex project discovery, safe migration from a fixed global Atlas registration,
+bounded session-start index freshness, notify-only software update awareness, a
+shared multi-project Provider layout, bounded large-repository indexing,
+memory-aware global scheduling, the task-oriented Change Brief, lightweight local UI,
 resumable exact TypeScript references, exact Python registration relationships,
 and transactional onboarding.
 
@@ -37,6 +37,10 @@ query budgets, index freshness, and product interfaces.
 - one shared six-query service plus a bounded `analyze_change` Change Brief,
   exposed by CLI, JSON-lines batch API, read-only MCP, and a dependency-free
   loopback browser UI;
+- bounded, explicitly heuristic `locate_files` narrowing that returns at most
+  two repository-relative source candidates and requires follow-up reading;
+- persistent repository-bound managed Provider sessions with separate bounded
+  lock-admission and cold-start initialization timeouts;
 - dry-run-first Codex MCP registration that refuses to overwrite or remove a
   different existing entry, plus automatic cwd-based project discovery, a
   project-scoped managed block, exact active-project status, bounded

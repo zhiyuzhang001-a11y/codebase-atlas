@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 from time import monotonic
@@ -13,9 +13,12 @@ from typing import Any
 from ..contracts import Edge, Node, SourceRange
 from ..graph import EvidenceGraph, ImpactHit, ImpactTraversal
 from ..provider_layout import provider_environment
+from ..provider_transport import CodebaseMemoryMcpTransport
 
 
 CODE_EXTENSIONS = {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}
+LOCATE_FILES_MAX_FILES = 2
+LOCATE_FILES_MAX_INTERNAL_ROWS = 60
 
 
 def _hash(value: Any) -> str:
@@ -45,11 +48,13 @@ class CodebaseMemoryImpactProvider:
         repository: Path,
         cache_dir: Path,
         project: str,
+        transport: CodebaseMemoryMcpTransport | None = None,
     ) -> None:
         self.binary = binary.resolve()
         self.repository = repository.resolve()
         self.cache_dir = cache_dir.resolve()
         self.project = project
+        self.transport = transport
         self._node_cache: dict[str, Node] = {}
         self._definition_cache: dict[tuple[str, str, str], tuple[Node, ...]] = {}
         self._impact_cache: dict[
@@ -97,6 +102,98 @@ class CodebaseMemoryImpactProvider:
         if not isinstance(payload, dict):
             raise ValueError("Codebase Memory result lacks structuredContent")
         return payload
+
+    @staticmethod
+    def _safe_located_path(value: Any) -> str:
+        if not isinstance(value, str) or not value or "\\" in value:
+            raise ValueError("Provider returned an invalid file path")
+        path = PurePosixPath(value)
+        if path.is_absolute() or value != path.as_posix() or ".." in path.parts:
+            raise ValueError("Provider returned a non-repository-relative file path")
+        return value
+
+    def locate_files(
+        self,
+        intent: str,
+        *,
+        max_files: int = LOCATE_FILES_MAX_FILES,
+        max_internal_rows: int = LOCATE_FILES_MAX_INTERNAL_ROWS,
+        timeout_ms: int = 30_000,
+    ) -> dict[str, Any]:
+        """Return Provider-owned bounded heuristic file projection."""
+        if not isinstance(intent, str) or not intent or len(intent.encode("utf-8")) > 1000:
+            raise ValueError("intent must contain 1 to 1000 bytes")
+        if not isinstance(max_files, int) or isinstance(max_files, bool) or not 1 <= max_files <= 2:
+            raise ValueError("max_files must be an integer between 1 and 2")
+        if (
+            not isinstance(max_internal_rows, int)
+            or isinstance(max_internal_rows, bool)
+            or not 1 <= max_internal_rows <= 60
+        ):
+            raise ValueError("max_internal_rows must be an integer between 1 and 60")
+        if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
+            raise ValueError("timeout_ms must be an integer between 1 and 300000")
+
+        self._invalidate_if_index_changed()
+        if self.transport is None:
+            payload = self._run(
+                "locate_files",
+                "--project", self.project,
+                "--intent", intent,
+                "--max-files", str(max_files),
+                "--max-internal-rows", str(max_internal_rows),
+                timeout_seconds=timeout_ms / 1000.0,
+            )
+        else:
+            payload = self.transport.call(
+                "locate_files",
+                {
+                    "project": self.project,
+                    "intent": intent,
+                    "max_files": max_files,
+                    "max_internal_rows": max_internal_rows,
+                },
+                timeout_ms=timeout_ms,
+            )
+        status = payload.get("status")
+        if status not in {"ok", "no_matches"}:
+            raise ValueError("Provider returned an invalid locate_files status")
+        files = payload.get("files")
+        if not isinstance(files, list) or len(files) > max_files:
+            raise ValueError("Provider exceeded the locate_files file budget")
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in files:
+            if not isinstance(item, dict):
+                raise ValueError("Provider returned an invalid file entry")
+            path = self._safe_located_path(item.get("path"))
+            if path in seen:
+                raise ValueError("Provider returned duplicate locate_files paths")
+            rank = item.get("rank")
+            evidence_count = item.get("evidence_count")
+            if not isinstance(rank, (int, float)) or isinstance(rank, bool):
+                raise ValueError("Provider returned an invalid file rank")
+            if not isinstance(evidence_count, int) or isinstance(evidence_count, bool) or evidence_count < 1:
+                raise ValueError("Provider returned an invalid evidence count")
+            seen.add(path)
+            normalized.append({"path": path, "rank": float(rank), "evidence_count": evidence_count})
+        terms = payload.get("matched_terms")
+        if not isinstance(terms, list) or not all(isinstance(term, str) for term in terms):
+            raise ValueError("Provider returned invalid matched terms")
+        budget = payload.get("budget")
+        expected_budget = {
+            "provider_queries": 1,
+            "max_internal_rows": max_internal_rows,
+            "max_files": max_files,
+        }
+        if budget != expected_budget:
+            raise ValueError("Provider returned a mismatched locate_files budget")
+        return {
+            "status": status,
+            "files": normalized,
+            "matched_terms": terms,
+            "budget": expected_budget,
+        }
 
     def _nodes_from_search(self, payload: dict[str, Any]) -> tuple[Node, ...]:
         columns = payload.get("cols", [])

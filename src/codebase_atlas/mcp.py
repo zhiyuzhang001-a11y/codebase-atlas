@@ -18,6 +18,10 @@ from .version_check import VersionNotifier
 
 
 PROTOCOL_VERSION = "2025-11-25"
+LOCATE_FILES_NEXT_ACTION = (
+    "Read the returned files, search within them, then use exact symbol lookup "
+    "and impact analysis before editing."
+)
 
 
 def _structured(response: QueryResponse) -> dict[str, Any]:
@@ -59,6 +63,45 @@ def _brief_tool_result(brief: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _locate_payload(
+    *,
+    status: str,
+    repository: str,
+    freshness: dict[str, Any],
+    files: list[dict[str, Any]] | None = None,
+    matched_terms: list[str] | None = None,
+    budget: dict[str, int] | None = None,
+    message: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "status": status,
+        "repository": repository,
+        "freshness": freshness,
+        "heuristic": True,
+        "non_exhaustive": True,
+        "files": files or [],
+        "matched_terms": matched_terms or [],
+        "budget": budget or {
+            "provider_queries": 0,
+            "max_internal_rows": 60,
+            "max_files": 2,
+        },
+        "required_next_action": LOCATE_FILES_NEXT_ACTION,
+    }
+    if message:
+        payload["message"] = message
+    return payload
+
+
+def _locate_tool_result(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+        "structuredContent": payload,
+        "isError": payload["status"] in {"stale", "error"},
+    }
+
+
 TOOLS = [
     {
         "name": "project_status",
@@ -69,6 +112,31 @@ TOOLS = [
         ),
         "inputSchema": {
             "type": "object", "properties": {}, "additionalProperties": False
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
+    {
+        "name": "locate_files",
+        "title": "Locate likely implementation files",
+        "description": (
+            "Return at most two repository-relative files likely to contain a free-form "
+            "implementation intent. This is heuristic and non-exhaustive; read and search "
+            "the returned files, then use exact symbol lookup and impact analysis before editing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "max_files": {"type": "integer", "minimum": 1, "maximum": 2, "default": 2},
+                "max_internal_rows": {
+                    "type": "integer", "minimum": 1, "maximum": 60, "default": 60,
+                },
+                "timeout_ms": {
+                    "type": "integer", "minimum": 1, "maximum": 300000, "default": 30000,
+                },
+            },
+            "required": ["intent"],
+            "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False},
     },
@@ -264,6 +332,23 @@ class McpServer:
                     },
                 }
             if self.service is None:
+                if name == "locate_files":
+                    unavailable = dict(self.index_status or {})
+                    repository = str(
+                        unavailable.get("resolved_root")
+                        or unavailable.get("identity", {}).get("repository", "")
+                    )
+                    payload = _locate_payload(
+                        status="error",
+                        repository=repository,
+                        freshness={
+                            "status": str(unavailable.get("status", "not_configured")),
+                            "ok": False,
+                            "reason": str(unavailable.get("reason", "project_configuration_not_loaded")),
+                        },
+                        message="Codebase Atlas is unavailable for this project.",
+                    )
+                    return {"jsonrpc": "2.0", "id": request_id, "result": _locate_tool_result(payload)}
                 unavailable = dict(self.index_status or {
                     "status": "not_configured",
                     "ok": False,
@@ -291,6 +376,44 @@ class McpServer:
                         "isError": True,
                     },
                 }
+            if name == "locate_files":
+                status = self.index_status or {"status": "unknown", "ok": True, "reason": ""}
+                identity = status.get("identity", {})
+                repository_value = identity.get("repository") if isinstance(identity, dict) else None
+                repository = str(repository_value or getattr(self.service, "repository", "") or "")
+                freshness = {
+                    "status": str(status.get("status", "unknown")),
+                    "ok": bool(status.get("ok", True)),
+                    "reason": str(status.get("reason", "")),
+                }
+                if not repository:
+                    payload = _locate_payload(
+                        status="error", repository="", freshness=freshness,
+                        message="Exact repository identity is unavailable.",
+                    )
+                elif not freshness["ok"]:
+                    payload = _locate_payload(
+                        status="stale", repository=repository, freshness=freshness,
+                        message="The index is not current; update it before locating files.",
+                    )
+                else:
+                    intent = arguments.get("intent")
+                    result = self.service.locate_files(
+                        intent,
+                        max_files=arguments.get("max_files", 2),
+                        max_internal_rows=arguments.get("max_internal_rows", 60),
+                        timeout_ms=arguments.get("timeout_ms", 30_000),
+                    )
+                    payload = _locate_payload(
+                        status=str(result["status"]),
+                        repository=repository,
+                        freshness=freshness,
+                        files=result["files"],
+                        matched_terms=result["matched_terms"],
+                        budget=result["budget"],
+                    )
+                return {"jsonrpc": "2.0", "id": request_id, "result": _locate_tool_result(payload)}
+
             policy_error = stale_policy_error(
                 self.index_status or {"ok": True}, self.stale_policy
             )
@@ -382,6 +505,22 @@ class McpServer:
                 ),
             }
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            if name == "locate_files":
+                status = self.index_status or {"status": "unknown", "ok": True, "reason": ""}
+                identity = status.get("identity", {})
+                repository_value = identity.get("repository") if isinstance(identity, dict) else None
+                repository = str(repository_value or getattr(self.service, "repository", "") or "")
+                payload = _locate_payload(
+                    status="error",
+                    repository=repository,
+                    freshness={
+                        "status": str(status.get("status", "unknown")),
+                        "ok": bool(status.get("ok", True)),
+                        "reason": str(status.get("reason", "")),
+                    },
+                    message=str(exc),
+                )
+                return {"jsonrpc": "2.0", "id": request_id, "result": _locate_tool_result(payload)}
             failure = attach_operational_status(
                 {"error": str(exc)}, self.index_status, self.stale_policy
             )
