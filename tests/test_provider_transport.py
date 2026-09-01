@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import stat
+import sys
 import tempfile
 import textwrap
 import time
@@ -84,9 +84,10 @@ class ProviderTransportTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="atlas-provider-transport-")
         self.root = Path(self.temporary.name)
-        self.binary = self.root / "fake-provider"
-        self.binary.write_text(textwrap.dedent(FAKE_PROVIDER))
-        self.binary.chmod(self.binary.stat().st_mode | stat.S_IXUSR)
+        self.script = self.root / "fake_provider.py"
+        self.script.write_text(textwrap.dedent(FAKE_PROVIDER))
+        self.binary = Path(sys.executable)
+        self.arguments = (str(self.script),)
         self.repository = self.root / "repo"
         self.cache = self.root / "cache"
         self.repository.mkdir()
@@ -103,7 +104,7 @@ class ProviderTransportTests(unittest.TestCase):
         os.environ["ATLAS_FAKE_PROVIDER_BEHAVIOR"] = behavior
         return CodebaseMemoryMcpTransport(
             self.binary, self.repository, self.cache, exclusive=False, client_version="test",
-            observer=observer,
+            observer=observer, arguments=self.arguments,
         )
 
     @staticmethod
@@ -195,7 +196,7 @@ class ProviderTransportTests(unittest.TestCase):
         lock = BusyLock()
         transport = CodebaseMemoryMcpTransport(
             self.binary, self.repository, self.cache, exclusive=True,
-            client_version="test", lock=lock,
+            client_version="test", lock=lock, arguments=self.arguments,
         )
         with self.assertRaisesRegex(TimeoutError, "busy"):
             transport.start_for_request(

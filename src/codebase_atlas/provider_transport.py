@@ -68,8 +68,10 @@ class CodebaseMemoryMcpTransport:
         client_version: str,
         lock: GlobalCbmLock | None = None,
         observer: Callable[[dict[str, Any]], None] | None = None,
+        arguments: tuple[str, ...] = (),
     ) -> None:
         self.binary = binary.resolve()
+        self.arguments = tuple(arguments)
         self.repository = repository.resolve()
         self.cache_dir = cache_dir.resolve()
         self.exclusive = exclusive
@@ -209,7 +211,7 @@ class CodebaseMemoryMcpTransport:
             try:
                 environment = provider_environment(self.cache_dir, self.repository)
                 process = subprocess.Popen(
-                    [str(self.binary)], cwd=self.repository, env=environment,
+                    [str(self.binary), *self.arguments], cwd=self.repository, env=environment,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     bufsize=0,
                 )
