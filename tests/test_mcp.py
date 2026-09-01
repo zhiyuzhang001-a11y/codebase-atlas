@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import StringIO
 import json
+from pathlib import Path
 import unittest
 
 from codebase_atlas.contracts import Node, SourceRange
@@ -12,11 +13,26 @@ from codebase_atlas.service import QueryResponse
 class FakeService:
     def __init__(self):
         self.last_request = None
+        self.repository = Path("/repo")
+        self.last_locate = None
 
     def query(self, request):
         self.last_request = request
         node = Node("n", "test", request.symbol, SourceRange("tests/x.ts", 1, 1), "fake", 1.0, "d" * 64)
         return QueryResponse(request.query_type, (node,), ())
+
+    def locate_files(self, intent, **budget):
+        self.last_locate = (intent, budget)
+        return {
+            "status": "ok",
+            "files": [{"path": "src/target.py", "rank": -10.5, "evidence_count": 2}],
+            "matched_terms": ["target"],
+            "budget": {
+                "provider_queries": 1,
+                "max_internal_rows": budget["max_internal_rows"],
+                "max_files": budget["max_files"],
+            },
+        }
 
 
 class McpTests(unittest.TestCase):
@@ -33,7 +49,7 @@ class McpTests(unittest.TestCase):
         self.assertEqual(
             [tool["name"] for tool in listed["result"]["tools"]],
             [
-                "project_status", "definition", "references", "callers", "callees",
+                "project_status", "locate_files", "definition", "references", "callers", "callees",
                 "related_tests", "impact", "analyze_change",
             ],
         )
@@ -48,6 +64,52 @@ class McpTests(unittest.TestCase):
         self.assertEqual(schemas["references"]["continuation"]["maxLength"], 512)
         self.assertNotIn("continuation", schemas["definition"])
         self.assertIn("fix_bug", schemas["analyze_change"]["intent"]["enum"])
+        self.assertEqual(schemas["locate_files"]["max_files"]["maximum"], 2)
+        self.assertEqual(schemas["locate_files"]["max_internal_rows"]["maximum"], 60)
+
+    def test_locate_files_returns_bounded_heuristic_contract(self) -> None:
+        server = McpServer(
+            self.service,
+            {"status": "fresh", "ok": True, "reason": "", "identity": {"repository": "/repo"}},
+            "warn",
+        )
+        response = server.handle({
+            "jsonrpc": "2.0", "id": 30, "method": "tools/call",
+            "params": {
+                "name": "locate_files",
+                "arguments": {"intent": "target behavior", "max_files": 2, "max_internal_rows": 40},
+            },
+        })
+        result = response["result"]["structuredContent"]
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["repository"], "/repo")
+        self.assertTrue(result["heuristic"])
+        self.assertTrue(result["non_exhaustive"])
+        self.assertEqual([item["path"] for item in result["files"]], ["src/target.py"])
+        self.assertNotIn("symbol", result)
+        self.assertNotIn("callable", result)
+        self.assertEqual(self.service.last_locate[1]["max_internal_rows"], 40)
+
+    def test_locate_files_refuses_stale_index_without_provider_query(self) -> None:
+        server = McpServer(
+            self.service,
+            {
+                "status": "stale", "ok": False, "reason": "repository_changed",
+                "identity": {"repository": "/repo"},
+            },
+            "warn",
+        )
+        response = server.handle({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": {"name": "locate_files", "arguments": {"intent": "target"}},
+        })
+        result = response["result"]["structuredContent"]
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(result["status"], "stale")
+        self.assertEqual(result["files"], [])
+        self.assertEqual(result["budget"]["provider_queries"], 0)
+        self.assertIsNone(self.service.last_locate)
 
     def test_project_status_needs_no_symbol(self) -> None:
         status = {"status": "fresh", "ok": True, "identity": {"repository": "/repo"}}

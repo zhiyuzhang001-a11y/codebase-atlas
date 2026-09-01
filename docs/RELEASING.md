@@ -18,11 +18,12 @@ Codebase Atlas releases from its public GitHub repository under Apache License
 ## Release
 
 ```bash
+VERSION=0.22.0
 python scripts/verify_release.py
 git push origin main
 # Wait for all 12 OS/Python jobs and package-lifecycle on this exact SHA.
-git tag -a v0.21.0 -m "Codebase Atlas 0.21.0"
-git push origin v0.21.0
+git tag -a "v${VERSION}" -m "Codebase Atlas ${VERSION}"
+git push origin "v${VERSION}"
 ```
 
 The tag workflow rebuilds the wheel, rejects version/tag or packaged-asset
@@ -32,8 +33,9 @@ does not publish to PyPI. Download the final candidate's
 all of its files to the draft:
 
 ```bash
+VERSION=0.22.0
 python scripts/verify_managed_provider_bundles.py provider-assets
-gh release upload v0.21.0 provider-assets/*
+gh release upload "v${VERSION}" provider-assets/*
 ```
 
 From the draft assets, verify the wheel checksum and install it into a new
@@ -43,7 +45,8 @@ verify its adjacent checksum and embedded manifest/binary digest, then run
 after this exact public-download candidate passes:
 
 ```bash
-gh release edit v0.21.0 --draft=false --latest
+VERSION=0.22.0
+gh release edit "v${VERSION}" --draft=false --prerelease=false --latest
 ```
 Release builds set a fixed `SOURCE_DATE_EPOCH`; rebuilding identical tagged
 source therefore produces identical wheel bytes and SHA-256.
@@ -53,9 +56,10 @@ sdist is produced for local verification, normalize two independent builds and
 compare them before distribution:
 
 ```bash
-python scripts/normalize_sdist.py dist-a/codebase_atlas-0.21.0.tar.gz \
+VERSION=0.22.0
+python scripts/normalize_sdist.py "dist-a/codebase_atlas-${VERSION}.tar.gz" \
   normalized-a.tar.gz --epoch "$SOURCE_DATE_EPOCH"
-python scripts/normalize_sdist.py dist-b/codebase_atlas-0.21.0.tar.gz \
+python scripts/normalize_sdist.py "dist-b/codebase_atlas-${VERSION}.tar.gz" \
   normalized-b.tar.gz --epoch "$SOURCE_DATE_EPOCH"
 cmp normalized-a.tar.gz normalized-b.tar.gz
 ```

@@ -46,6 +46,7 @@ from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
 from .provider_layout import provider_environment
+from .provider_transport import CodebaseMemoryMcpTransport
 from .provider_migration import (
     plan_provider_migration,
     prepare_shared_provider_root,
@@ -1004,15 +1005,25 @@ def main(argv: list[str] | None = None) -> int:
                     args.stale_policy,
                 ), ensure_ascii=False, indent=2))
                 return 3
-        lifecycle = _provider_lifecycle(
-            args.binary, args.repo, args.cache_dir,
-            getattr(args, "provider_layout", "legacy-project-v0"),
+        provider_layout = getattr(args, "provider_layout", "legacy-project-v0")
+        transport = (
+            CodebaseMemoryMcpTransport(
+                args.binary, args.repo, args.cache_dir,
+                exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
+                client_version=__version__,
+            )
+            if args.command == "mcp"
+            else None
+        )
+        lifecycle = transport or _provider_lifecycle(
+            args.binary, args.repo, args.cache_dir, provider_layout,
         )
         structural = CodebaseMemoryImpactProvider(
             args.binary,
             args.repo,
             args.cache_dir,
             args.project,
+            transport=transport,
         )
         registration_index = None
         if args.language == "python" and getattr(args, "data_dir", None) is not None:

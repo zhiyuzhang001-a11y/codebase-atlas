@@ -4,6 +4,22 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.22.0 — 2026-09-01
+
+- Add bounded `locate_files` retrieval that returns at most two heuristic,
+  repository-relative source candidates from the existing structural index;
+  results remain explicitly non-exhaustive and never claim an exact callable.
+- Keep one repository-bound managed Provider MCP transport alive across Atlas
+  calls, with serialized request handling, deterministic shutdown and contained
+  process cleanup.
+- Separate the two-second global lock-admission budget from the longer cold
+  Provider startup and MCP initialization budget, while preserving bounded warm
+  calls and explicit `provider_busy` behavior.
+- Pass independent 16-task acceptance at 13/16 Top 2 with 98.703% median
+  repository-reading reduction, 18.403 ms warm P95 and 411.531 MiB peak RSS.
+- Pin reproducible managed Provider bundles to exact source commit `e088a41b`
+  and managed version `0.10.8-atlas.2+e088a41b` for all six release targets.
+
 ## 0.21.0 — 2026-08-29
 
 - Add fail-closed `mcp-auto` discovery from the MCP startup directory to the
