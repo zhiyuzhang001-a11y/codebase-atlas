@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -10,6 +13,7 @@ import unittest
 from codebase_atlas.lifecycle import (
     CodebaseMemoryDaemon,
     GlobalCbmLock,
+    ProjectRefreshLease,
     SharedCodebaseMemorySession,
 )
 from codebase_atlas.cli import _provider_lifecycle
@@ -41,6 +45,86 @@ class FakeRunner:
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_project_refresh_lease_is_nonblocking_and_project_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            data = Path(raw) / "data"
+            repository = Path(raw) / "repo"
+            repository.mkdir()
+            first = ProjectRefreshLease(data, repository, "project-a")
+            duplicate = ProjectRefreshLease(data, repository, "project-a")
+            other = ProjectRefreshLease(data, repository, "project-b")
+            self.assertTrue(first.acquire())
+            try:
+                self.assertFalse(duplicate.acquire())
+                self.assertTrue(other.acquire())
+            finally:
+                first.release()
+                other.release()
+            self.assertTrue(duplicate.acquire())
+            duplicate.release()
+
+    def test_project_refresh_lease_rejects_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            lease = ProjectRefreshLease(root / "data", repository, "project")
+            lease.path.parent.mkdir(parents=True)
+            target = root / "foreign"
+            target.write_text("foreign")
+            try:
+                lease.path.symlink_to(target)
+            except OSError:
+                self.skipTest("symlinks are unavailable")
+            with self.assertRaises(OSError):
+                lease.acquire()
+
+    def test_four_processes_have_exactly_one_project_refresh_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            data = root / "data"
+            start = root / "start"
+            program = (
+                "import sys,time\n"
+                "from pathlib import Path\n"
+                "from codebase_atlas.lifecycle import ProjectRefreshLease\n"
+                "start=Path(sys.argv[1])\n"
+                "while not start.exists(): time.sleep(0.005)\n"
+                "lease=ProjectRefreshLease(Path(sys.argv[2]),Path(sys.argv[3]),'project')\n"
+                "owned=lease.acquire()\n"
+                "print('owner' if owned else 'non_owner',flush=True)\n"
+                "time.sleep(0.5 if owned else 0.0)\n"
+                "lease.release()\n"
+            )
+            environment = dict(os.environ)
+            source = str(Path(__file__).parents[1] / "src")
+            environment["PYTHONPATH"] = source + os.pathsep + environment.get("PYTHONPATH", "")
+            processes = [
+                subprocess.Popen(
+                    [sys.executable, "-c", program, str(start), str(data), str(repository)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                )
+                for _ in range(4)
+            ]
+            start.write_text("go")
+            outputs = []
+            try:
+                for process in processes:
+                    stdout, stderr = process.communicate(timeout=5.0)
+                    self.assertEqual(process.returncode, 0, stderr)
+                    outputs.append(stdout.strip())
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+            self.assertEqual(outputs.count("owner"), 1, outputs)
+            self.assertEqual(outputs.count("non_owner"), 3, outputs)
+
     def test_starts_and_stops_only_owned_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             runner = FakeRunner(False)

@@ -1,10 +1,11 @@
-"""Minimal read-only MCP stdio interface over AtlasService."""
+"""Minimal MCP stdio interface over AtlasService and explicit refresh."""
 
 from __future__ import annotations
 
 from dataclasses import asdict
 import json
 import sys
+from contextlib import nullcontext
 from typing import Any, TextIO
 
 from . import __version__
@@ -48,6 +49,8 @@ def _tool_result(
     structured = attach_operational_status(
         _structured(response), index_status, stale_policy
     )
+    if index_status is not None and index_status.get("generation_id"):
+        structured["generation_id"] = index_status["generation_id"]
     return {
         "content": [{"type": "text", "text": json.dumps(structured, ensure_ascii=False)}],
         "structuredContent": structured,
@@ -114,6 +117,36 @@ TOOLS = [
             "type": "object", "properties": {}, "additionalProperties": False
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
+    {
+        "name": "plan_refresh",
+        "title": "Plan an exact index refresh",
+        "description": "Read-only exact dirty-set plan for this active repository.",
+        "inputSchema": {
+            "type": "object", "properties": {}, "additionalProperties": False
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False},
+    },
+    {
+        "name": "refresh_index",
+        "title": "Refresh the active Atlas generation",
+        "description": (
+            "Refresh this exact repository through the Provider connection already "
+            "owned by the active MCP, then publish one validated generation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string", "enum": ["fast", "moderate", "full"], "default": "fast"
+                },
+                "timeout_ms": {
+                    "type": "integer", "minimum": 1, "maximum": 300000, "default": 300000
+                },
+            },
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False},
     },
     {
         "name": "locate_files",
@@ -270,12 +303,14 @@ class McpServer:
         stale_policy: str = "ignore",
         instructions: str = "",
         version_notifier: VersionNotifier | None = None,
+        refresh_coordinator: Any | None = None,
     ) -> None:
         self.service = service
         self.index_status = index_status
         self.stale_policy = stale_policy
         self.instructions = instructions
         self.version_notifier = version_notifier
+        self.refresh_coordinator = refresh_coordinator
 
     @staticmethod
     def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -321,7 +356,15 @@ class McpServer:
             if self.version_notifier is not None and self.index_status is not None:
                 self.index_status["software_update"] = self.version_notifier.current()
             if name == "project_status":
-                status = dict(self.index_status or {"status": "unknown", "ok": True})
+                status_context = (
+                    self.refresh_coordinator.query_snapshot(timeout_ms=2000)
+                    if self.refresh_coordinator is not None
+                    else nullcontext(dict(
+                        self.index_status or {"status": "unknown", "ok": True}
+                    ))
+                )
+                with status_context as status:
+                    status = dict(status)
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -331,6 +374,38 @@ class McpServer:
                         "isError": False,
                     },
                 }
+            if name in {"plan_refresh", "refresh_index"} and self.refresh_coordinator is not None:
+                allowed = set() if name == "plan_refresh" else {"mode", "timeout_ms"}
+                unexpected = sorted(set(arguments) - allowed)
+                if unexpected:
+                    raise ValueError(f"unexpected refresh arguments: {', '.join(unexpected)}")
+                payload = (
+                    self.refresh_coordinator.plan()
+                    if name == "plan_refresh"
+                    else self.refresh_coordinator.refresh(
+                        mode=arguments.get("mode", "fast"),
+                        timeout_ms=arguments.get("timeout_ms", 300_000),
+                    )
+                )
+                failed = payload.get("status") in {
+                    "failed", "refresh_in_progress", "refresh_owned_elsewhere"
+                }
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps(payload, ensure_ascii=False),
+                        }],
+                        "structuredContent": payload,
+                        "isError": failed,
+                    },
+                }
+            if name in {"plan_refresh", "refresh_index"}:
+                raise RuntimeError(
+                    "refresh is unavailable without an exact project configuration"
+                )
             if self.service is None:
                 if name == "locate_files":
                     unavailable = dict(self.index_status or {})
@@ -377,48 +452,59 @@ class McpServer:
                     },
                 }
             if name == "locate_files":
-                status = self.index_status or {"status": "unknown", "ok": True, "reason": ""}
-                identity = status.get("identity", {})
-                repository_value = identity.get("repository") if isinstance(identity, dict) else None
-                repository = str(repository_value or getattr(self.service, "repository", "") or "")
-                freshness = {
-                    "status": str(status.get("status", "unknown")),
-                    "ok": bool(status.get("ok", True)),
-                    "reason": str(status.get("reason", "")),
-                }
-                if not repository:
-                    payload = _locate_payload(
-                        status="error", repository="", freshness=freshness,
-                        message="Exact repository identity is unavailable.",
+                snapshot_context = (
+                    self.refresh_coordinator.query_snapshot(
+                        timeout_ms=arguments.get("timeout_ms", 30_000)
                     )
-                elif not freshness["ok"]:
-                    payload = _locate_payload(
-                        status="stale", repository=repository, freshness=freshness,
-                        message="The index is not current; update it before locating files.",
+                    if self.refresh_coordinator is not None
+                    else nullcontext(
+                        self.index_status
+                        or {"status": "unknown", "ok": True, "reason": ""}
                     )
-                else:
-                    intent = arguments.get("intent")
-                    result = self.service.locate_files(
-                        intent,
-                        max_files=arguments.get("max_files", 2),
-                        max_internal_rows=arguments.get("max_internal_rows", 60),
-                        timeout_ms=arguments.get("timeout_ms", 30_000),
-                    )
-                    payload = _locate_payload(
-                        status=str(result["status"]),
-                        repository=repository,
-                        freshness=freshness,
-                        files=result["files"],
-                        matched_terms=result["matched_terms"],
-                        budget=result["budget"],
-                    )
+                )
+                with snapshot_context as status:
+                    identity = status.get("identity", {})
+                    repository_value = identity.get("repository") if isinstance(identity, dict) else None
+                    repository = str(repository_value or getattr(self.service, "repository", "") or "")
+                    freshness = {
+                        "status": str(status.get("status", "unknown")),
+                        "ok": bool(status.get("ok", True)),
+                        "reason": str(status.get("reason", "")),
+                    }
+                    if not repository:
+                        payload = _locate_payload(
+                            status="error", repository="", freshness=freshness,
+                            message="Exact repository identity is unavailable.",
+                        )
+                    elif not freshness["ok"]:
+                        payload = _locate_payload(
+                            status="stale", repository=repository, freshness=freshness,
+                            message="The index is not current; refresh it before locating files.",
+                        )
+                    else:
+                        intent = arguments.get("intent")
+                        result = self.service.locate_files(
+                            intent,
+                            max_files=arguments.get("max_files", 2),
+                            max_internal_rows=arguments.get("max_internal_rows", 60),
+                            timeout_ms=arguments.get("timeout_ms", 30_000),
+                        )
+                        payload = _locate_payload(
+                            status=str(result["status"]),
+                            repository=repository,
+                            freshness=freshness,
+                            files=result["files"],
+                            matched_terms=result["matched_terms"],
+                            budget=result["budget"],
+                        )
                 return {"jsonrpc": "2.0", "id": request_id, "result": _locate_tool_result(payload)}
 
-            policy_error = stale_policy_error(
-                self.index_status or {"ok": True}, self.stale_policy
-            )
-            if policy_error:
-                raise RuntimeError(policy_error)
+            if self.refresh_coordinator is None:
+                policy_error = stale_policy_error(
+                    self.index_status or {"ok": True}, self.stale_policy
+                )
+                if policy_error:
+                    raise RuntimeError(policy_error)
             symbol = arguments.get("symbol")
             if not isinstance(symbol, str) or not symbol:
                 raise ValueError("symbol must be a non-empty string")
@@ -495,15 +581,30 @@ class McpServer:
                 )
             else:
                 return self._error(request_id, -32602, f"Unknown tool: {name}")
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": _tool_result(
-                    self.service.query(request),
-                    self.index_status,
-                    self.stale_policy,
-                ),
-            }
+            snapshot_context = (
+                self.refresh_coordinator.query_snapshot(
+                    timeout_ms=arguments.get("timeout_ms", 30_000)
+                )
+                if self.refresh_coordinator is not None
+                else nullcontext(
+                    dict(self.index_status) if self.index_status is not None else None
+                )
+            )
+            with snapshot_context as query_status:
+                policy_error = stale_policy_error(
+                    query_status or {"ok": True}, self.stale_policy
+                )
+                if policy_error:
+                    raise RuntimeError(policy_error)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": _tool_result(
+                        self.service.query(request),
+                        query_status,
+                        self.stale_policy,
+                    ),
+                }
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             if name == "locate_files":
                 status = self.index_status or {"status": "unknown", "ok": True, "reason": ""}

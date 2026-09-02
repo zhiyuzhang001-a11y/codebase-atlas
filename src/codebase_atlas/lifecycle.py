@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 import time
@@ -82,6 +85,128 @@ class GlobalCbmLock:
 
     def __enter__(self) -> "GlobalCbmLock":
         self.acquire()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.release()
+
+
+class ProjectRefreshLease:
+    """Nonblocking cross-process writer lease for one exact Atlas project."""
+
+    def __init__(self, data_dir: Path, repository: Path, project: str) -> None:
+        identity = hashlib.sha256(
+            f"{repository.resolve()}\0{project}".encode("utf-8")
+        ).hexdigest()[:24]
+        self.path = data_dir.resolve() / f"refresh-{identity}.lock"
+        self.repository = repository.resolve()
+        self.project = project
+        self._handle = None
+
+    def acquire(self) -> bool:
+        if self._handle is not None:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(
+            self.path,
+            os.O_RDWR | os.O_CREAT | nofollow,
+            0o600,
+        )
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        try:
+            opened = os.fstat(descriptor)
+            literal = os.lstat(self.path)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(literal.st_mode)
+                or (opened.st_dev, opened.st_ino) != (literal.st_dev, literal.st_ino)
+            ):
+                raise ValueError("refresh lease is not a safe regular file")
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:  # pragma: no cover - Windows only
+                    if opened.st_size == 0:
+                        handle.write(b"\0")
+                    handle.seek(0)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except (BlockingIOError, OSError):
+                handle.close()
+                return False
+            payload = json.dumps({
+                "schema_version": 1,
+                "pid": os.getpid(),
+                "repository": str(self.repository),
+                "project": self.project,
+            }, sort_keys=True).encode("utf-8")
+            handle.seek(0)
+            handle.truncate()
+            handle.write(payload)
+            os.fsync(descriptor)
+            self._handle = handle
+            return True
+        except BaseException:
+            handle.close()
+            raise
+
+    def acquire_shared(self, *, timeout_seconds: float = 30.0) -> bool:
+        """Acquire a reader lease; Windows conservatively serializes readers."""
+        if self._handle is not None:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(
+            self.path, os.O_RDWR | os.O_CREAT | nofollow, 0o600
+        )
+        handle = os.fdopen(descriptor, "r+b", buffering=0)
+        try:
+            opened = os.fstat(descriptor)
+            literal = os.lstat(self.path)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(literal.st_mode)
+                or (opened.st_dev, opened.st_ino) != (literal.st_dev, literal.st_ino)
+            ):
+                raise ValueError("refresh lease is not a safe regular file")
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    else:  # pragma: no cover - Windows only
+                        if opened.st_size == 0:
+                            handle.write(b"\0")
+                        handle.seek(0)
+                        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    self._handle = handle
+                    return True
+                except (BlockingIOError, OSError):
+                    if time.monotonic() >= deadline:
+                        handle.close()
+                        return False
+                    time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+        except BaseException:
+            handle.close()
+            raise
+
+    def release(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            else:  # pragma: no cover - Windows only
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+            self._handle = None
+
+    def __enter__(self) -> "ProjectRefreshLease":
+        if not self.acquire():
+            raise TimeoutError("refresh is owned by another Atlas process")
         return self
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:

@@ -33,6 +33,21 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.23.0 explicit in-process refresh
+
+- [x] Pass manifest/dirty planning, same-MCP refresh, transaction recovery,
+  generation consistency, concurrency and cross-project isolation gates.
+- [x] Reject and remove the optional polling watcher after corrected idle CPU
+  measurement exceeded its frozen resource limit.
+- [x] Pass real Provider no-op, 1/5/10-file, rename/delete, clean-oracle and
+  failure rollback validation for the explicit refresh route.
+- [x] Teach the project rule to refresh after a batch of source changes and
+  before the next Atlas query without asking the user to remember a command.
+- [x] Pass the full local suite, byte-identical wheel construction, wheel
+  content verification and public-readiness checks.
+- [ ] Pass all remote CI jobs, publish and reverify stable `v0.23.0`, install it
+  side by side and complete the exact PDF-project deployment.
+
 ## 0.22.0 bounded file narrowing candidate
 
 - [x] The frozen Atlas and Provider patches passed independent development,

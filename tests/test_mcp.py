@@ -35,6 +35,19 @@ class FakeService:
         }
 
 
+class FakeRefreshCoordinator:
+    def __init__(self):
+        self.calls = []
+
+    def plan(self):
+        self.calls.append(("plan", {}))
+        return {"status": "planned", "dirty_paths": ["sample.py"]}
+
+    def refresh(self, **arguments):
+        self.calls.append(("refresh", arguments))
+        return {"status": "refreshed", "generation_after": "g2"}
+
+
 class McpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = FakeService()
@@ -49,11 +62,16 @@ class McpTests(unittest.TestCase):
         self.assertEqual(
             [tool["name"] for tool in listed["result"]["tools"]],
             [
-                "project_status", "locate_files", "definition", "references", "callers", "callees",
+                "project_status", "plan_refresh", "refresh_index", "locate_files",
+                "definition", "references", "callers", "callees",
                 "related_tests", "impact", "analyze_change",
             ],
         )
-        self.assertTrue(all(tool["annotations"]["readOnlyHint"] for tool in listed["result"]["tools"]))
+        self.assertTrue(all(
+            tool["annotations"]["readOnlyHint"]
+            for tool in listed["result"]["tools"]
+            if tool["name"] != "refresh_index"
+        ))
         schemas = {
             tool["name"]: tool["inputSchema"]["properties"]
             for tool in listed["result"]["tools"]
@@ -66,6 +84,30 @@ class McpTests(unittest.TestCase):
         self.assertIn("fix_bug", schemas["analyze_change"]["intent"]["enum"])
         self.assertEqual(schemas["locate_files"]["max_files"]["maximum"], 2)
         self.assertEqual(schemas["locate_files"]["max_internal_rows"]["maximum"], 60)
+        refresh = next(tool for tool in listed["result"]["tools"] if tool["name"] == "refresh_index")
+        self.assertFalse(refresh["annotations"]["readOnlyHint"])
+        self.assertEqual(refresh["inputSchema"]["properties"]["timeout_ms"]["maximum"], 300000)
+
+    def test_plan_and_refresh_route_to_injected_coordinator(self) -> None:
+        coordinator = FakeRefreshCoordinator()
+        server = McpServer(self.service, refresh_coordinator=coordinator)
+        planned = server.handle({
+            "jsonrpc": "2.0", "id": 20, "method": "tools/call",
+            "params": {"name": "plan_refresh", "arguments": {}},
+        })
+        refreshed = server.handle({
+            "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+            "params": {
+                "name": "refresh_index",
+                "arguments": {"mode": "moderate", "timeout_ms": 1234},
+            },
+        })
+        self.assertEqual(planned["result"]["structuredContent"]["dirty_paths"], ["sample.py"])
+        self.assertEqual(refreshed["result"]["structuredContent"]["generation_after"], "g2")
+        self.assertEqual(
+            coordinator.calls,
+            [("plan", {}), ("refresh", {"mode": "moderate", "timeout_ms": 1234})],
+        )
 
     def test_locate_files_returns_bounded_heuristic_contract(self) -> None:
         server = McpServer(
@@ -130,6 +172,20 @@ class McpTests(unittest.TestCase):
         self.assertEqual(
             response["result"]["structuredContent"]["identity"]["repository"],
             "/repo",
+        )
+
+    def test_query_response_binds_snapshot_generation_id(self) -> None:
+        server = McpServer(
+            self.service,
+            {"status": "fresh", "ok": True, "generation_id": "generation-7"},
+        )
+        response = server.handle({
+            "jsonrpc": "2.0", "id": 22, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "target"}},
+        })
+        self.assertEqual(
+            response["result"]["structuredContent"]["generation_id"],
+            "generation-7",
         )
 
     def test_unavailable_project_keeps_status_and_refuses_queries(self) -> None:

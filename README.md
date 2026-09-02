@@ -2,8 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.22.1**, adding Git-aware Python source inventories,
-bounded heuristic file narrowing and a persistent managed Provider transport
+Current stable release: **0.23.0**, adding explicit same-MCP transactional
+index refresh to Git-aware Python source inventories, bounded heuristic file
+narrowing and a persistent managed Provider transport
 while retaining fail-closed automatic
 Codex project discovery, safe migration from a fixed global Atlas registration,
 bounded session-start index freshness, notify-only software update awareness, a
@@ -44,6 +45,9 @@ query budgets, index freshness, and product interfaces.
   two repository-relative source candidates and requires follow-up reading;
 - persistent repository-bound managed Provider sessions with separate bounded
   lock-admission and cold-start initialization timeouts;
+- explicit same-MCP `plan_refresh` and `refresh_index` operations with exact
+  dirty manifests, generation-bound queries, cross-process project leases and
+  previous-generation recovery on refresh failure;
 - dry-run-first Codex MCP registration that refuses to overwrite or remove a
   different existing entry, plus automatic cwd-based project discovery, a
   project-scoped managed block, exact active-project status, bounded

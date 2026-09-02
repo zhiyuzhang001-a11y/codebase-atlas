@@ -226,6 +226,20 @@ class AtlasService:
             self._continuation_secret = None
             self.started = False
 
+    def activate_generation(self, registration_index: RegistrationIndex | None) -> None:
+        """Switch generation-bound in-memory state after durable publication."""
+        self.registration_index = registration_index
+        self._python_reference_cache.clear()
+        self._python_complete_reference_cache.clear()
+        self._python_caller_cache.clear()
+        self._clear_ts_continuations()
+        self._structural_unavailable_reason = ""
+
+    def mark_structural_started(self) -> None:
+        """Record that an injected coordinator started this service's lifecycle."""
+        self._structural_started = True
+        self._structural_unavailable_reason = ""
+
     def locate_files(
         self,
         intent: str,
