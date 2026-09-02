@@ -76,7 +76,9 @@ class LifecycleTests(unittest.TestCase):
                 lease.path.symlink_to(target)
             except OSError:
                 self.skipTest("symlinks are unavailable")
-            with self.assertRaises(OSError):
+            # POSIX O_NOFOLLOW rejects during open; Windows opens the target and
+            # the subsequent file-identity check rejects it with ValueError.
+            with self.assertRaises((OSError, ValueError)):
                 lease.acquire()
 
     def test_four_processes_have_exactly_one_project_refresh_owner(self) -> None:
