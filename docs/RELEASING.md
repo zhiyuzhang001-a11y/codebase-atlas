@@ -18,7 +18,7 @@ Codebase Atlas releases from its public GitHub repository under Apache License
 ## Release
 
 ```bash
-VERSION=0.22.1
+VERSION=0.23.0
 python scripts/verify_release.py
 git push origin main
 # Wait for all 12 OS/Python jobs and package-lifecycle on this exact SHA.
@@ -33,7 +33,7 @@ does not publish to PyPI. Download the final candidate's
 all of its files to the draft:
 
 ```bash
-VERSION=0.22.1
+VERSION=0.23.0
 python scripts/verify_managed_provider_bundles.py provider-assets
 gh release upload "v${VERSION}" provider-assets/*
 ```
@@ -45,7 +45,7 @@ verify its adjacent checksum and embedded manifest/binary digest, then run
 after this exact public-download candidate passes:
 
 ```bash
-VERSION=0.22.1
+VERSION=0.23.0
 gh release edit "v${VERSION}" --draft=false --prerelease=false --latest
 ```
 Release builds set a fixed `SOURCE_DATE_EPOCH`; rebuilding identical tagged
@@ -56,7 +56,7 @@ sdist is produced for local verification, normalize two independent builds and
 compare them before distribution:
 
 ```bash
-VERSION=0.22.1
+VERSION=0.23.0
 python scripts/normalize_sdist.py "dist-a/codebase_atlas-${VERSION}.tar.gz" \
   normalized-a.tar.gz --epoch "$SOURCE_DATE_EPOCH"
 python scripts/normalize_sdist.py "dist-b/codebase_atlas-${VERSION}.tar.gz" \

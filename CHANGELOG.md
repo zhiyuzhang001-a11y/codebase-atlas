@@ -4,6 +4,22 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.23.0 — 2026-09-02
+
+- Add read-only exact dirty planning and an explicit same-MCP refresh operation
+  so long-running tasks can refresh without a new task or a self-owned Provider
+  lock conflict.
+- Publish Provider database, Python registration sidecar, generation manifest
+  and index state as one validated transaction, restoring the previous
+  generation after failures, timeouts and cancellation.
+- Bind queries to one project generation and coordinate concurrent readers and
+  refresh writers across Atlas processes while preserving cross-project
+  isolation.
+- Keep automatic repository watching out of this release after its corrected
+  process-tree idle CPU measurement exceeded the frozen resource gate.
+- Update the Codex project rule to refresh once after a batch of source changes
+  and before the next Atlas query, without requiring a user reminder.
+
 ## 0.22.1 — 2026-09-01
 
 - Bound Atlas-owned Python registration and exact-reference inventories to the

@@ -8,7 +8,12 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
-from codebase_atlas.codex_integration import codex_apply, codex_plan, codex_remove
+from codebase_atlas.codex_integration import (
+    PROJECT_RULE,
+    codex_apply,
+    codex_plan,
+    codex_remove,
+)
 
 
 class FakeRunner:
@@ -45,6 +50,11 @@ class FakeRunner:
 
 
 class CodexIntegrationTests(unittest.TestCase):
+    def test_project_rule_requires_on_demand_refresh_without_user_prompt(self) -> None:
+        self.assertIn("After creating, modifying, renaming, or deleting", PROJECT_RULE)
+        self.assertIn("call plan_refresh and then refresh_index", PROJECT_RULE)
+        self.assertIn("without asking the user", PROJECT_RULE)
+
     def paths(self, root: Path):
         config = root / ".codebase-atlas.toml"
         config.write_text("schema_version = 1\n")

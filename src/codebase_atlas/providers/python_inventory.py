@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+from collections.abc import Collection
 
 
 EXCLUDED_PARTS = {
@@ -22,9 +23,19 @@ def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     )
 
 
-def _regular_python(repository: Path, relative: str) -> Path | None:
+class SourceInventoryError(ValueError):
+    """A candidate source path cannot be safely bounded to the repository."""
+
+
+def _regular_source(
+    repository: Path,
+    relative: str,
+    extensions: Collection[str],
+    *,
+    reject_unsafe: bool,
+) -> Path | None:
     candidate = Path(relative)
-    if candidate.is_absolute() or ".." in candidate.parts or candidate.suffix != ".py":
+    if candidate.is_absolute() or ".." in candidate.parts or candidate.suffix not in extensions:
         return None
     path = repository / candidate
     try:
@@ -32,14 +43,21 @@ def _regular_python(repository: Path, relative: str) -> Path | None:
         resolved = path.resolve(strict=True)
     except OSError:
         return None
-    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+    if path.is_symlink() or not resolved.is_relative_to(repository):
+        if reject_unsafe:
+            raise SourceInventoryError(f"source path escapes repository boundary: {candidate.as_posix()}")
         return None
-    if not resolved.is_relative_to(repository):
+    if not stat.S_ISREG(metadata.st_mode):
         return None
     return resolved
 
 
-def _git_python_files(repository: Path) -> tuple[Path, ...] | None:
+def _git_source_files(
+    repository: Path,
+    extensions: Collection[str],
+    *,
+    reject_unsafe: bool,
+) -> tuple[Path, ...] | None:
     top = _git(repository, "rev-parse", "--show-toplevel")
     if top.returncode != 0:
         return None
@@ -56,7 +74,7 @@ def _git_python_files(repository: Path) -> tuple[Path, ...] | None:
         "--exclude-standard",
         "-z",
         "--",
-        "*.py",
+        *(f"*{extension}" for extension in sorted(extensions)),
     )
     if listed.returncode != 0:
         raise RuntimeError("Git Python source inventory failed")
@@ -64,12 +82,24 @@ def _git_python_files(repository: Path) -> tuple[Path, ...] | None:
         path
         for raw in listed.stdout.split(b"\0")
         if raw
-        if (path := _regular_python(repository, os.fsdecode(raw))) is not None
+        if (
+            path := _regular_source(
+                repository,
+                os.fsdecode(raw),
+                extensions,
+                reject_unsafe=reject_unsafe,
+            )
+        ) is not None
     }
     return tuple(sorted(paths))
 
 
-def _fallback_python_files(repository: Path) -> tuple[Path, ...]:
+def _fallback_source_files(
+    repository: Path,
+    extensions: Collection[str],
+    *,
+    reject_unsafe: bool,
+) -> tuple[Path, ...]:
     files: list[Path] = []
     for raw_directory, raw_subdirectories, raw_files in os.walk(
         repository, followlinks=False
@@ -81,14 +111,34 @@ def _fallback_python_files(repository: Path) -> tuple[Path, ...]:
             and not (directory / name).is_symlink()
         )
         for name in sorted(raw_files):
-            path = _regular_python(repository, str((directory / name).relative_to(repository)))
+            path = _regular_source(
+                repository,
+                str((directory / name).relative_to(repository)),
+                extensions,
+                reject_unsafe=reject_unsafe,
+            )
             if path is not None:
                 files.append(path)
     return tuple(files)
 
 
+def supported_source_files(
+    repository: Path,
+    extensions: Collection[str],
+    *,
+    reject_unsafe: bool = False,
+) -> tuple[Path, ...]:
+    """Return exact-root supported sources, honoring standard Git ignore rules."""
+    root = repository.resolve()
+    normalized = frozenset(extensions)
+    git_files = _git_source_files(root, normalized, reject_unsafe=reject_unsafe)
+    return (
+        git_files
+        if git_files is not None
+        else _fallback_source_files(root, normalized, reject_unsafe=reject_unsafe)
+    )
+
+
 def python_source_files(repository: Path) -> tuple[Path, ...]:
     """Return exact-root Python sources, honoring standard Git ignore rules."""
-    root = repository.resolve()
-    git_files = _git_python_files(root)
-    return git_files if git_files is not None else _fallback_python_files(root)
+    return supported_source_files(repository, {".py"})

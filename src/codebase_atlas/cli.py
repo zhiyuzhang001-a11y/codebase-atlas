@@ -47,6 +47,7 @@ from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, Typ
 from .project_discovery import resolve_project
 from .provider_layout import provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
+from .refresh_coordinator import RefreshCoordinator
 from .provider_migration import (
     plan_provider_migration,
     prepare_shared_provider_root,
@@ -58,6 +59,7 @@ from .python_registration_store import (
     registration_index_health,
     stage_registration_index,
 )
+from .refresh_planner import RefreshPlanError, plan_refresh
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
 from .session_update import disabled_session_update, session_start_update
@@ -191,6 +193,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run the Provider even when Atlas source state is already current",
     )
+    refresh_plan = commands.add_parser(
+        "plan-refresh",
+        help="read-only exact dirty-set plan for a future same-process refresh",
+    )
+    refresh_plan.add_argument(
+        "--config", type=Path, default=Path.cwd() / CONFIG_NAME
+    )
     related = commands.add_parser("related-tests")
     related.add_argument("--repo", type=Path, required=True)
     related.add_argument("--symbol", required=True)
@@ -216,7 +225,9 @@ def main(argv: list[str] | None = None) -> int:
     impact.add_argument("--max-nodes", type=int, default=100)
     impact.add_argument("--max-edges", type=int, default=200)
     impact.add_argument("--timeout-ms", type=int, default=30_000)
-    mcp = commands.add_parser("mcp", help="run the read-only MCP server over stdio")
+    mcp = commands.add_parser(
+        "mcp", help="run the query and explicit-refresh MCP server over stdio"
+    )
     mcp.add_argument("--config", type=Path)
     mcp.add_argument("--repo", type=Path)
     mcp.add_argument("--node", type=Path)
@@ -457,6 +468,27 @@ def main(argv: list[str] | None = None) -> int:
         report = inspect_installation(config, deep=args.deep)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] else 2
+    if args.command == "plan-refresh":
+        config = AtlasConfig.load(args.config)
+        try:
+            result = plan_refresh(
+                config.data_dir,
+                config.repository,
+                config.project,
+                config.language,
+            )
+        except RefreshPlanError as exc:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "blocked",
+                "mode": "read_only",
+                "repository": str(config.repository),
+                "project": config.project,
+                "reason": str(exc),
+            }, ensure_ascii=False, indent=2))
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "migrate-provider":
         config = AtlasConfig.load(args.config)
         plan = plan_provider_migration(config)
@@ -980,6 +1012,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command in {"mcp", "query", "query-batch", "ui", "analyze-change"}:
+        active_config_path = args.config
+        if active_config_path is None:
+            local_config = (args.repo or Path.cwd()) / CONFIG_NAME
+            active_config_path = local_config if local_config.is_file() else None
         auto_update_status = disabled_session_update()
         if args.command == "mcp" and args.auto_update == "session-start":
             selected_config = args.config or Path.cwd() / CONFIG_NAME
@@ -1068,6 +1104,16 @@ def main(argv: list[str] | None = None) -> int:
             registration_index=registration_index,
             session_continuations=args.command in {"mcp", "query-batch", "ui"},
         )
+        refresh_coordinator = (
+            RefreshCoordinator(
+                AtlasConfig.load(active_config_path),
+                transport,
+                service,
+                args.index_status,
+            )
+            if args.command == "mcp" and transport is not None and active_config_path is not None
+            else None
+        )
         with service:
             if args.command == "mcp":
                 notifier = VersionNotifier(
@@ -1082,6 +1128,7 @@ def main(argv: list[str] | None = None) -> int:
                             f"never use it for another repository. {PROJECT_RULE}"
                         ),
                         version_notifier=notifier,
+                        refresh_coordinator=refresh_coordinator,
                     )
                 )
             elif args.command == "query":
