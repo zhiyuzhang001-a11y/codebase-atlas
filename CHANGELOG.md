@@ -4,6 +4,16 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.23.1 — 2026-09-03
+
+- Publish a new generation manifest with the shared project identity during
+  legacy-to-shared Provider migration instead of retaining the legacy identity.
+- Record the exact shared Provider database and registration sidecar identities
+  in that generation, and roll the manifest back with the other migration
+  artifacts if publication fails.
+- Add regression coverage proving a migrated Git project immediately has an
+  identity-valid generation and an empty refresh plan.
+
 ## 0.23.0 — 2026-09-02
 
 - Add read-only exact dirty planning and an explicit same-MCP refresh operation

@@ -33,6 +33,16 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.23.1 shared migration generation correction
+
+- [x] Reproduce the legacy generation identity mismatch after a successful
+  shared Provider migration.
+- [x] Publish and transactionally roll back the shared generation manifest with
+  the Provider database, registration sidecar, config and index state.
+- [x] Pass the full local suite and live two-client PDF-project acceptance.
+- [ ] Pass all remote CI jobs, publish and reverify stable `v0.23.1`, install it
+  side by side and revalidate the exact PDF project.
+
 ## 0.23.0 explicit in-process refresh
 
 - [x] Pass manifest/dirty planning, same-MCP refresh, transaction recovery,
