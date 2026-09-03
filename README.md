@@ -2,8 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.23.0**, adding explicit same-MCP transactional
-index refresh to Git-aware Python source inventories, bounded heuristic file
+Current stable release: **0.23.1**, correcting shared-Provider migration
+generation publication while retaining explicit same-MCP transactional index
+refresh, Git-aware Python source inventories, bounded heuristic file
 narrowing and a persistent managed Provider transport
 while retaining fail-closed automatic
 Codex project discovery, safe migration from a fixed global Atlas registration,
