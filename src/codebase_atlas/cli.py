@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import shlex
 import signal
+import secrets
 import stat
 import sys
 import time
@@ -59,7 +60,14 @@ from .python_registration_store import (
     registration_index_health,
     stage_registration_index,
 )
-from .refresh_planner import RefreshPlanError, plan_refresh
+from .refresh_planner import (
+    RefreshPlanError,
+    build_generation_manifest,
+    generation_artifact_identity,
+    manifest_path,
+    plan_refresh,
+    stage_generation_manifest_candidate,
+)
 from .runtime import required_checks_ok, runtime_checks
 from .service import AtlasService, QueryRequest
 from .session_update import disabled_session_update, session_start_update
@@ -513,6 +521,7 @@ def main(argv: list[str] | None = None) -> int:
         indexed = False
         config_published = False
         staged_registrations = None
+        staged_manifest = None
         try:
             if plan.action in {"fresh_shared_index", "rebuild_into_shared"}:
                 root_created = prepare_shared_provider_root(candidate.cache_dir)
@@ -541,7 +550,33 @@ def main(argv: list[str] | None = None) -> int:
                     candidate.project,
                     source_after.fingerprint,
                 )
+            if source_after.kind == "git" and source_after.fingerprint:
+                generation_id = secrets.token_hex(16)
+                generation = build_generation_manifest(
+                    candidate.repository,
+                    candidate.project,
+                    candidate.language,
+                    generation_id=generation_id,
+                    provider_identity=generation_artifact_identity(
+                        candidate.cache_dir / f"{candidate.project}.db"
+                    ),
+                    sidecar_identity=(
+                        generation_artifact_identity(staged_registrations.temporary)
+                        if staged_registrations is not None
+                        else {"status": "not_applicable"}
+                    ),
+                    created_at=f"generation:{generation_id}",
+                )
+                staged_manifest = stage_generation_manifest_candidate(
+                    candidate.data_dir,
+                    generation,
+                    candidate.repository,
+                    candidate.project,
+                )
+            if staged_registrations is not None:
                 staged_registrations.publish()
+            if staged_manifest is not None:
+                staged_manifest.publish(manifest_path(candidate.data_dir))
             candidate.write_verified(args.config, config_identity)
             config_published = True
             record_index_state(
@@ -553,7 +588,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             if staged_registrations is not None:
                 staged_registrations.commit()
+            if staged_manifest is not None:
+                staged_manifest.commit()
         except BaseException as exc:
+            if staged_manifest is not None:
+                try:
+                    staged_manifest.rollback()
+                except OSError:
+                    pass
             if staged_registrations is not None:
                 try:
                     staged_registrations.rollback()
