@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import contextmanager
-import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -29,6 +28,7 @@ from .refresh_planner import (
     RefreshPlanError,
     StagedGenerationManifest,
     build_generation_manifest,
+    generation_artifact_identity,
     manifest_path,
     load_generation_manifest,
     plan_refresh,
@@ -36,25 +36,6 @@ from .refresh_planner import (
 )
 from .refresh_recovery import RefreshRecoveryJournal, recover_refresh_transaction
 from .service import AtlasService
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _file_identity(path: Path) -> dict[str, Any]:
-    metadata = os.lstat(path)
-    if not stat.S_ISREG(metadata.st_mode):
-        raise RefreshPlanError(f"generation artifact is not a regular file: {path.name}")
-    return {
-        "path": str(path),
-        "size": metadata.st_size,
-        "sha256": _sha256(path),
-    }
 
 
 def _snapshot_file(path: Path) -> bytes | None:
@@ -368,9 +349,9 @@ class RefreshCoordinator:
 
             generation_after = secrets.token_hex(16)
             recovery.set_candidate(generation_after)
-            provider_identity = _file_identity(database)
+            provider_identity = generation_artifact_identity(database)
             sidecar_identity = (
-                _file_identity(staged_registration.temporary)
+                generation_artifact_identity(staged_registration.temporary)
                 if staged_registration is not None
                 else {"status": "not_applicable"}
             )

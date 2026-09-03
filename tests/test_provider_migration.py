@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -14,6 +15,12 @@ from unittest.mock import patch
 from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.cli import main
 from codebase_atlas.provider_migration import plan_provider_migration
+from codebase_atlas.refresh_planner import (
+    build_generation_manifest,
+    load_generation_manifest,
+    manifest_path,
+    plan_refresh,
+)
 
 
 def _database(cache: Path, project: str, repository: Path) -> Path:
@@ -219,6 +226,78 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             self.assertEqual(second_code, 0)
             self.assertEqual(second_payload["action"], "already_active")
             repeated.assert_not_called()
+
+    def test_apply_replaces_legacy_generation_manifest_with_shared_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            subprocess.run(["git", "-C", str(config.repository), "init", "-q"], check=True)
+            subprocess.run(
+                ["git", "-C", str(config.repository), "config", "user.email", "atlas@example.invalid"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(config.repository), "config", "user.name", "Atlas Test"],
+                check=True,
+            )
+            (config.repository / ".gitignore").write_text(".codebase-atlas.toml\n")
+            (config.repository / "sample.py").write_text("def value():\n    return 1\n")
+            subprocess.run(
+                ["git", "-C", str(config.repository), "add", ".gitignore", "sample.py"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(config.repository), "commit", "-qm", "initial"],
+                check=True,
+            )
+            legacy = _database(config.legacy_cache_dir, config.project, config.repository)
+            config_path = config.repository / ".codebase-atlas.toml"
+            config.write(config_path)
+            old_manifest = build_generation_manifest(
+                config.repository,
+                config.project,
+                config.language,
+                generation_id="legacy-generation",
+                provider_identity={"path": str(legacy), "size": legacy.stat().st_size},
+                sidecar_identity={"status": "legacy"},
+                created_at="generation:legacy-generation",
+            )
+            config.data_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path(config.data_dir).write_text(
+                json.dumps(old_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+
+            def indexer(candidate: AtlasConfig, _mode: str) -> dict[str, object]:
+                _database(candidate.cache_dir, candidate.project, candidate.repository)
+                return {"status": "indexed", "project": candidate.project}
+
+            output = StringIO()
+            with patch("codebase_atlas.cli._index_repository", side_effect=indexer), redirect_stdout(output):
+                code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+
+            migrated = AtlasConfig.load(config_path)
+            manifest = load_generation_manifest(
+                migrated.data_dir, migrated.repository, migrated.project
+            )
+            self.assertEqual(code, 0)
+            self.assertIsNotNone(manifest)
+            self.assertEqual(manifest["project"], migrated.shared_project)
+            self.assertNotEqual(manifest["generation_id"], "legacy-generation")
+            self.assertEqual(
+                Path(manifest["provider_identity"]["path"]),
+                migrated.cache_dir / f"{migrated.project}.db",
+            )
+            refresh = plan_refresh(
+                migrated.data_dir,
+                migrated.repository,
+                migrated.project,
+                migrated.language,
+            )
+            self.assertEqual(refresh["status"], "planned")
+            self.assertEqual(refresh["dirty_paths"], [])
 
     def test_worker_failure_preserves_exact_config_and_legacy_database(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(

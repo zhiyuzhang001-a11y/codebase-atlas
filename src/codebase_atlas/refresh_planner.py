@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import tempfile
 from typing import Any, Mapping
 
@@ -101,6 +102,20 @@ def manifest_path(data_dir: Path) -> Path:
 def generation_manifest_bytes(value: Mapping[str, Any]) -> bytes:
     """Serialize a validated manifest in one deterministic representation."""
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def generation_artifact_identity(path: Path) -> dict[str, Any]:
+    """Return the exact regular-file identity recorded in a generation manifest."""
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RefreshPlanError(
+            f"generation artifact is not a regular file: {path.name}"
+        )
+    return {
+        "path": str(path),
+        "size": metadata.st_size,
+        "sha256": _content_sha256(path),
+    }
 
 
 def stage_generation_manifest_candidate(
