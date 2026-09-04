@@ -4,6 +4,17 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.23.2 — 2026-09-04
+
+- Route recommended shared-Provider `index`, `update` and applied repair
+  operations through the same generation transaction used by MCP refreshes.
+- Require session-start freshness to include the published generation manifest,
+  preventing a current index state from masking an older generation snapshot.
+- Stop applying the legacy global Provider-lock probe to shared layouts, and
+  reject already-changing snapshots before starting an expensive Provider job.
+- Retry only snapshot races, at most once and within the original timeout, while
+  retaining the previous generation after every unsuccessful attempt.
+
 ## 0.23.1 — 2026-09-03
 
 - Publish a new generation manifest with the shared project identity during

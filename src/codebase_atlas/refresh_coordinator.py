@@ -230,7 +230,13 @@ class RefreshCoordinator:
         self.index_status.clear()
         self.index_status.update(refreshed)
 
-    def refresh(self, *, mode: str = "fast", timeout_ms: int = 300_000) -> dict[str, Any]:
+    def refresh(
+        self,
+        *,
+        mode: str = "fast",
+        timeout_ms: int = 300_000,
+        force_provider: bool = False,
+    ) -> dict[str, Any]:
         if mode not in {"fast", "moderate", "full"}:
             raise ValueError("mode must be fast, moderate, or full")
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
@@ -274,6 +280,7 @@ class RefreshCoordinator:
                 plan.get("status") == "planned"
                 and not plan.get("dirty_paths")
                 and provider_current
+                and not force_provider
             ):
                 if generation_before:
                     self._replace_status(str(generation_before))
@@ -293,6 +300,12 @@ class RefreshCoordinator:
             source_before = repository_snapshot(self.config.repository)
             if source_before.kind != "git" or not source_before.fingerprint:
                 raise RefreshPlanError("repository snapshot is unavailable")
+            observed = plan.get("observed_snapshot", {})
+            if observed and (
+                observed.get("source_fingerprint") != source_before.fingerprint
+                or observed.get("source_head") != source_before.head
+            ):
+                raise RefreshPlanError("snapshot_changed_before_refresh")
             previous_fingerprint = (
                 plan.get("base_source_fingerprint")
                 or self.index_status.get("source", {}).get("source_fingerprint")
@@ -470,3 +483,39 @@ class RefreshCoordinator:
             if lease_acquired:
                 self._lease.release()
             self._lock.release()
+
+
+def refresh_with_retry(
+    coordinator: RefreshCoordinator,
+    *,
+    mode: str = "fast",
+    timeout_ms: int = 300_000,
+    force_provider: bool = False,
+    max_attempts: int = 2,
+) -> dict[str, Any]:
+    """Retry only repository-snapshot races within one bounded time budget."""
+    if not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1:
+        raise ValueError("max_attempts must be a positive integer")
+    deadline = monotonic() + timeout_ms / 1000.0
+    for attempt in range(1, max_attempts + 1):
+        remaining_ms = (
+            timeout_ms
+            if attempt == 1
+            else max(1, int((deadline - monotonic()) * 1000.0))
+        )
+        refresh_arguments: dict[str, Any] = {
+            "mode": mode,
+            "timeout_ms": remaining_ms,
+        }
+        if force_provider:
+            refresh_arguments["force_provider"] = True
+        result = coordinator.refresh(**refresh_arguments)
+        result["attempts"] = attempt
+        if result.get("error") not in {
+            "snapshot_changed_before_refresh",
+            "snapshot_changed_during_refresh",
+        }:
+            return result
+        if attempt == max_attempts or monotonic() >= deadline:
+            return result
+    raise AssertionError("bounded refresh loop did not return")

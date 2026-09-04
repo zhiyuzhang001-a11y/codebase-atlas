@@ -33,6 +33,18 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.23.2 unified refresh correctness
+
+- [x] Route recommended shared-layout CLI mutations through the MCP generation
+  transaction instead of advancing index state independently.
+- [x] Require a current generation manifest on the session-start fast path and
+  skip the legacy global-lock probe for shared layouts.
+- [x] Reject changing snapshots before Provider work and retry snapshot races at
+  most once inside the caller's original time budget.
+- [x] Pass focused generation, CLI, MCP and session-start regression tests.
+- [ ] Pass the full local and remote release gates, publish stable `v0.23.2`,
+  install it side by side and validate a clean target repository.
+
 ## 0.23.1 shared migration generation correction
 
 - [x] Reproduce the legacy generation identity mismatch after a successful

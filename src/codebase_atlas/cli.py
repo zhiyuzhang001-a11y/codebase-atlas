@@ -48,7 +48,7 @@ from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, Typ
 from .project_discovery import resolve_project
 from .provider_layout import provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
-from .refresh_coordinator import RefreshCoordinator
+from .refresh_coordinator import RefreshCoordinator, refresh_with_retry
 from .provider_migration import (
     plan_provider_migration,
     prepare_shared_provider_root,
@@ -689,6 +689,23 @@ def main(argv: list[str] | None = None) -> int:
                 "inspection": after,
             }, ensure_ascii=False, indent=2))
             return 0 if after["ok"] else 2
+        if config.provider_layout == SHARED_PROVIDER_LAYOUT and config.project:
+            result = _transactional_refresh(
+                config,
+                args.mode,
+                force_provider=True,
+            )
+            after = inspect_installation(config)
+            refreshed = result.get("status") == "refreshed"
+            print(json.dumps({
+                "status": "repaired" if refreshed and after["ok"] else "repair_incomplete",
+                "mode": "applied",
+                "plan": plan,
+                "project": config.project,
+                "generation": result,
+                "inspection": after,
+            }, ensure_ascii=False, indent=2))
+            return 0 if refreshed and after["ok"] else 2
         config_identity, config_bytes = _config_publication_snapshot(args.config)
         source_before = repository_snapshot(config.repository)
         staged_registrations = None
@@ -820,6 +837,17 @@ def main(argv: list[str] | None = None) -> int:
                 and freshness.get("mode") == args.mode
                 and bool(provider_database["ok"])
             )
+            if source_and_provider_current and config.provider_layout == SHARED_PROVIDER_LAYOUT:
+                generation_plan = plan_refresh(
+                    config.data_dir,
+                    config.repository,
+                    config.project,
+                    config.language,
+                )
+                source_and_provider_current = (
+                    generation_plan.get("status") == "planned"
+                    and not generation_plan.get("dirty_paths")
+                )
             if source_and_provider_current and not bool(registration_health["ok"]):
                 source_fingerprint = freshness.get("source_fingerprint")
                 if config.language == "python" and source_fingerprint:
@@ -870,6 +898,21 @@ def main(argv: list[str] | None = None) -> int:
                     "python_registrations": registration_health,
                 }, indent=2))
                 return 0
+        if config.provider_layout == SHARED_PROVIDER_LAYOUT and config.project:
+            result = _transactional_refresh(
+                config,
+                args.mode,
+                force_provider=(args.command == "index" or args.force_provider),
+            )
+            if result.get("status") == "refreshed":
+                result["status"] = "indexed" if args.command == "index" else "updated"
+            result.update({
+                "project": config.project,
+                "config": str(args.config),
+                "index_state": str(config.data_dir / "index-state.json"),
+            })
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0 if result.get("status") in {"current", "indexed", "updated"} else 2
         source_before = repository_snapshot(config.repository)
         staged_registrations = None
         if (
@@ -1351,6 +1394,38 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
     if payload.get("status") != "indexed":
         raise RuntimeError(str(payload.get("hint", f"index status is {payload.get('status', 'unknown')}")))
     return payload
+
+
+def _transactional_refresh(
+    config: AtlasConfig,
+    mode: str,
+    *,
+    force_provider: bool = False,
+    timeout_ms: int = 300_000,
+) -> dict[str, object]:
+    """Run one shared-layout CLI refresh through the MCP generation transaction."""
+    status = operational_index_status(
+        config.data_dir,
+        config.repository,
+        config.cache_dir,
+        config.project,
+    )
+    transport = CodebaseMemoryMcpTransport(
+        config.cbm_binary,
+        config.repository,
+        config.cache_dir,
+        exclusive=False,
+        client_version=__version__,
+    )
+    service = AtlasService(repository=config.repository, lifecycle=transport)
+    coordinator = RefreshCoordinator(config, transport, service, status)
+    with service:
+        return refresh_with_retry(
+            coordinator,
+            mode=mode,
+            timeout_ms=timeout_ms,
+            force_provider=force_provider,
+        )
 
 
 def _provider_lifecycle(
