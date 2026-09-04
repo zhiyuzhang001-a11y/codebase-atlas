@@ -2,6 +2,15 @@ name: Managed Provider Bundles
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft Release tag to receive verified Provider assets
+        required: false
+        type: string
+      source_run_id:
+        description: Successful Managed Provider Bundles run containing release assets
+        required: false
+        type: string
   push:
     branches: [codex/m37-atlas-0.22.0]
     paths:
@@ -18,6 +27,7 @@ env:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.source_run_id == '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +101,7 @@ jobs:
           if-no-files-found: error
 
   verify:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.source_run_id == '' }}
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -109,3 +120,24 @@ jobs:
           name: managed-provider-release-assets
           path: dist/*
           if-no-files-found: error
+
+  publish-existing:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.source_run_id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download verified Provider release assets
+        run: gh run download "$SOURCE_RUN_ID" --name managed-provider-release-assets --dir dist
+      - name: Reverify complete managed Provider set
+        run: python scripts/verify_managed_provider_bundles.py dist
+      - name: Require an existing draft Release
+        run: test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = true
+      - name: Upload Provider assets to the draft Release
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
