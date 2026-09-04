@@ -18,7 +18,7 @@ from .config import AtlasConfig
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-PROJECT_RULE = """At task start, call project_status once. Stop if its repository is not the open project; tell the user if session-start refresh failed or a software update is available. After creating, modifying, renaming, or deleting a batch of source files, call plan_refresh and then refresh_index before the next Atlas query; perform this refresh without asking the user to remember a command. Before changing code, use ordinary source search to discover an exact candidate. Then call Codebase Atlas analyze_change with symbol plus path/owner. Treat unresolved or needs_disambiguation as a stop; never guess. Preserve generation, stale, warning, partial, truncation, and continuation fields. Read the returned source regions before editing and run only evidence-backed tests. Fall back to direct source inspection whenever Atlas reports partial, error, or unsupported evidence."""
+PROJECT_RULE = """At task start, call project_status once. Stop if its repository is not the open project; tell the user if automatic refresh failed or a software update is available. The on-query policy automatically coalesces one safe refresh after creating, modifying, renaming, or deleting a batch of source files; inspect the returned auto_update status and never ask the user to remember a refresh command. Before changing code, use ordinary source search to discover an exact candidate. Then call Codebase Atlas analyze_change with symbol plus path/owner. Treat unresolved or needs_disambiguation as a stop; never guess. Preserve generation, stale, warning, partial, truncation, continuation, and auto_update fields. Read the returned source regions before editing and run only evidence-backed tests. Fall back to direct source inspection whenever Atlas reports partial, error, or unsupported evidence."""
 
 PROJECT_SCOPE_BEGIN = "# >>> codebase-atlas managed project mcp v1 >>>"
 PROJECT_SCOPE_END = "# <<< codebase-atlas managed project mcp v1 <<<"
@@ -60,7 +60,7 @@ def _atlas_transport(
 def _auto_transport(atlas_executable: str | Path | None) -> tuple[str, list[str]]:
     tail = [
         "mcp-auto",
-        "--auto-update", "session-start",
+        "--auto-update", "on-query",
         "--auto-update-timeout", "60",
         "--version-check", "notify",
     ]
@@ -225,7 +225,7 @@ def _project_plan(
     command, transport_args = _atlas_transport(config, atlas_executable)
     args = [
         *transport_args,
-        "--auto-update", "session-start",
+        "--auto-update", "on-query",
         "--auto-update-timeout", "60",
         "--version-check", "notify",
     ]

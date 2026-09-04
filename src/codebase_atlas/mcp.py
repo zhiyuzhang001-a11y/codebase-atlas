@@ -112,7 +112,7 @@ TOOLS = [
         "title": "Check the active Atlas project",
         "description": (
             "Return the resolved repository, project identity, index freshness, "
-            "session-start update result, and notify-only software version status."
+            "automatic update status, and notify-only software version status."
         ),
         "inputSchema": {
             "type": "object", "properties": {}, "additionalProperties": False
@@ -305,6 +305,8 @@ class McpServer:
         instructions: str = "",
         version_notifier: VersionNotifier | None = None,
         refresh_coordinator: Any | None = None,
+        auto_update: str = "off",
+        auto_update_timeout_ms: int = 60_000,
     ) -> None:
         self.service = service
         self.index_status = index_status
@@ -312,6 +314,46 @@ class McpServer:
         self.instructions = instructions
         self.version_notifier = version_notifier
         self.refresh_coordinator = refresh_coordinator
+        if auto_update not in {"off", "session-start", "on-query"}:
+            raise ValueError(f"unsupported automatic update policy: {auto_update}")
+        self.auto_update = auto_update
+        self.auto_update_timeout_ms = auto_update_timeout_ms
+
+    def _refresh_before_query(self) -> dict[str, Any] | None:
+        """Coalesce one explicit Provider refresh immediately before a query."""
+        if self.auto_update != "on-query" or self.refresh_coordinator is None:
+            return None
+        refreshed = refresh_with_retry(
+            self.refresh_coordinator,
+            mode="fast",
+            timeout_ms=self.auto_update_timeout_ms,
+        )
+        status = str(refreshed.get("status", "failed"))
+        return {
+            "policy": "on-query",
+            "status": status,
+            "ok": status in {"current", "refreshed"},
+            "attempted": True,
+            "provider_called": bool(refreshed.get("provider_called")),
+            "generation": refreshed.get("generation_after"),
+            "dirty_paths": refreshed.get("dirty_paths", []),
+            "provider_inputs_changed": refreshed.get(
+                "provider_inputs_changed", status != "current"
+            ),
+            "attempts": refreshed.get("attempts", 1),
+            "previous_generation_preserved": refreshed.get(
+                "previous_generation_preserved", status == "current"
+            ),
+            **(
+                {"timings_ms": refreshed["timings_ms"]}
+                if "timings_ms" in refreshed else {}
+            ),
+            **(
+                {"duration_ms": refreshed["duration_ms"]}
+                if "duration_ms" in refreshed else {}
+            ),
+            **({"error": refreshed.get("error")} if refreshed.get("error") else {}),
+        }
 
     @staticmethod
     def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -453,6 +495,14 @@ class McpServer:
                         "isError": True,
                     },
                 }
+            automatic_update = (
+                self._refresh_before_query()
+                if name in {
+                    "locate_files", "definition", "references", "callers", "callees",
+                    "related_tests", "impact", "analyze_change",
+                }
+                else None
+            )
             if name == "locate_files":
                 snapshot_context = (
                     self.refresh_coordinator.query_snapshot(
@@ -465,6 +515,9 @@ class McpServer:
                     )
                 )
                 with snapshot_context as status:
+                    status = dict(status)
+                    if automatic_update is not None:
+                        status["auto_update"] = automatic_update
                     identity = status.get("identity", {})
                     repository_value = identity.get("repository") if isinstance(identity, dict) else None
                     repository = str(repository_value or getattr(self.service, "repository", "") or "")
@@ -473,6 +526,8 @@ class McpServer:
                         "ok": bool(status.get("ok", True)),
                         "reason": str(status.get("reason", "")),
                     }
+                    if automatic_update is not None:
+                        freshness["auto_update"] = automatic_update
                     if not repository:
                         payload = _locate_payload(
                             status="error", repository="", freshness=freshness,
@@ -525,20 +580,31 @@ class McpServer:
                 if name in arguments
             }
             if name == "analyze_change":
-                brief = analyze_change(
-                    self.service,
-                    symbol,
-                    intent=arguments.get("intent", "change_behavior"),
-                    target_path=target_path,
-                    target_owner=target_owner,
-                    direction=arguments.get("direction", "upstream"),
-                    depth=arguments.get("depth", 2),
-                    max_nodes=arguments.get("max_nodes", 100),
-                    max_edges=arguments.get("max_edges", 200),
-                    timeout_ms=arguments.get("timeout_ms", 60_000),
-                    index_status=self.index_status,
-                    stale_policy=self.stale_policy,
+                snapshot_context = (
+                    self.refresh_coordinator.query_snapshot(
+                        timeout_ms=arguments.get("timeout_ms", 60_000)
+                    )
+                    if self.refresh_coordinator is not None
+                    else nullcontext(dict(self.index_status or {}))
                 )
+                with snapshot_context as analysis_status:
+                    analysis_status = dict(analysis_status or {})
+                    if automatic_update is not None:
+                        analysis_status["auto_update"] = automatic_update
+                    brief = analyze_change(
+                        self.service,
+                        symbol,
+                        intent=arguments.get("intent", "change_behavior"),
+                        target_path=target_path,
+                        target_owner=target_owner,
+                        direction=arguments.get("direction", "upstream"),
+                        depth=arguments.get("depth", 2),
+                        max_nodes=arguments.get("max_nodes", 100),
+                        max_edges=arguments.get("max_edges", 200),
+                        timeout_ms=arguments.get("timeout_ms", 60_000),
+                        index_status=analysis_status,
+                        stale_policy=self.stale_policy,
+                    )
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -593,6 +659,9 @@ class McpServer:
                 )
             )
             with snapshot_context as query_status:
+                query_status = dict(query_status or {})
+                if automatic_update is not None:
+                    query_status["auto_update"] = automatic_update
                 policy_error = stale_policy_error(
                     query_status or {"ok": True}, self.stale_policy
                 )

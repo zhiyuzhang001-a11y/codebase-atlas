@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--tsconfig", type=Path)
     mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
     mcp.add_argument(
-        "--auto-update", choices=("off", "session-start"), default="off"
+        "--auto-update", choices=("off", "session-start", "on-query"), default="off"
     )
     mcp.add_argument("--auto-update-timeout", type=float, default=60.0)
     mcp.add_argument("--version-check", choices=("off", "notify"), default="off")
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp_auto.add_argument("--root", type=Path)
     mcp_auto.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
     mcp_auto.add_argument(
-        "--auto-update", choices=("off", "session-start"), default="session-start"
+        "--auto-update", choices=("off", "session-start", "on-query"), default="on-query"
     )
     mcp_auto.add_argument("--auto-update-timeout", type=float, default=60.0)
     mcp_auto.add_argument("--version-check", choices=("off", "notify"), default="notify")
@@ -1102,10 +1102,11 @@ def main(argv: list[str] | None = None) -> int:
             local_config = (args.repo or Path.cwd()) / CONFIG_NAME
             active_config_path = local_config if local_config.is_file() else None
         auto_update_status = disabled_session_update()
-        if args.command == "mcp" and args.auto_update == "session-start":
-            selected_config = args.config or Path.cwd() / CONFIG_NAME
+        if args.command == "mcp" and args.auto_update != "off":
             if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
                 raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
+        if args.command == "mcp" and args.auto_update == "session-start":
+            selected_config = args.config or Path.cwd() / CONFIG_NAME
             auto_update_status = session_start_update(
                 selected_config, timeout_seconds=args.auto_update_timeout
             )
@@ -1214,6 +1215,8 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                         version_notifier=notifier,
                         refresh_coordinator=refresh_coordinator,
+                        auto_update=args.auto_update,
+                        auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
                     )
                 )
             elif args.command == "query":
