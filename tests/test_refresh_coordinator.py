@@ -202,6 +202,27 @@ class RefreshCoordinatorTests(unittest.TestCase):
             self.assertLessEqual(result["duration_ms"], 250.0)
         self.assertEqual(self.status["generation_id"], "generation-1")
 
+    def test_force_provider_publishes_new_generation_even_when_source_is_current(self) -> None:
+        result = self.coordinator.refresh(force_provider=True)
+
+        self.assertEqual(result["status"], "refreshed")
+        self.assertEqual(len(self.transport.calls), 1)
+        self.assertNotEqual(result["generation_after"], "generation-1")
+        self.assertEqual(self.status["generation_id"], result["generation_after"])
+
+    def test_changed_plan_snapshot_defers_before_calling_provider(self) -> None:
+        before = self.hashes()
+        plan = self.coordinator.plan()
+        plan["observed_snapshot"]["source_fingerprint"] = "0" * 64
+        with patch.object(self.coordinator, "plan", return_value=plan):
+            result = self.coordinator.refresh(force_provider=True)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"], "snapshot_changed_before_refresh")
+        self.assertFalse(result["provider_called"])
+        self.assertEqual(self.transport.calls, [])
+        self.assertEqual(self.hashes(), before)
+
     def test_modify_refreshes_same_transport_and_invalidates_generation_caches(self) -> None:
         self.service._python_reference_cache[(Path("x"), "a", "b")] = ()
         self.service._python_complete_reference_cache[(Path("x"), "a", "b", "c")] = ()

@@ -2,8 +2,8 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.23.1**, correcting shared-Provider migration
-generation publication while retaining explicit same-MCP transactional index
+Current stable release: **0.23.2**, unifying shared-Provider CLI and MCP
+generation publication with bounded snapshot-race retries while retaining explicit same-MCP transactional index
 refresh, Git-aware Python source inventories, bounded heuristic file
 narrowing and a persistent managed Provider transport
 while retaining fail-closed automatic

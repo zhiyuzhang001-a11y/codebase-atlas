@@ -10,8 +10,12 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from codebase_atlas.cli import _run_mcp_with_graceful_termination, main
-from codebase_atlas.config import AtlasConfig
+from codebase_atlas.cli import (
+    _run_mcp_with_graceful_termination,
+    _transactional_refresh,
+    main,
+)
+from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.index_state import record_index_state, state_path
 from codebase_atlas.python_registration_store import registration_index_path
 
@@ -72,6 +76,64 @@ class CliOperationTests(unittest.TestCase):
             self.assertEqual(result["status"], "updated")
             self.assertEqual(result["provider"]["route"], "provider_managed")
             self.assertTrue(state_path(config.data_dir).is_file())
+
+    def test_shared_update_uses_generation_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            legacy, path = self.config(root)
+            self.make_git_repository(legacy.repository)
+            shared = AtlasConfig(
+                legacy.repository,
+                legacy.language,
+                legacy.node,
+                legacy.cbm_binary,
+                legacy.serena_python,
+                legacy.data_dir,
+                legacy.shared_project,
+                legacy.node_bin_dir,
+                provider_layout=SHARED_PROVIDER_LAYOUT,
+            )
+            shared.write(path)
+            transaction = {
+                "schema_version": 1,
+                "status": "refreshed",
+                "generation_before": "g1",
+                "generation_after": "g2",
+                "provider_called": True,
+            }
+            output = StringIO()
+            with patch(
+                "codebase_atlas.cli._transactional_refresh",
+                return_value=transaction,
+            ) as refresh:
+                with redirect_stdout(output):
+                    self.assertEqual(main(["update", "--config", str(path)]), 0)
+
+            refresh.assert_called_once_with(shared, "fast", force_provider=False)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["status"], "updated")
+            self.assertEqual(result["generation_after"], "g2")
+
+    def test_transactional_refresh_retries_one_snapshot_change(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config, _path = self.config(Path(raw))
+            failed = {
+                "status": "failed",
+                "error": "snapshot_changed_during_refresh",
+            }
+            refreshed = {"status": "refreshed", "generation_after": "g2"}
+            with (
+                patch("codebase_atlas.cli.operational_index_status", return_value={}),
+                patch("codebase_atlas.cli.CodebaseMemoryMcpTransport"),
+                patch("codebase_atlas.cli.AtlasService"),
+                patch("codebase_atlas.cli.RefreshCoordinator") as coordinator_type,
+            ):
+                coordinator_type.return_value.refresh.side_effect = [failed, refreshed]
+                result = _transactional_refresh(config, "fast")
+
+            self.assertEqual(result["status"], "refreshed")
+            self.assertEqual(result["attempts"], 2)
+            self.assertEqual(coordinator_type.return_value.refresh.call_count, 2)
 
     def test_failed_update_preserves_previous_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

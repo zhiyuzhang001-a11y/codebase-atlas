@@ -6,6 +6,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
+from codebase_atlas.config import LEGACY_PROVIDER_LAYOUT, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.session_update import _graceful_run, session_start_update
 
 
@@ -22,13 +23,18 @@ class SessionUpdateTests(unittest.TestCase):
         process.terminate.assert_called_once_with()
         process.kill.assert_not_called()
 
-    def configured(self, language: str = "typescript"):
+    def configured(
+        self,
+        language: str = "typescript",
+        provider_layout: str = LEGACY_PROVIDER_LAYOUT,
+    ):
         configured = unittest.mock.Mock()
         configured.data_dir = Path("data")
         configured.repository = Path("repo")
         configured.project = "project"
         configured.cache_dir = Path("cache")
         configured.language = language
+        configured.provider_layout = provider_layout
         return configured
 
     def test_fresh_index_bypasses_subprocess_and_provider(self) -> None:
@@ -77,6 +83,71 @@ class SessionUpdateTests(unittest.TestCase):
         lock_factory.assert_called_once_with(timeout_seconds=0.02)
         self.assertEqual(result["reason"], "provider_busy")
         self.assertTrue(result["previous_index_preserved"])
+
+    def test_shared_stale_index_skips_global_busy_probe_and_runs_update(self) -> None:
+        def runner(argv, **_kwargs):
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps({"status": "updated", "provider": {"status": "indexed"}}),
+                "",
+            )
+
+        with (
+            patch(
+                "codebase_atlas.session_update.AtlasConfig.load",
+                return_value=self.configured(provider_layout=SHARED_PROVIDER_LAYOUT),
+            ),
+            patch("codebase_atlas.session_update.index_freshness", return_value={
+                "status": "stale", "mode": "fast"
+            }),
+            patch("codebase_atlas.session_update.provider_database_health", return_value={
+                "ok": True, "status": "ready"
+            }),
+            patch(
+                "codebase_atlas.session_update.GlobalCbmLock",
+                side_effect=AssertionError("shared layout must not use the legacy global lock"),
+            ),
+            patch("codebase_atlas.session_update.plan_refresh", return_value={
+                "status": "planned", "dirty_paths": ["sample.py"]
+            }),
+        ):
+            result = session_start_update(Path("config.toml"), runner=runner)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "updated")
+
+    def test_shared_fresh_index_with_stale_generation_runs_update(self) -> None:
+        calls = []
+
+        def runner(argv, **_kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps({"status": "updated", "provider": {"status": "indexed"}}),
+                "",
+            )
+
+        with (
+            patch(
+                "codebase_atlas.session_update.AtlasConfig.load",
+                return_value=self.configured(provider_layout=SHARED_PROVIDER_LAYOUT),
+            ),
+            patch("codebase_atlas.session_update.index_freshness", return_value={
+                "status": "fresh", "mode": "fast", "source_fingerprint": "a" * 64
+            }),
+            patch("codebase_atlas.session_update.provider_database_health", return_value={
+                "ok": True, "status": "ready"
+            }),
+            patch("codebase_atlas.session_update.plan_refresh", return_value={
+                "status": "planned", "dirty_paths": ["sample.py"]
+            }),
+        ):
+            result = session_start_update(Path("config.toml"), runner=runner)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(calls), 1)
 
     def test_current_fast_path_is_reported(self) -> None:
         def runner(argv, **kwargs):

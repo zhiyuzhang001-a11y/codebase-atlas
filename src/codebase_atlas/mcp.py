@@ -14,6 +14,7 @@ from .operations import (
     attach_operational_status,
     stale_policy_error,
 )
+from .refresh_coordinator import refresh_with_retry
 from .service import AtlasService, QueryRequest, QueryResponse
 from .version_check import VersionNotifier
 
@@ -382,7 +383,8 @@ class McpServer:
                 payload = (
                     self.refresh_coordinator.plan()
                     if name == "plan_refresh"
-                    else self.refresh_coordinator.refresh(
+                    else refresh_with_retry(
+                        self.refresh_coordinator,
                         mode=arguments.get("mode", "fast"),
                         timeout_ms=arguments.get("timeout_ms", 300_000),
                     )

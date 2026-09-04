@@ -8,10 +8,11 @@ import subprocess
 import sys
 from typing import Any, Callable
 
-from .config import AtlasConfig
+from .config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from .index_state import index_freshness, provider_database_health
 from .lifecycle import GlobalCbmLock
 from .python_registration_store import registration_index_health
+from .refresh_planner import RefreshPlanError, plan_refresh
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -63,11 +64,28 @@ def session_start_update(
         if configured.language == "python"
         else {"status": "not_applicable", "ok": True}
     )
+    generation_current = True
+    if configured.provider_layout == SHARED_PROVIDER_LAYOUT:
+        try:
+            generation = plan_refresh(
+                configured.data_dir,
+                configured.repository,
+                configured.project,
+                configured.language,
+            )
+        except RefreshPlanError:
+            generation_current = False
+        else:
+            generation_current = (
+                generation.get("status") == "planned"
+                and not generation.get("dirty_paths")
+            )
     if (
         freshness.get("status") == "fresh"
         and freshness.get("mode") == "fast"
         and bool(provider.get("ok"))
         and bool(registrations.get("ok"))
+        and generation_current
     ):
         return {
             "policy": "session-start",
@@ -83,7 +101,10 @@ def session_start_update(
             },
             "previous_index_preserved": False,
         }
-    if freshness.get("status") in {"stale", "rebuild_required"}:
+    if (
+        configured.provider_layout != SHARED_PROVIDER_LAYOUT
+        and freshness.get("status") in {"stale", "rebuild_required"}
+    ):
         probe = GlobalCbmLock(timeout_seconds=0.02)
         try:
             probe.acquire()
