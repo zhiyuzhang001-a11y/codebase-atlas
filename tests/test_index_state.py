@@ -116,6 +116,21 @@ class IndexStateTests(unittest.TestCase):
             after = repository_snapshot(repository)
             self.assertNotEqual(after.fingerprint, before.fingerprint)
 
+    def test_cbmignore_excludes_generated_artifacts_but_tracks_control_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            before = repository_snapshot(repository)
+            (repository / ".cbmignore").write_text("artifacts/\n*.benchmark.json\n")
+            control = repository_snapshot(repository)
+            self.assertNotEqual(control.fingerprint, before.fingerprint)
+            (repository / "artifacts").mkdir()
+            (repository / "artifacts/large.json").write_bytes(b"x" * 1024 * 1024)
+            (repository / "run.benchmark.json").write_bytes(b"y" * 1024 * 1024)
+            ignored = repository_snapshot(repository)
+            self.assertEqual(ignored.fingerprint, control.fingerprint)
+            self.assertEqual(ignored.changed_paths, 1)
+
     def test_invalid_default_config_and_symlink_are_source(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

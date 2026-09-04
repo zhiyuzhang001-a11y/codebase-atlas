@@ -4,6 +4,19 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.24.0 — 2026-09-04
+
+- Add automatic on-query refresh for Codex integrations: unchanged generations
+  remain a no-Provider fast path, while source edits are coalesced into one
+  transactional refresh immediately before the next Atlas query.
+- Keep the previous generation queryable when automatic refresh fails and
+  expose the refresh outcome, retry count and preservation state with results.
+- Honor the Provider's repository-local `.cbmignore` in Atlas freshness and
+  Python/TypeScript source inventories so explicitly ignored generated artifacts
+  do not cause expensive hashing or false stale state.
+- Report planning, source snapshot, registration, Provider, validation,
+  publication, rollback and total refresh timings for direct bottleneck diagnosis.
+
 ## 0.23.2 — 2026-09-04
 
 - Route recommended shared-Provider `index`, `update` and applied repair

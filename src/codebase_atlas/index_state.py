@@ -17,6 +17,8 @@ import subprocess
 import tempfile
 import tomllib
 
+from .cbmignore import CbmIgnore
+
 
 STATE_SCHEMA_VERSION = 1
 @dataclass(frozen=True)
@@ -183,11 +185,16 @@ def repository_snapshot(repository: Path) -> RepositorySnapshot:
     # Atlas updates its project-local runtime configuration after a successful
     # index. Any valid Atlas config for this repository is operational metadata,
     # not source; arbitrary TOML and foreign Atlas configs remain fingerprinted.
+    cbmignore = CbmIgnore.load(repository)
     changed = sorted(
         path
         for path in set(_paths(tracked.stdout) + _paths(untracked.stdout))
         if not _is_atlas_runtime_config(repository, path)
         and not _is_atlas_project_codex_config(repository, path)
+        and (
+            Path(path).as_posix() == ".cbmignore"
+            or not cbmignore.ignores(Path(path).as_posix())
+        )
     )
     digest = hashlib.sha256()
     digest.update(b"codebase-atlas-source-v1\0")

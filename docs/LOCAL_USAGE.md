@@ -436,20 +436,32 @@ This creates or appends one marker-delimited block in `.codex/config.toml`,
 preserves unrelated valid TOML bytes, refuses symlinks/foreign Atlas entries,
 and never changes `~/.codex/config.toml`. The file contains absolute local paths
 and should not be committed. Start a new Codex task rooted at the repository and
-call `project_status` to verify the resolved repository, index freshness and
-session-start update result. Remove only Atlas's matching block with
+call `project_status` to verify the resolved repository and index freshness.
+The managed transport checks for changes before each Atlas code query and calls
+the Provider only when indexed source changed. Remove only Atlas's matching block with
 `codebase-atlas codex remove --scope project`.
 
 Treat that real `project_status` call as the verification gate. `codex mcp get`
 can report only the global management layer and therefore is not sufficient to
 verify project-local switching.
 
-The session-start refresh is not a permanent watcher. If a legacy layout or
-short migration/admission operation blocks startup, the new server reports
-`provider_busy` and uses the previous index rather than waiting indefinitely.
-Retry after that operation completes. Software release checks are asynchronous,
-cached for 24 hours, notify-only, and disabled by
+The on-query refresh is not a permanent watcher and consumes no idle polling
+resources. It coalesces a batch of add/modify/delete/rename changes immediately
+before the next query. If refresh fails, Atlas reports `auto_update.status=failed`
+and preserves the previous generation for warning-policy queries. Refresh results
+include `timings_ms`, so local snapshot time can be distinguished from Provider
+index time. Software release checks are asynchronous, cached for 24 hours,
+notify-only, and disabled by
 `CODEBASE_ATLAS_NO_UPDATE_CHECK=1`.
+
+Atlas and the Provider both honor a root `.cbmignore`. Add generated trees that
+must not affect code intelligence, for example:
+
+```gitignore
+artifacts/
+benchmarks/output/
+*.benchmark.json
+```
 
 Point an MCP client at the executable and project configuration without changing
 the configuration automatically:

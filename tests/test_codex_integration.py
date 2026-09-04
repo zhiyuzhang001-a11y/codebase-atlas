@@ -51,9 +51,9 @@ class FakeRunner:
 
 class CodexIntegrationTests(unittest.TestCase):
     def test_project_rule_requires_on_demand_refresh_without_user_prompt(self) -> None:
-        self.assertIn("After creating, modifying, renaming, or deleting", PROJECT_RULE)
-        self.assertIn("call plan_refresh and then refresh_index", PROJECT_RULE)
-        self.assertIn("without asking the user", PROJECT_RULE)
+        self.assertIn("on-query", PROJECT_RULE)
+        self.assertIn("creating, modifying, renaming, or deleting", PROJECT_RULE)
+        self.assertIn("automatically", PROJECT_RULE)
 
     def paths(self, root: Path):
         config = root / ".codebase-atlas.toml"
@@ -168,7 +168,7 @@ class CodexIntegrationTests(unittest.TestCase):
             parsed = tomllib.loads(target.read_text(encoding="utf-8"))
             entry = parsed["mcp_servers"]["codebase_atlas"]
             self.assertEqual(entry["command"], str(atlas.resolve()))
-            self.assertIn("session-start", entry["args"])
+            self.assertIn("on-query", entry["args"])
             self.assertEqual(applied["existing"], "matching")
             repeated = codex_apply(config, scope="project", atlas_executable=atlas)
             self.assertFalse(repeated["mutates"])

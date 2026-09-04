@@ -96,6 +96,14 @@ class RefreshPlannerTests(unittest.TestCase):
         result = json.loads(encoded[0])
         self.assertEqual(result["dirty_paths"], [])
         self.assertEqual(result["route"], "same_connection")
+        self.assertFalse(result["provider_inputs_changed"])
+
+    def test_provider_input_change_requires_refresh_without_supported_source_delta(self) -> None:
+        self.publish_fixture()
+        (self.repository / "settings.json").write_text('{"enabled": true}\n')
+        result = plan_refresh(self.data, self.repository, self.project, "python")
+        self.assertEqual(result["dirty_paths"], [])
+        self.assertTrue(result["provider_inputs_changed"])
 
     def test_candidate_staging_is_durable_deterministic_and_never_published(self) -> None:
         manifest = self.manifest()
@@ -156,6 +164,17 @@ class RefreshPlannerTests(unittest.TestCase):
         (self.repository / "app.ts").write_text("export const value = 1;\n")
         typescript = self.manifest(language="typescript")
         self.assertEqual([item["path"] for item in typescript["files"]], ["app.ts"])
+
+    def test_cbmignore_excludes_generated_source_and_honors_negation(self) -> None:
+        (self.repository / ".cbmignore").write_text(
+            "generated/\n!generated/\n*.output.py\n!keep.output.py\n"
+        )
+        (self.repository / "generated").mkdir()
+        (self.repository / "generated/drop.py").write_text("drop = 1\n")
+        (self.repository / "drop.output.py").write_text("drop = 2\n")
+        (self.repository / "keep.output.py").write_text("keep = 1\n")
+        paths = [item["path"] for item in self.manifest()["files"]]
+        self.assertEqual(paths, ["generated/drop.py", "keep.output.py", "sample.py"])
 
     def test_symlink_escape_is_rejected(self) -> None:
         outside = self.root / "outside.py"

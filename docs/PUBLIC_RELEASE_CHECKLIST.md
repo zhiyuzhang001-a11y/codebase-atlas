@@ -33,6 +33,18 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.24.0 automatic on-query refresh
+
+- [x] Refresh a dirty generation automatically before the next Atlas query and
+  retain a zero-Provider current-generation path.
+- [x] Preserve and expose the previous generation after automatic failures.
+- [x] Honor root `.cbmignore` exclusions in Atlas freshness and supported source
+  inventories, including directory, glob and negation behavior.
+- [x] Expose phase timings for refresh diagnosis and retain bounded retries,
+  project leases and generation-consistent query snapshots.
+- [ ] Pass full local and remote release gates, publish stable `v0.24.0`, install
+  it side by side and complete clean-room on-query acceptance.
+
 ## 0.23.2 unified refresh correctness
 
 - [x] Route recommended shared-layout CLI mutations through the MCP generation

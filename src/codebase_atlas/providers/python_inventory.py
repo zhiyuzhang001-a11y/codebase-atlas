@@ -8,6 +8,8 @@ import stat
 import subprocess
 from collections.abc import Collection
 
+from ..cbmignore import CbmIgnore
+
 
 EXCLUDED_PARTS = {
     ".git", ".atlas", ".agent-token-manager", ".venv", "venv",
@@ -78,6 +80,7 @@ def _git_source_files(
     )
     if listed.returncode != 0:
         raise RuntimeError("Git Python source inventory failed")
+    cbmignore = CbmIgnore.load(repository)
     paths = {
         path
         for raw in listed.stdout.split(b"\0")
@@ -90,6 +93,7 @@ def _git_source_files(
                 reject_unsafe=reject_unsafe,
             )
         ) is not None
+        and not cbmignore.ignores(os.fsdecode(raw))
     }
     return tuple(sorted(paths))
 
@@ -101,6 +105,7 @@ def _fallback_source_files(
     reject_unsafe: bool,
 ) -> tuple[Path, ...]:
     files: list[Path] = []
+    cbmignore = CbmIgnore.load(repository)
     for raw_directory, raw_subdirectories, raw_files in os.walk(
         repository, followlinks=False
     ):
@@ -109,6 +114,9 @@ def _fallback_source_files(
             name for name in raw_subdirectories
             if name not in EXCLUDED_PARTS
             and not (directory / name).is_symlink()
+            and not cbmignore.ignores(
+                (directory / name).relative_to(repository).as_posix(), is_dir=True
+            )
         )
         for name in sorted(raw_files):
             path = _regular_source(
@@ -118,7 +126,9 @@ def _fallback_source_files(
                 reject_unsafe=reject_unsafe,
             )
             if path is not None:
-                files.append(path)
+                relative = path.relative_to(repository).as_posix()
+                if not cbmignore.ignores(relative):
+                    files.append(path)
     return tuple(files)
 
 

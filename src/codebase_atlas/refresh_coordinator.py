@@ -38,6 +38,26 @@ from .refresh_recovery import RefreshRecoveryJournal, recover_refresh_transactio
 from .service import AtlasService
 
 
+@contextmanager
+def _measure_phase(timings_ms: dict[str, float], name: str):
+    started = monotonic()
+    try:
+        yield
+    finally:
+        timings_ms[name] = timings_ms.get(name, 0.0) + (
+            monotonic() - started
+        ) * 1000.0
+
+
+def _with_timings(
+    payload: dict[str, Any], started: float, timings_ms: dict[str, float]
+) -> dict[str, Any]:
+    total = (monotonic() - started) * 1000.0
+    payload["duration_ms"] = total
+    payload["timings_ms"] = {**timings_ms, "total": total}
+    return payload
+
+
 def _snapshot_file(path: Path) -> bytes | None:
     if not path.exists():
         return None
@@ -241,15 +261,16 @@ class RefreshCoordinator:
             raise ValueError("mode must be fast, moderate, or full")
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
             raise ValueError("timeout_ms must be an integer between 1 and 300000")
+        started = monotonic()
+        timings_ms: dict[str, float] = {}
         if not self._lock.acquire(blocking=False):
-            return {
+            return _with_timings({
                 "schema_version": 1,
                 "status": "refresh_in_progress",
                 "route": "same_connection",
                 "previous_generation_preserved": True,
                 "next_action": "wait for the active refresh and call project_status",
-            }
-        started = monotonic()
+            }, started, timings_ms)
         lease_acquired = False
         plan: dict[str, Any] = {}
         staged_registration: StagedRegistrationIndex | None = None
@@ -262,16 +283,16 @@ class RefreshCoordinator:
         generation_before: str | None = None
         try:
             if not self._lease.acquire():
-                return {
+                return _with_timings({
                     "schema_version": 1,
                     "status": "refresh_owned_elsewhere",
                     "route": "same_project_lease",
                     "previous_generation_preserved": True,
-                    "duration_ms": (monotonic() - started) * 1000.0,
                     "next_action": "wait for the project owner and retry project_status",
-                }
+                }, started, timings_ms)
             lease_acquired = True
-            plan = self.plan()
+            with _measure_phase(timings_ms, "plan"):
+                plan = self.plan()
             generation_before = plan.get("base_generation")
             provider_current = bool(
                 self.index_status.get("provider_database", {}).get("ok")
@@ -279,25 +300,31 @@ class RefreshCoordinator:
             if (
                 plan.get("status") == "planned"
                 and not plan.get("dirty_paths")
+                and not plan.get("provider_inputs_changed")
                 and provider_current
                 and not force_provider
             ):
-                if generation_before:
+                if generation_before and (
+                    self.index_status.get("generation_id") != generation_before
+                    or self.index_status.get("status") != "fresh"
+                    or not self.index_status.get("ok")
+                ):
                     self._replace_status(str(generation_before))
-                return {
+                return _with_timings({
                     "schema_version": 1,
                     "status": "current",
                     "route": "same_connection_noop",
                     "generation_before": generation_before,
                     "generation_after": generation_before,
                     "dirty_paths": [],
+                    "provider_inputs_changed": False,
                     "provider_called": False,
                     "previous_generation_preserved": True,
-                    "duration_ms": (monotonic() - started) * 1000.0,
                     "next_action": "continue querying the current generation",
-                }
+                }, started, timings_ms)
 
-            source_before = repository_snapshot(self.config.repository)
+            with _measure_phase(timings_ms, "snapshot"):
+                source_before = repository_snapshot(self.config.repository)
             if source_before.kind != "git" or not source_before.fingerprint:
                 raise RefreshPlanError("repository snapshot is unavailable")
             observed = plan.get("observed_snapshot", {})
@@ -312,13 +339,14 @@ class RefreshCoordinator:
                 or self.index_status.get("source", {}).get("indexed_source_fingerprint")
             )
             if self.config.language == "python":
-                staged_registration = stage_registration_index(
-                    self.config.data_dir,
-                    self.config.repository,
-                    self.config.project,
-                    source_before.fingerprint,
-                    previous_source_fingerprint=str(previous_fingerprint) if previous_fingerprint else None,
-                )
+                with _measure_phase(timings_ms, "registration"):
+                    staged_registration = stage_registration_index(
+                        self.config.data_dir,
+                        self.config.repository,
+                        self.config.project,
+                        source_before.fingerprint,
+                        previous_source_fingerprint=str(previous_fingerprint) if previous_fingerprint else None,
+                    )
 
             database = self.config.cache_dir / f"{self.config.project}.db"
             if database.resolve().parent != self.config.cache_dir.resolve():
@@ -332,27 +360,30 @@ class RefreshCoordinator:
             provider_backup = ProviderDatabaseBackup.create(database)
 
             provider_called = True
-            provider = self.transport.call(
-                "index_repository",
-                {
-                    "repo_path": str(self.config.repository),
-                    "name": self.config.project,
-                    "mode": mode,
-                },
-                timeout_ms=timeout_ms,
-            )
+            with _measure_phase(timings_ms, "provider"):
+                provider = self.transport.call(
+                    "index_repository",
+                    {
+                        "repo_path": str(self.config.repository),
+                        "name": self.config.project,
+                        "mode": mode,
+                    },
+                    timeout_ms=timeout_ms,
+                )
             self.service.mark_structural_started()
             if provider.get("status") != "indexed" or provider.get("project") != self.config.project:
                 raise RefreshPlanError("Provider returned an invalid project generation")
-            health = inspect_provider_database_at(
-                self.config.cache_dir,
-                self.config.project,
-                self.config.repository,
-                deep=True,
-            )
+            with _measure_phase(timings_ms, "provider_validation"):
+                health = inspect_provider_database_at(
+                    self.config.cache_dir,
+                    self.config.project,
+                    self.config.repository,
+                    deep=True,
+                )
             if not health.get("ok") or health.get("quick_check") != ["ok"]:
                 raise RefreshPlanError(f"Provider generation validation failed: {health.get('reason')}")
-            source_after = repository_snapshot(self.config.repository)
+            with _measure_phase(timings_ms, "snapshot"):
+                source_after = repository_snapshot(self.config.repository)
             if (
                 source_after.kind != "git"
                 or source_after.fingerprint != source_before.fingerprint
@@ -386,38 +417,40 @@ class RefreshCoordinator:
                 self.config.project,
             )
 
-            if staged_registration is not None:
-                staged_registration.publish()
-                load_registration_index_state(
+            with _measure_phase(timings_ms, "publication"):
+                if staged_registration is not None:
+                    staged_registration.publish()
+                    load_registration_index_state(
+                        self.config.data_dir,
+                        self.config.repository,
+                        self.config.project,
+                        source_before.fingerprint,
+                    )
+                staged_manifest.publish(manifest_path(self.config.data_dir))
+                record_index_state(
                     self.config.data_dir,
                     self.config.repository,
                     self.config.project,
-                    source_before.fingerprint,
+                    mode,
+                    snapshot=source_after,
                 )
-            staged_manifest.publish(manifest_path(self.config.data_dir))
-            record_index_state(
-                self.config.data_dir,
-                self.config.repository,
-                self.config.project,
-                mode,
-                snapshot=source_after,
-            )
-            recovery.mark_state_published()
-            self._replace_status(generation_after)
+                recovery.mark_state_published()
+                self._replace_status(generation_after)
 
-            if staged_registration is not None:
-                staged_registration.commit()
-            staged_manifest.commit()
-            provider_backup.commit()
-            recovery.commit()
+                if staged_registration is not None:
+                    staged_registration.commit()
+                staged_manifest.commit()
+                provider_backup.commit()
+                recovery.commit()
             recovery = None
-            return {
+            return _with_timings({
                 "schema_version": 1,
                 "status": "refreshed",
                 "route": "same_connection",
                 "generation_before": generation_before,
                 "generation_after": generation_after,
                 "dirty_paths": plan.get("dirty_paths", []),
+                "provider_inputs_changed": plan.get("provider_inputs_changed", True),
                 "changes": plan.get("changes", {}),
                 "full_fallback_reason": plan.get("full_fallback_reason", ""),
                 "provider_called": True,
@@ -428,48 +461,48 @@ class RefreshCoordinator:
                     "edges": provider.get("edges"),
                 },
                 "previous_generation_preserved": False,
-                "duration_ms": (monotonic() - started) * 1000.0,
                 "next_action": "continue querying the new generation",
-            }
+            }, started, timings_ms)
         except BaseException as exc:
             rollback_errors: list[str] = []
-            for action in (
-                (lambda: staged_manifest.rollback()) if staged_manifest is not None else None,
-                (lambda: staged_registration.rollback()) if staged_registration is not None else None,
-                (lambda: _restore_file(state_path(self.config.data_dir), state_before)) if provider_called else None,
-                (lambda: _restore_file(manifest_path(self.config.data_dir), manifest_before)) if manifest_before is not None else None,
-                (lambda: provider_backup.rollback()) if provider_backup is not None and provider_called else None,
-            ):
-                if action is None:
-                    continue
-                try:
-                    action()
-                except BaseException as rollback_exc:
-                    rollback_errors.append(str(rollback_exc))
-            if recovery is not None:
-                try:
-                    recovery.rollback()
-                    recovery = None
-                except BaseException as rollback_exc:
-                    rollback_errors.append(str(rollback_exc))
+            with _measure_phase(timings_ms, "rollback"):
+                for action in (
+                    (lambda: staged_manifest.rollback()) if staged_manifest is not None else None,
+                    (lambda: staged_registration.rollback()) if staged_registration is not None else None,
+                    (lambda: _restore_file(state_path(self.config.data_dir), state_before)) if provider_called else None,
+                    (lambda: _restore_file(manifest_path(self.config.data_dir), manifest_before)) if manifest_before is not None else None,
+                    (lambda: provider_backup.rollback()) if provider_backup is not None and provider_called else None,
+                ):
+                    if action is None:
+                        continue
+                    try:
+                        action()
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(str(rollback_exc))
+                if recovery is not None:
+                    try:
+                        recovery.rollback()
+                        recovery = None
+                    except BaseException as rollback_exc:
+                        rollback_errors.append(str(rollback_exc))
             self._replace_failure_status(generation_before)
             if isinstance(exc, KeyboardInterrupt):
                 raise
-            return {
+            return _with_timings({
                 "schema_version": 1,
                 "status": "failed",
                 "route": "same_connection",
                 "generation_before": generation_before,
                 "generation_after": generation_before,
                 "dirty_paths": plan.get("dirty_paths", []),
+                "provider_inputs_changed": plan.get("provider_inputs_changed", True),
                 "provider_called": provider_called,
                 "error": str(exc),
                 "provider_stderr_tail": getattr(self.transport, "stderr_text", "")[-2000:],
                 "rollback_errors": rollback_errors,
                 "previous_generation_preserved": not rollback_errors,
-                "duration_ms": (monotonic() - started) * 1000.0,
                 "next_action": "fix the reported cause and retry refresh_index",
-            }
+            }, started, timings_ms)
         finally:
             process = getattr(self.transport, "process", None)
             if process is not None and process.poll() is None:

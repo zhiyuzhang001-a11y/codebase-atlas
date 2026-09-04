@@ -149,9 +149,9 @@ the exact Atlas-managed block. Do not commit the generated machine-specific
 absolute paths. Codex does not hot-load a new MCP into an already running task,
 so start a new task rooted at the project, call `project_status` to verify the
 exact repository and session-start freshness result, then run one real
-`analyze_change` call. The automatic refresh runs once per new MCP session; it
-does not watch edits later in that task. The software check only notifies and
-never installs.
+`analyze_change` call. The automatic refresh checks again before each Atlas code
+query, calls the Provider only after relevant changes, and does not run a
+permanent watcher. The software check only notifies and never installs.
 
 Do not use `codex mcp get` alone as the project-switching test: it may expose
 only the global management layer. The in-task `project_status` result is the

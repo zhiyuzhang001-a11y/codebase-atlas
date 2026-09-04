@@ -2,13 +2,14 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.23.2**, unifying shared-Provider CLI and MCP
-generation publication with bounded snapshot-race retries while retaining explicit same-MCP transactional index
-refresh, Git-aware Python source inventories, bounded heuristic file
+Current stable release: **0.24.0**, adding automatic on-query transactional
+refresh, Provider-aligned `.cbmignore` handling and phase timing diagnostics while
+retaining shared-Provider CLI and MCP generation publication, bounded snapshot-race
+retries, explicit same-MCP refresh, Git-aware Python source inventories, bounded heuristic file
 narrowing and a persistent managed Provider transport
 while retaining fail-closed automatic
 Codex project discovery, safe migration from a fixed global Atlas registration,
-bounded session-start index freshness, notify-only software update awareness, a
+bounded index freshness, notify-only software update awareness, a
 shared multi-project Provider layout, bounded large-repository indexing,
 memory-aware global scheduling, the task-oriented Change Brief, lightweight local UI,
 resumable exact TypeScript references, exact Python registration relationships,
@@ -49,10 +50,14 @@ query budgets, index freshness, and product interfaces.
 - explicit same-MCP `plan_refresh` and `refresh_index` operations with exact
   dirty manifests, generation-bound queries, cross-process project leases and
   previous-generation recovery on refresh failure;
+- automatic on-query dirty checks that avoid the Provider when current and
+  refresh once before the next query after a batch of source changes;
+- shared `.cbmignore` exclusions for generated artifacts plus per-phase refresh
+  timings for local scan, Provider, validation and publication diagnosis;
 - dry-run-first Codex MCP registration that refuses to overwrite or remove a
   different existing entry, plus automatic cwd-based project discovery, a
   project-scoped managed block, exact active-project status, bounded
-  session-start index refresh, and non-blocking notify-only release awareness.
+  on-query index refresh, and non-blocking notify-only release awareness.
 
 Automatic source edits, remote UI access, and cloud sync remain out of scope.
 
@@ -170,8 +175,11 @@ another repository.
 
 Start a new Codex task after applying because existing tasks do not hot-reload
 MCP configuration. Index each repository once with `codebase-atlas onboard
---apply` or `codebase-atlas index`; later task starts can perform the bounded
-freshness update. Use `project_status` to confirm the exact repository.
+--apply` or `codebase-atlas index`; later source changes are refreshed
+automatically before the next Atlas query. Use `project_status` to confirm the
+exact repository. Put generated benchmark, report or export trees in the
+repository's `.cbmignore` when they should not be indexed, for example
+`artifacts/` or `*.benchmark.json`.
 
 For a deliberate per-project override, preview and explicitly apply project
 scope. It takes precedence when Codex loads that trusted project:

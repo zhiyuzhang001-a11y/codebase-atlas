@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from codebase_atlas import __version__
 from codebase_atlas.config import AtlasConfig
+from codebase_atlas.mcp import McpServer
 from codebase_atlas.operations import operational_index_status
 from codebase_atlas.provider_transport import CodebaseMemoryMcpTransport
 from codebase_atlas.providers.cbm_impact import CodebaseMemoryImpactProvider
@@ -95,8 +96,22 @@ class ExplicitRefreshPerformanceIntegrationTests(unittest.TestCase):
                 self.assertLess(noop["duration_ms"], 250.0, noop)
 
                 seed.write_text("def seed_symbol():\n    return 1\n")
-                one = coordinator.refresh(timeout_ms=300_000)
+                server = McpServer(
+                    service, status, "warn", refresh_coordinator=coordinator,
+                    auto_update="on-query", auto_update_timeout_ms=300_000,
+                )
+                response = server.handle({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {
+                        "name": "definition",
+                        "arguments": {"symbol": "seed_symbol"},
+                    },
+                })
+                structured = response["result"]["structuredContent"]
+                one = structured["index"]["auto_update"]
+                self.assertEqual(one["status"], "refreshed", response)
                 self.assertEqual(one["dirty_paths"], ["seed.py"])
+                self.assertEqual(structured["generation_id"], one["generation"])
 
                 for index in range(5):
                     (repository / f"batch_{index}.py").write_text(

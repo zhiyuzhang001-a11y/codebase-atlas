@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.index_state import record_index_state, state_path
+from codebase_atlas import refresh_planner as refresh_planner_module
 from codebase_atlas.operations import operational_index_status
 from codebase_atlas.python_registration_store import (
     load_registration_index_state,
@@ -189,10 +190,17 @@ class RefreshCoordinatorTests(unittest.TestCase):
 
     def test_noop_skips_provider_and_is_under_250ms(self) -> None:
         started = monotonic()
-        result = self.coordinator.refresh()
+        with patch(
+            "codebase_atlas.refresh_planner.repository_snapshot",
+            wraps=refresh_planner_module.repository_snapshot,
+        ) as snapshot:
+            result = self.coordinator.refresh()
         elapsed_ms = (monotonic() - started) * 1000.0
         self.assertEqual(result["status"], "current")
         self.assertFalse(result["provider_called"])
+        self.assertIn("plan", result["timings_ms"])
+        self.assertNotIn("provider", result["timings_ms"])
+        self.assertEqual(result["duration_ms"], result["timings_ms"]["total"])
         self.assertEqual(self.transport.calls, [])
         # The 250 ms performance gate was frozen on the macOS deployment
         # platform. Windows CI still proves the cross-platform no-Provider
@@ -201,6 +209,7 @@ class RefreshCoordinatorTests(unittest.TestCase):
             self.assertLessEqual(elapsed_ms, 250.0)
             self.assertLessEqual(result["duration_ms"], 250.0)
         self.assertEqual(self.status["generation_id"], "generation-1")
+        self.assertEqual(snapshot.call_count, 1)
 
     def test_force_provider_publishes_new_generation_even_when_source_is_current(self) -> None:
         result = self.coordinator.refresh(force_provider=True)
@@ -209,6 +218,14 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(len(self.transport.calls), 1)
         self.assertNotEqual(result["generation_after"], "generation-1")
         self.assertEqual(self.status["generation_id"], result["generation_after"])
+
+    def test_provider_input_change_refreshes_even_without_python_source_delta(self) -> None:
+        (self.repository / "settings.json").write_text('{"enabled": true}\n')
+        result = self.coordinator.refresh()
+
+        self.assertEqual(result["status"], "refreshed")
+        self.assertEqual(result["dirty_paths"], [])
+        self.assertEqual(len(self.transport.calls), 1)
 
     def test_changed_plan_snapshot_defers_before_calling_provider(self) -> None:
         before = self.hashes()
@@ -246,6 +263,14 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertFalse(self.service._python_reference_cache)
         self.assertFalse(self.service._python_complete_reference_cache)
         self.assertFalse(self.service._python_caller_cache)
+        self.assertEqual(
+            set(result["timings_ms"]),
+            {
+                "plan", "snapshot", "registration", "provider",
+                "provider_validation", "publication", "total",
+            },
+        )
+        self.assertGreaterEqual(result["timings_ms"]["total"], 0.0)
 
     def test_provider_identity_failure_restores_all_published_artifacts(self) -> None:
         before = self.hashes()
@@ -260,6 +285,8 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(self.hashes(), before)
         self.assertEqual(self.status.get("generation_id"), "generation-1")
         self.assertEqual(self.status["status"], "stale")
+        self.assertIn("rollback", result["timings_ms"])
+        self.assertEqual(result["duration_ms"], result["timings_ms"]["total"])
 
     def test_state_publication_failure_rolls_back_provider_sidecar_and_manifest(self) -> None:
         before = self.hashes()

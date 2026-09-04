@@ -348,6 +348,7 @@ def plan_refresh(
             "full_fallback_reason": _baseline_reason(data_dir),
             "base_generation": None,
             "dirty_paths": [],
+            "provider_inputs_changed": True,
         }
     snapshot = repository_snapshot(root)
     if (
@@ -370,6 +371,7 @@ def plan_refresh(
                 "source_head": snapshot.head,
             },
             "dirty_paths": [],
+            "provider_inputs_changed": False,
             "changes": {"added": [], "modified": [], "deleted": [], "renamed": []},
             "reasons": [],
             "full_fallback_reason": "",
@@ -424,6 +426,7 @@ def plan_refresh(
             "source_head": current["source_head"],
         },
         "dirty_paths": sorted(set(added) | set(modified) | set(deleted)),
+        "provider_inputs_changed": True,
         "changes": {
             "added": added,
             "modified": modified,
