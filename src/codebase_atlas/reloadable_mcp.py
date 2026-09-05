@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from queue import Empty, Queue
 import subprocess
+import stat
 import sys
 from threading import Thread
 from typing import Any, Callable, Protocol
@@ -215,8 +217,25 @@ class ReloadingMcpServer:
         if resolution.status != "configured" or resolution.config is None:
             return resolution, None, resolution.operational_status(), None
         try:
-            metadata = resolution.config.stat()
+            before = os.lstat(resolution.config)
+            if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
+                raise ValueError("bootstrap config must remain a regular non-symlink file")
             config = AtlasConfig.load(resolution.config)
+            after = os.lstat(resolution.config)
+            if not stat.S_ISREG(after.st_mode) or stat.S_ISLNK(after.st_mode):
+                raise ValueError("bootstrap config changed to an unsafe file")
+            before_identity = (
+                before.st_dev, before.st_ino, before.st_size,
+                before.st_mtime_ns, before.st_ctime_ns,
+            )
+            after_identity = (
+                after.st_dev, after.st_ino, after.st_size,
+                after.st_mtime_ns, after.st_ctime_ns,
+            )
+            if before_identity != after_identity:
+                raise ValueError("bootstrap config changed while being reloaded")
+            if config.repository != self.root:
+                raise ValueError("bootstrap config repository identity changed")
             lifecycle = operational_lifecycle_status(
                 config.data_dir, config.repository, config.project
             )
@@ -229,8 +248,7 @@ class ReloadingMcpServer:
             }
             return resolution, None, status, None
         fingerprint = (
-            str(resolution.config.resolve()), metadata.st_dev, metadata.st_ino,
-            metadata.st_mtime_ns, metadata.st_size,
+            str(resolution.config.resolve()), *after_identity,
             lifecycle.get("operation_generation"), lifecycle.get("status"),
             lifecycle.get("atlas_version"), lifecycle.get("provider_version"),
             lifecycle.get("index_generation"),

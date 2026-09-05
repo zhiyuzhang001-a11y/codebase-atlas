@@ -197,6 +197,36 @@ class ReloadingMcpTests(unittest.TestCase):
             self.assertEqual(project["status"], "repository_mismatch")
             self.assertEqual(project["reason"], "bootstrap_repository_identity_changed")
 
+    def test_config_replacement_during_reload_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            config_path = root / ".codebase-atlas.toml"
+            config = AtlasConfig(
+                root, "python", root / "node", root / "cbm", root / "python",
+                root / "data", "project",
+            )
+            config.write(config_path)
+            resolution = ProjectResolution(
+                "configured", root, "project_config_and_index_ready", config_path
+            )
+            original_load = AtlasConfig.load
+
+            def replace_after_load(path):
+                loaded = original_load(path)
+                path.unlink()
+                path.write_text(config.render() + "\n", encoding="utf-8")
+                return loaded
+
+            with patch(
+                "codebase_atlas.reloadable_mcp.AtlasConfig.load",
+                side_effect=replace_after_load,
+            ):
+                server = ReloadingMcpServer(root, resolver=lambda _root: resolution)
+                response = server.handle(call(1))
+            project = response["result"]["structuredContent"]["project"]
+            self.assertEqual(project["status"], "invalid_config")
+            self.assertEqual(project["reason"], "bootstrap_config_reload_failed")
+
     def test_missing_requested_version_never_falls_back_to_current_code(self) -> None:
         config = Path("/tmp/custom-atlas.toml")
         lifecycle = {"atlas_version": "9.9.9"}
