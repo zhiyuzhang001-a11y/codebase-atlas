@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from io import BytesIO
+import json
 import os
 from pathlib import Path
 import sys
@@ -13,6 +15,7 @@ from codebase_atlas.provider_transport import (
     CodebaseMemoryMcpTransport,
     MAX_STDERR_BYTES,
     ProviderInitializeTimeout,
+    _read_frame,
 )
 
 
@@ -81,6 +84,17 @@ while True:
 
 
 class ProviderTransportTests(unittest.TestCase):
+    def test_windows_uses_line_delimited_json_and_accepts_line_response(self) -> None:
+        stream = BytesIO()
+        message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        with mock.patch("codebase_atlas.provider_transport.os.name", "nt"):
+            CodebaseMemoryMcpTransport._write(stream, message)
+        self.assertEqual(stream.getvalue(), json.dumps(
+            message, separators=(",", ":")
+        ).encode("utf-8") + b"\n")
+        stream.seek(0)
+        self.assertEqual(_read_frame(stream), message)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="atlas-provider-transport-")
         self.root = Path(self.temporary.name)

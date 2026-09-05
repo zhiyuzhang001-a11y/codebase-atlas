@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -30,7 +31,15 @@ def _read_frame(stream: BinaryIO) -> dict[str, Any]:
     if not first:
         raise EOFError("Provider stdout closed")
     if not first.lower().startswith(b"content-length:"):
-        raise ValueError("Provider returned malformed MCP framing")
+        if len(first) > MAX_FRAME_BYTES:
+            raise ValueError("Provider returned oversized MCP line")
+        try:
+            value = json.loads(first)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Provider returned malformed MCP framing") from exc
+        if not isinstance(value, dict):
+            raise ValueError("Provider returned a non-object MCP response")
+        return value
     try:
         length = int(first.split(b":", 1)[1].strip())
     except ValueError as exc:
@@ -142,8 +151,11 @@ class CodebaseMemoryMcpTransport:
     @staticmethod
     def _write(stream: BinaryIO, message: dict[str, Any]) -> None:
         payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
-        stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
-        stream.write(payload)
+        if os.name == "nt":
+            stream.write(payload + b"\n")
+        else:
+            stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
+            stream.write(payload)
         stream.flush()
 
     def _request(self, method: str, params: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
