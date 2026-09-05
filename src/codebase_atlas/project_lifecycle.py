@@ -314,15 +314,33 @@ def publish_lifecycle_state(data_dir: Path, state: ProjectLifecycleState) -> Pat
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.parent.is_symlink():
         raise ValueError("lifecycle state directory must not be a symlink")
-    original_identity: tuple[int, int] | None = None
+    original_identity: tuple[int, int, int, int, int] | None = None
+    original_descriptor = -1
     if os.path.lexists(path):
         metadata = os.lstat(path)
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise ValueError("lifecycle state must be a regular non-symlink file")
-        original_identity = (metadata.st_dev, metadata.st_ino)
-    descriptor, raw_temporary = tempfile.mkstemp(
-        prefix=".lifecycle-state-", suffix=".json", dir=path.parent
-    )
+        original_identity = (
+            metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns,
+        )
+        if os.name != "nt":
+            original_descriptor = os.open(
+                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            opened = os.fstat(original_descriptor)
+            if (opened.st_dev, opened.st_ino) != original_identity[:2]:
+                os.close(original_descriptor)
+                original_descriptor = -1
+                raise ValueError("lifecycle state changed before publication")
+    try:
+        descriptor, raw_temporary = tempfile.mkstemp(
+            prefix=".lifecycle-state-", suffix=".json", dir=path.parent
+        )
+    except OSError:
+        if original_descriptor >= 0:
+            os.close(original_descriptor)
+        raise
     temporary = Path(raw_temporary)
     try:
         if os.name != "nt":
@@ -339,7 +357,10 @@ def publish_lifecycle_state(data_dir: Path, state: ProjectLifecycleState) -> Pat
                 original_identity is None
                 or not stat.S_ISREG(current.st_mode)
                 or stat.S_ISLNK(current.st_mode)
-                or (current.st_dev, current.st_ino) != original_identity
+                or (
+                    current.st_dev, current.st_ino, current.st_size,
+                    current.st_mtime_ns, current.st_ctime_ns,
+                ) != original_identity
             ):
                 raise ValueError("lifecycle state changed before publication")
         elif original_identity is not None:
@@ -349,4 +370,6 @@ def publish_lifecycle_state(data_dir: Path, state: ProjectLifecycleState) -> Pat
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        if original_descriptor >= 0:
+            os.close(original_descriptor)
         temporary.unlink(missing_ok=True)
