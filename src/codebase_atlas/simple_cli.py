@@ -7,6 +7,7 @@ import ast
 from contextlib import redirect_stdout
 from dataclasses import replace
 from io import StringIO
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,10 +20,14 @@ from typing import Any
 
 from . import __version__
 from .cli import _index_repository, main as advanced_main
-from .codex_integration import codex_apply, codex_plan
+from .codex_integration import codex_apply, codex_plan, codex_remove
 from .config import AtlasConfig, CONFIG_NAME, diagnose
 from .index_state import index_freshness
-from .lifecycle import ProjectOperationLease, ProjectRefreshLease
+from .lifecycle import (
+    ProjectOperationLease,
+    ProjectRefreshLease,
+    default_project_operation_dir,
+)
 from .maintenance import inspect_installation
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .project_discovery import ProjectResolution, resolve_project
@@ -30,8 +35,13 @@ from .project_lifecycle import (
     ProjectLifecycleState,
     lifecycle_state_path,
     load_lifecycle_state,
+    load_removal_marker,
+    project_recovery_root,
     publish_lifecycle_state,
+    publish_removal_marker,
+    removal_marker_path,
 )
+from .provider_layout import provider_project_identity
 from .runtime import required_checks_ok
 from .release_installation import (
     VersionedInstallation,
@@ -84,9 +94,112 @@ def _repository_root(start: Path) -> tuple[Path, ProjectResolution]:
 
 
 def _operation_project(repository: Path) -> str:
-    from .provider_layout import provider_project_identity
-
     return provider_project_identity(repository)
+
+
+def _project_operation_lock(repository: Path) -> ProjectOperationLease:
+    return ProjectOperationLease(
+        default_project_operation_dir(), repository, _operation_project(repository)
+    )
+
+
+def _load_removal_receipt(repository: Path, marker: dict[str, Any]) -> dict[str, Any]:
+    receipt_path = Path(str(marker["receipt"]))
+    recovery_root = project_recovery_root(repository).resolve()
+    if (
+        not receipt_path.is_absolute()
+        or not receipt_path.resolve().is_relative_to(recovery_root)
+        or receipt_path.is_symlink()
+        or not receipt_path.is_file()
+    ):
+        raise RuntimeError("removal receipt is unavailable or unsafe")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("removal receipt is unreadable") from exc
+    required = {
+        "schema_version", "status", "operation_id", "repository", "project",
+        "original_config", "recovered_config", "original_data_dir",
+        "recovered_data_dir", "config_sha256", "codex_config_changed",
+        "shared_installation_removed",
+    }
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != required
+        or receipt.get("schema_version") != 1
+        or receipt.get("status") != "removed"
+        or receipt.get("operation_id") != marker["operation_id"]
+        or receipt.get("repository") != str(repository.resolve())
+        or receipt.get("project") != marker["project"]
+    ):
+        raise RuntimeError("removal receipt schema or identity is invalid")
+    return receipt
+
+
+def _restore_removed_project(
+    repository: Path, marker: dict[str, Any]
+) -> None:
+    receipt = _load_removal_receipt(repository, marker)
+    config_path = Path(str(receipt["original_config"]))
+    recovered_config = Path(str(receipt["recovered_config"]))
+    data_dir = Path(str(receipt["original_data_dir"]))
+    recovered_data = Path(str(receipt["recovered_data_dir"]))
+    recovery_root = project_recovery_root(repository).resolve()
+    if (
+        not recovered_config.resolve().is_relative_to(recovery_root)
+        or not recovered_data.resolve().is_relative_to(recovery_root)
+        or recovered_config.is_symlink() or not recovered_config.is_file()
+        or recovered_data.is_symlink() or not recovered_data.is_dir()
+        or config_path.exists() or data_dir.exists()
+    ):
+        raise RuntimeError("removed project assets cannot be restored safely")
+    config_bytes = recovered_config.read_bytes()
+    if hashlib.sha256(config_bytes).hexdigest() != receipt["config_sha256"]:
+        raise RuntimeError("recovered project config checksum mismatch")
+    recovered = AtlasConfig.load(recovered_config)
+    if (
+        recovered.repository != repository.resolve()
+        or recovered.data_dir != data_dir.resolve()
+        or recovered.project != marker["project"]
+    ):
+        raise RuntimeError("recovered project config identity mismatch")
+    operation_lock = _project_operation_lock(repository)
+    if not operation_lock.acquire():
+        raise RuntimeError("another lifecycle operation owns this project")
+    restored_config_identity: tuple[int, int] | None = None
+    data_restored = False
+    try:
+        current_marker = load_removal_marker(repository)
+        if current_marker != marker:
+            raise RuntimeError("removal marker changed before recovery")
+        os.replace(recovered_data, data_dir)
+        data_restored = True
+        _write_recovery_file(config_path, config_bytes)
+        config_meta = os.lstat(config_path)
+        restored_config_identity = (config_meta.st_dev, config_meta.st_ino)
+        removed_state = load_lifecycle_state(
+            data_dir, repository, recovered.project, missing_status="removed"
+        )
+        if removed_state.status != "removed":
+            raise RuntimeError("recovered project lifecycle is not removed")
+        publish_lifecycle_state(data_dir, removed_state.transition("stopped"))
+        marker_path = removal_marker_path(repository)
+        marker_meta = os.lstat(marker_path)
+        _unlink_verified(marker_path, (marker_meta.st_dev, marker_meta.st_ino))
+    except (OSError, RuntimeError, ValueError):
+        if restored_config_identity is not None and config_path.exists():
+            try:
+                _unlink_verified(config_path, restored_config_identity)
+            except (OSError, RuntimeError):
+                pass
+        if data_restored and data_dir.exists() and not recovered_data.exists():
+            try:
+                os.replace(data_dir, recovered_data)
+            except OSError:
+                pass
+        raise
+    finally:
+        operation_lock.release()
 
 
 def _acquire_refresh(
@@ -256,6 +369,20 @@ def enable_project(
     mode: str = "fast",
 ) -> tuple[dict[str, Any], int]:
     root, resolution = _repository_root(repository)
+    removal = load_removal_marker(root)
+    if removal is not None:
+        if removal["status"] != "removed":
+            return _result(
+                "enable", "blocked", root, mutates=False,
+                project_state="removing", index_status="recovery_area",
+                connection_status="removed", receipt=removal["receipt"],
+                error="an incomplete removal must be recovered before enable",
+            ), 2
+        _restore_removed_project(root, removal)
+        root, resolution = _repository_root(root)
+        restored_from_receipt = True
+    else:
+        restored_from_receipt = False
     selected_config = (
         config_path.resolve()
         if config_path is not None
@@ -273,9 +400,7 @@ def enable_project(
             connection_status="not_configured", error=plan.get("error", ""),
             onboarding=plan,
         ), 2
-    operation_lock = ProjectOperationLease(
-        candidate.data_dir, root, _operation_project(root)
-    )
+    operation_lock = _project_operation_lock(root)
     if not operation_lock.acquire():
         return _result(
             "enable", "blocked", root, mutates=False,
@@ -368,7 +493,8 @@ def enable_project(
         return _result(
             "enable", "ready", root,
             mutates=bool(applied.get("config_created"))
-            or bool(codex_result.get("mutates")) or state_mutated,
+            or bool(codex_result.get("mutates")) or state_mutated
+            or restored_from_receipt,
             project_state="ready", index_status="fresh",
             connection_status="configured_task_start_required",
             config=str(selected_config), project=configured.project,
@@ -437,9 +563,7 @@ def stop_project(
             connection_status="unchanged",
         ), 0
     config = AtlasConfig.load(resolution.config)
-    operation_lock = ProjectOperationLease(
-        config.data_dir, root, _operation_project(root)
-    )
+    operation_lock = _project_operation_lock(root)
     if not operation_lock.acquire():
         return _result(
             "stop", "blocked", root, mutates=False,
@@ -565,9 +689,7 @@ def update_project(
             connection_status="unchanged", latest_version=release.version,
         ), 0
     installation, installation_mutated = installer(release)
-    operation_lock = ProjectOperationLease(
-        config.data_dir, root, _operation_project(root)
-    )
+    operation_lock = _project_operation_lock(root)
     if not operation_lock.acquire():
         return _result(
             "update", "blocked", root, mutates=installation_mutated,
@@ -690,6 +812,222 @@ def update_project(
         operation_lock.release()
 
 
+def _write_recovery_file(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _unlink_verified(path: Path, identity: tuple[int, int]) -> None:
+    current = os.lstat(path)
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or stat.S_ISLNK(current.st_mode)
+        or (current.st_dev, current.st_ino) != identity
+    ):
+        raise RuntimeError("managed file changed before recoverable removal")
+    path.unlink()
+
+
+def _restore_snapshot(
+    path: Path, identity: tuple[int, int], payload: bytes
+) -> None:
+    if path.exists():
+        AtlasConfig.restore_verified(path, identity, payload)
+    else:
+        _write_recovery_file(path, payload)
+
+
+def remove_project(
+    repository: Path, *, timeout_seconds: float = 30.0
+) -> tuple[dict[str, Any], int]:
+    root, resolution = _repository_root(repository)
+    existing_marker = load_removal_marker(root)
+    if existing_marker is not None and existing_marker["status"] == "removed":
+        return _result(
+            "remove", "removed", root, mutates=False,
+            project_state="removed", index_status="recovery_area",
+            connection_status="removed", receipt=existing_marker["receipt"],
+        ), 0
+    if resolution.status != "configured" or resolution.config is None:
+        return _result(
+            "remove", "not_enabled", root, mutates=False,
+            project_state=resolution.status, index_status="unavailable",
+            connection_status="unchanged",
+        ), 0
+    config_path = resolution.config.resolve()
+    config = AtlasConfig.load(config_path)
+    operation_lock = _project_operation_lock(root)
+    if not operation_lock.acquire():
+        return _result(
+            "remove", "blocked", root, mutates=False,
+            project_state="busy", index_status="preserved",
+            connection_status="unchanged",
+            error="another lifecycle operation owns this project",
+        ), 2
+    refresh = ProjectRefreshLease(config.data_dir, config.repository, config.project)
+    refresh_acquired = False
+    operation_id = secrets.token_hex(16)
+    recovery_root = project_recovery_root(root).resolve()
+    operation_root = recovery_root / operation_id
+    receipt_path = operation_root / "receipt.json"
+    data_destination = operation_root / "data"
+    config_destination = operation_root / "project-config.toml"
+    config_identity: tuple[int, int] | None = None
+    config_bytes = b""
+    codex_target: Path | None = None
+    codex_identity: tuple[int, int] | None = None
+    codex_bytes = b""
+    marker_identity: tuple[int, int] | None = None
+    data_moved = False
+    config_removed = False
+    codex_changed = False
+    previous: ProjectLifecycleState | None = None
+    try:
+        if existing_marker is not None:
+            raise RuntimeError("an incomplete prior removal requires recovery")
+        recovery_root.mkdir(parents=True, exist_ok=True)
+        if recovery_root.is_symlink() or not recovery_root.is_dir():
+            raise RuntimeError("project recovery root must be a real directory")
+        if os.name != "nt":
+            recovery_root.chmod(0o700)
+        operation_root.mkdir(mode=0o700)
+        if os.stat(config.data_dir).st_dev != os.stat(operation_root).st_dev:
+            raise RuntimeError(
+                "custom data directory is on another filesystem; refusing non-atomic removal"
+            )
+        if not _acquire_refresh(refresh, timeout_seconds=timeout_seconds):
+            raise RuntimeError("timed out waiting for the active project refresh")
+        refresh_acquired = True
+        previous = load_lifecycle_state(
+            config.data_dir, config.repository, config.project
+        )
+        if previous.status not in {"ready", "stopped", "failed"}:
+            raise RuntimeError("project lifecycle is not stable enough to remove")
+        config_identity, config_bytes = _regular_snapshot(config_path)
+        preview = codex_plan(config_path, scope="project", codex_project_root=root)
+        if preview["status"] == "blocked":
+            raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
+        codex_target = Path(str(preview["target"]))
+        if codex_target.exists():
+            codex_identity, codex_bytes = _regular_snapshot(codex_target)
+        removing = previous.transition("removing", operation_id=operation_id)
+        publish_lifecycle_state(config.data_dir, removing)
+        publish_removal_marker(
+            root, config.project, operation_id, receipt_path, status="removing"
+        )
+        marker_meta = os.lstat(removal_marker_path(root))
+        marker_identity = (marker_meta.st_dev, marker_meta.st_ino)
+        codex_result = codex_remove(
+            config_path, scope="project", codex_project_root=root
+        )
+        codex_changed = bool(codex_result.get("mutates"))
+        _write_recovery_file(config_destination, config_bytes)
+        if hashlib.sha256(config_destination.read_bytes()).digest() != hashlib.sha256(config_bytes).digest():
+            raise RuntimeError("recovered project config digest mismatch")
+        _unlink_verified(config_path, config_identity)
+        config_removed = True
+        removed_state = removing.transition("removed")
+        publish_lifecycle_state(config.data_dir, removed_state)
+        refresh.release()
+        refresh_acquired = False
+        os.replace(config.data_dir, data_destination)
+        data_moved = True
+        receipt = {
+            "schema_version": 1,
+            "status": "removed",
+            "operation_id": operation_id,
+            "repository": str(root),
+            "project": config.project,
+            "original_config": str(config_path),
+            "recovered_config": str(config_destination),
+            "original_data_dir": str(config.data_dir),
+            "recovered_data_dir": str(data_destination),
+            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "codex_config_changed": codex_changed,
+            "shared_installation_removed": False,
+        }
+        _write_recovery_file(
+            receipt_path,
+            (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        )
+        publish_removal_marker(
+            root, config.project, operation_id, receipt_path, status="removed"
+        )
+        return _result(
+            "remove", "removed", root, mutates=True,
+            project_state="removed", index_status="recovery_area",
+            connection_status="removed", receipt=str(receipt_path),
+            recovery_data=str(data_destination),
+        ), 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        rollback_errors = []
+        if data_moved:
+            try:
+                if config.data_dir.exists():
+                    raise RuntimeError("original data directory was recreated")
+                os.replace(data_destination, config.data_dir)
+                data_moved = False
+            except (OSError, RuntimeError) as rollback:
+                rollback_errors.append(f"data: {rollback}")
+        if config_removed and config_identity is not None:
+            try:
+                _restore_snapshot(config_path, config_identity, config_bytes)
+                config_removed = False
+            except (OSError, ValueError) as rollback:
+                rollback_errors.append(f"config: {rollback}")
+        if codex_changed and codex_target is not None and codex_identity is not None:
+            try:
+                _restore_snapshot(codex_target, codex_identity, codex_bytes)
+            except (OSError, ValueError) as rollback:
+                rollback_errors.append(f"codex: {rollback}")
+        if previous is not None and config.data_dir.exists():
+            try:
+                current = load_lifecycle_state(
+                    config.data_dir, config.repository, config.project,
+                    missing_status=previous.status,
+                )
+                restored = current.transition(
+                    previous.status,
+                    atlas_version=previous.atlas_version,
+                    provider_version=previous.provider_version,
+                    index_generation=previous.index_generation,
+                    failure_reason=(
+                        previous.failure_reason if previous.status == "failed" else ""
+                    ),
+                )
+                publish_lifecycle_state(config.data_dir, restored)
+            except (OSError, ValueError) as rollback:
+                rollback_errors.append(f"lifecycle: {rollback}")
+        if marker_identity is not None:
+            try:
+                _unlink_verified(removal_marker_path(root), marker_identity)
+            except (OSError, RuntimeError) as rollback:
+                rollback_errors.append(f"marker: {rollback}")
+        detail = str(exc)
+        if rollback_errors:
+            detail += "; rollback failed: " + "; ".join(rollback_errors)
+        return _result(
+            "remove", "incomplete", root,
+            mutates=bool(config_removed or data_moved or codex_changed),
+            project_state=previous.status if previous else "unknown",
+            index_status="preserved", connection_status="unchanged",
+            error=detail,
+        ), 2
+    finally:
+        if refresh_acquired:
+            refresh.release()
+        operation_lock.release()
+
+
 def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -728,6 +1066,10 @@ def main(argv: list[str] | None = None) -> int:
     update.add_argument("--repo", type=Path, default=Path.cwd())
     update.add_argument("--timeout", type=float, default=30.0)
     update.add_argument("--json", action="store_true")
+    remove = commands.add_parser("remove", help="recoverably remove Atlas from this project")
+    remove.add_argument("--repo", type=Path, default=Path.cwd())
+    remove.add_argument("--timeout", type=float, default=30.0)
+    remove.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "enable":
@@ -741,10 +1083,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.timeout < 0 or args.timeout > 300:
                 raise ValueError("--timeout must be between 0 and 300 seconds")
             payload, code = stop_project(args.repo, timeout_seconds=args.timeout)
-        else:
+        elif args.command == "update":
             if args.timeout < 0 or args.timeout > 300:
                 raise ValueError("--timeout must be between 0 and 300 seconds")
             payload, code = update_project(args.repo, timeout_seconds=args.timeout)
+        else:
+            if args.timeout < 0 or args.timeout > 300:
+                raise ValueError("--timeout must be between 0 and 300 seconds")
+            payload, code = remove_project(args.repo, timeout_seconds=args.timeout)
     except (OSError, RuntimeError, ValueError) as exc:
         payload = _result(
             args.command, "blocked", args.repo, mutates=False,

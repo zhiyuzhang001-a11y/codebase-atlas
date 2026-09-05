@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 from io import StringIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -15,9 +16,10 @@ from codebase_atlas.project_discovery import ProjectResolution
 from codebase_atlas.project_lifecycle import (
     ProjectLifecycleState,
     load_lifecycle_state,
+    load_removal_marker,
     publish_lifecycle_state,
 )
-from codebase_atlas.simple_cli import enable_project, main, stop_project
+from codebase_atlas.simple_cli import enable_project, main, remove_project, stop_project
 from codebase_atlas.simple_cli import update_project
 from codebase_atlas.release_installation import VersionedInstallation
 
@@ -289,6 +291,181 @@ class SimpleCliTests(unittest.TestCase):
                     config.data_dir, config.repository, config.project
                 ).status,
                 "stopped",
+            )
+
+    def test_remove_moves_owned_config_and_data_to_recovery_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(repository, config.project),
+            )
+            (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            codex_target = repository / ".codex/config.toml"
+            with (
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}),
+                patch(
+                    "codebase_atlas.simple_cli.resolve_project",
+                    return_value=resolution,
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"status": "planned", "target": str(codex_target)},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_remove",
+                    return_value={"status": "absent", "mutates": False},
+                ),
+            ):
+                first, first_code = remove_project(repository, timeout_seconds=0)
+                second, second_code = remove_project(repository, timeout_seconds=0)
+            self.assertEqual((first_code, second_code), (0, 0))
+            self.assertTrue(first["mutates"])
+            self.assertFalse(second["mutates"])
+            self.assertFalse(path.exists())
+            self.assertFalse(config.data_dir.exists())
+            receipt = Path(first["receipt"])
+            self.assertTrue(receipt.is_file())
+            recovered = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertTrue(Path(recovered["recovered_config"]).is_file())
+            self.assertTrue(
+                (Path(recovered["recovered_data_dir"]) / "owned-index").is_file()
+            )
+
+    def test_remove_failure_restores_project_and_clears_incomplete_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(repository, config.project),
+            )
+            (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            codex_target = repository / ".codex/config.toml"
+            from codebase_atlas import simple_cli
+
+            real_publish = simple_cli.publish_removal_marker
+            calls = 0
+
+            def fail_final_marker(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected final marker failure")
+                return real_publish(*args, **kwargs)
+
+            with (
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}),
+                patch(
+                    "codebase_atlas.simple_cli.resolve_project",
+                    return_value=resolution,
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"status": "planned", "target": str(codex_target)},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_remove",
+                    return_value={"status": "absent", "mutates": False},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.publish_removal_marker",
+                    side_effect=fail_final_marker,
+                ),
+            ):
+                result, code = remove_project(repository, timeout_seconds=0)
+                marker = simple_cli.load_removal_marker(repository)
+            self.assertEqual(code, 2)
+            self.assertIn("injected final marker failure", result["error"])
+            self.assertTrue(path.is_file())
+            self.assertTrue((config.data_dir / "owned-index").is_file())
+            self.assertIsNone(marker)
+            self.assertEqual(
+                load_lifecycle_state(
+                    config.data_dir, config.repository, config.project
+                ).status,
+                "ready",
+            )
+
+    def test_enable_restores_a_removed_project_before_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(repository, config.project),
+            )
+            (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            codex_target = repository / ".codex/config.toml"
+            onboarding = {"status": "planned", "config": str(path)}
+            ready_checks = [{"name": "all", "ok": True, "required": True}]
+            with (
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}),
+                patch(
+                    "codebase_atlas.simple_cli.resolve_project",
+                    return_value=resolution,
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"status": "planned", "target": str(codex_target)},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_remove",
+                    return_value={"status": "absent", "mutates": False},
+                ),
+            ):
+                removed, remove_code = remove_project(repository, timeout_seconds=0)
+                self.assertEqual(remove_code, 0)
+                with (
+                    patch(
+                        "codebase_atlas.simple_cli.build_plan",
+                        return_value=(onboarding, config),
+                    ),
+                    patch(
+                        "codebase_atlas.simple_cli.apply_plan",
+                        return_value=(onboarding | {"status": "current"}, 0),
+                    ),
+                    patch(
+                        "codebase_atlas.simple_cli.codex_apply",
+                        return_value={"status": "ready", "mutates": True},
+                    ),
+                    patch(
+                        "codebase_atlas.simple_cli.diagnose",
+                        return_value=ready_checks,
+                    ),
+                    patch(
+                        "codebase_atlas.simple_cli.index_freshness",
+                        return_value={
+                            "status": "fresh", "source_fingerprint": "fingerprint"
+                        },
+                    ),
+                    patch(
+                        "codebase_atlas.simple_cli.inspect_installation",
+                        return_value={"ok": True},
+                    ),
+                    patch(
+                        "codebase_atlas.simple_cli._verification_query",
+                        return_value={
+                            "symbol": "target", "cross_project_negative": "pass"
+                        },
+                    ),
+                ):
+                    enabled, enable_code = enable_project(repository)
+                marker = load_removal_marker(repository)
+            self.assertEqual(enable_code, 0)
+            self.assertTrue(enabled["mutates"])
+            self.assertTrue(path.is_file())
+            self.assertTrue((config.data_dir / "owned-index").is_file())
+            self.assertIsNone(marker)
+            self.assertEqual(
+                load_lifecycle_state(
+                    config.data_dir, config.repository, config.project
+                ).status,
+                "ready",
             )
 
 

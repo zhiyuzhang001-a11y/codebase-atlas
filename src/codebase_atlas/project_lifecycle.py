@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 import tempfile
 from typing import Any
+
+from .provider_layout import atlas_data_root
 
 
 SCHEMA_VERSION = 1
@@ -20,6 +23,20 @@ LIFECYCLE_STATES = STABLE_STATES | TRANSITION_STATES
 
 def lifecycle_state_path(data_dir: Path) -> Path:
     return data_dir.resolve() / "lifecycle-state.json"
+
+
+def project_recovery_root(repository: Path) -> Path:
+    canonical = repository.resolve()
+    readable = "".join(
+        character if character.isalnum() or character in "._-" else "-"
+        for character in canonical.name
+    ).strip("-._") or "project"
+    digest = hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()[:24]
+    return atlas_data_root() / "_recovery" / "projects" / f"{readable[:40]}-{digest}"
+
+
+def removal_marker_path(repository: Path) -> Path:
+    return project_recovery_root(repository) / "removed.json"
 
 
 def _timestamp() -> str:
@@ -161,6 +178,22 @@ def operational_lifecycle_status(
     data_dir: Path, repository: Path, project: str
 ) -> dict[str, Any]:
     """Return a fail-closed request gate for one exact configured project."""
+    marker = load_removal_marker(repository)
+    if marker is not None:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": str(marker["status"]),
+            "ok": False,
+            "reason": (
+                "project_removed"
+                if marker["status"] == "removed"
+                else "project_removal_in_progress"
+            ),
+            "repository": str(repository.resolve()),
+            "project": str(marker["project"]),
+            "receipt": str(marker["receipt"]),
+            "operation_id": str(marker["operation_id"]),
+        }
     try:
         state = load_lifecycle_state(data_dir, repository, project)
     except ValueError as exc:
@@ -187,6 +220,90 @@ def operational_lifecycle_status(
         "ok": state.status == "ready",
         "reason": reasons[state.status],
     }
+
+
+def load_removal_marker(repository: Path) -> dict[str, Any] | None:
+    path = removal_marker_path(repository)
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ValueError("removal marker must be a regular non-symlink file")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("removal marker is unreadable") from exc
+    expected = {
+        "schema_version", "status", "repository", "project",
+        "operation_id", "receipt", "updated_at",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) != expected
+        or value.get("schema_version") != SCHEMA_VERSION
+        or value.get("status") not in {"removing", "removed"}
+        or value.get("repository") != str(repository.resolve())
+        or not all(
+            isinstance(value.get(name), str) and value.get(name)
+            for name in ("project", "operation_id", "receipt", "updated_at")
+        )
+    ):
+        raise ValueError("removal marker schema or identity is invalid")
+    receipt = Path(str(value["receipt"]))
+    if not receipt.is_absolute() or not receipt.is_relative_to(
+        project_recovery_root(repository).resolve()
+    ):
+        raise ValueError("removal marker receipt path is unsafe")
+    return value
+
+
+def publish_removal_marker(
+    repository: Path,
+    project: str,
+    operation_id: str,
+    receipt: Path,
+    *,
+    status: str,
+) -> Path:
+    if status not in {"removing", "removed"}:
+        raise ValueError("unsupported removal marker status")
+    root = project_recovery_root(repository).resolve()
+    selected_receipt = receipt.resolve()
+    if not selected_receipt.is_relative_to(root):
+        raise ValueError("removal receipt must remain inside the project recovery root")
+    path = removal_marker_path(repository)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink():
+        raise ValueError("project recovery root must not be a symlink")
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "repository": str(repository.resolve()),
+        "project": project,
+        "operation_id": operation_id,
+        "receipt": str(selected_receipt),
+        "updated_at": _timestamp(),
+    }
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".removed-", suffix=".json", dir=path.parent
+    )
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return path
 
 
 def publish_lifecycle_state(data_dir: Path, state: ProjectLifecycleState) -> Path:

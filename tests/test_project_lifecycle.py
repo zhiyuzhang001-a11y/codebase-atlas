@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,8 +12,11 @@ from codebase_atlas.project_lifecycle import (
     ProjectLifecycleState,
     lifecycle_state_path,
     load_lifecycle_state,
+    load_removal_marker,
     operational_lifecycle_status,
+    project_recovery_root,
     publish_lifecycle_state,
+    publish_removal_marker,
 )
 
 
@@ -114,6 +118,26 @@ class ProjectLifecycleStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed before publication"):
                     publish_lifecycle_state(data, replacement)
             self.assertEqual(path.read_text(encoding="utf-8"), '{"foreign": true}\n')
+
+    def test_removal_marker_fails_closed_after_project_data_moves(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            state_root = root / "state"
+            with patch.dict(os.environ, {"XDG_DATA_HOME": str(state_root)}):
+                receipt = project_recovery_root(repository) / "op" / "receipt.json"
+                publish_removal_marker(
+                    repository, "project-a", "operation-1", receipt,
+                    status="removed",
+                )
+                marker = load_removal_marker(repository)
+                status = operational_lifecycle_status(
+                    root / "missing-data", repository, "project-a"
+                )
+            self.assertEqual(marker["receipt"], str(receipt.resolve()))
+            self.assertFalse(status["ok"])
+            self.assertEqual(status["status"], "removed")
 
 
 class ProjectOperationLeaseTests(unittest.TestCase):

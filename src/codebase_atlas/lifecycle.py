@@ -41,6 +41,16 @@ def default_cbm_lock_path() -> Path:
     return runtime / f"codebase-atlas-cbm-{user}.lock"
 
 
+def default_project_operation_dir() -> Path:
+    runtime = Path(
+        os.environ.get("ATLAS_RUNTIME_DIR")
+        or os.environ.get("XDG_RUNTIME_DIR")
+        or tempfile.gettempdir()
+    )
+    user = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
+    return runtime / f"codebase-atlas-project-operations-{user}"
+
+
 class GlobalCbmLock:
     """Cross-process lock for the upstream Provider's single global daemon."""
 
