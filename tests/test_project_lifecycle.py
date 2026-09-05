@@ -11,6 +11,7 @@ from codebase_atlas.project_lifecycle import (
     ProjectLifecycleState,
     lifecycle_state_path,
     load_lifecycle_state,
+    operational_lifecycle_status,
     publish_lifecycle_state,
 )
 
@@ -48,6 +49,20 @@ class ProjectLifecycleStateTests(unittest.TestCase):
             state = ProjectLifecycleState.initial(Path(raw), "project-a")
             with self.assertRaisesRegex(ValueError, "operation id"):
                 state.transition("updating")
+
+    def test_operational_status_fails_closed_for_stopped_and_invalid_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            data = root / "data"
+            state = ProjectLifecycleState.initial(root, "project-a").transition("stopped")
+            publish_lifecycle_state(data, state)
+            stopped = operational_lifecycle_status(data, root, "project-a")
+            self.assertFalse(stopped["ok"])
+            self.assertEqual(stopped["reason"], "project_stopped")
+            lifecycle_state_path(data).write_text("not json", encoding="utf-8")
+            invalid = operational_lifecycle_status(data, root, "project-a")
+            self.assertFalse(invalid["ok"])
+            self.assertEqual(invalid["reason"], "lifecycle_state_invalid")
 
     def test_unsafe_state_path_is_rejected_without_touching_target(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -157,6 +157,38 @@ def load_lifecycle_state(
     return _decode_state(value, repository, project)
 
 
+def operational_lifecycle_status(
+    data_dir: Path, repository: Path, project: str
+) -> dict[str, Any]:
+    """Return a fail-closed request gate for one exact configured project."""
+    try:
+        state = load_lifecycle_state(data_dir, repository, project)
+    except ValueError as exc:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "failed",
+            "ok": False,
+            "reason": "lifecycle_state_invalid",
+            "detail": str(exc),
+            "repository": str(repository.resolve()),
+            "project": project,
+        }
+    reasons = {
+        "ready": "project_ready",
+        "stopped": "project_stopped",
+        "removed": "project_removed",
+        "failed": "lifecycle_operation_failed",
+        "enabling": "lifecycle_operation_in_progress",
+        "stopping": "lifecycle_operation_in_progress",
+        "updating": "lifecycle_operation_in_progress",
+        "removing": "lifecycle_operation_in_progress",
+    }
+    return state.to_dict() | {
+        "ok": state.status == "ready",
+        "reason": reasons[state.status],
+    }
+
+
 def publish_lifecycle_state(data_dir: Path, state: ProjectLifecycleState) -> Path:
     """Atomically publish one validated Atlas-owned lifecycle state."""
     repository = Path(state.repository)

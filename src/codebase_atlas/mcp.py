@@ -6,7 +6,7 @@ from dataclasses import asdict
 import json
 import sys
 from contextlib import nullcontext
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 from . import __version__
 from .change_analysis import CHANGE_INTENTS, analyze_change
@@ -307,6 +307,7 @@ class McpServer:
         refresh_coordinator: Any | None = None,
         auto_update: str = "off",
         auto_update_timeout_ms: int = 60_000,
+        availability: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.service = service
         self.index_status = index_status
@@ -314,6 +315,7 @@ class McpServer:
         self.instructions = instructions
         self.version_notifier = version_notifier
         self.refresh_coordinator = refresh_coordinator
+        self.availability = availability
         if auto_update not in {"off", "session-start", "on-query"}:
             raise ValueError(f"unsupported automatic update policy: {auto_update}")
         self.auto_update = auto_update
@@ -416,9 +418,39 @@ class McpServer:
         if not isinstance(arguments, dict):
             return self._error(request_id, -32602, "Tool arguments must be an object")
         try:
+            availability = (
+                self.availability()
+                if self.availability is not None
+                else {"status": "ready", "ok": True, "reason": "project_ready"}
+            )
+            if not isinstance(availability, dict):
+                raise ValueError("project availability must be an object")
             if self.version_notifier is not None and self.index_status is not None:
                 self.index_status["software_update"] = self.version_notifier.current()
             if name == "project_status":
+                if not bool(availability.get("ok")):
+                    preserved = dict(self.index_status or {})
+                    status = {
+                        **preserved,
+                        "status": str(availability.get("status", "failed")),
+                        "ok": False,
+                        "reason": str(
+                            availability.get("reason", "project_lifecycle_unavailable")
+                        ),
+                        "lifecycle": availability,
+                    }
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [{
+                                "type": "text",
+                                "text": json.dumps(status, ensure_ascii=False),
+                            }],
+                            "structuredContent": status,
+                            "isError": False,
+                        },
+                    }
                 try:
                     status_context = (
                         self.refresh_coordinator.query_snapshot(timeout_ms=2000)
@@ -441,6 +473,26 @@ class McpServer:
                         "content": [{"type": "text", "text": json.dumps(status, ensure_ascii=False)}],
                         "structuredContent": status,
                         "isError": False,
+                    },
+                }
+            if not bool(availability.get("ok")):
+                structured = {
+                    "schema_version": 1,
+                    "status": "error",
+                    "code": str(availability.get("status", "project_unavailable")),
+                    "message": "Codebase Atlas is not enabled for this project.",
+                    "project": availability,
+                }
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps(structured, ensure_ascii=False),
+                        }],
+                        "structuredContent": structured,
+                        "isError": True,
                     },
                 }
             if name in {"plan_refresh", "refresh_index"} and self.refresh_coordinator is not None:

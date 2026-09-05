@@ -190,6 +190,35 @@ class McpTests(unittest.TestCase):
             "/repo",
         )
 
+    def test_lifecycle_gate_stops_and_resumes_same_server(self) -> None:
+        lifecycle = {"status": "ready", "ok": True, "reason": "project_ready"}
+        server = McpServer(self.service, availability=lambda: dict(lifecycle))
+        first = server.handle({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "target"}},
+        })
+        self.assertFalse(first["result"]["isError"])
+        lifecycle.update({"status": "stopped", "ok": False, "reason": "project_stopped"})
+        stopped = server.handle({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "blocked"}},
+        })
+        self.assertTrue(stopped["result"]["isError"])
+        self.assertEqual(stopped["result"]["structuredContent"]["code"], "stopped")
+        self.assertEqual(self.service.last_request.symbol, "target")
+        status = server.handle({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "project_status", "arguments": {}},
+        })
+        self.assertEqual(status["result"]["structuredContent"]["status"], "stopped")
+        lifecycle.update({"status": "ready", "ok": True, "reason": "project_ready"})
+        resumed = server.handle({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {"symbol": "resumed"}},
+        })
+        self.assertFalse(resumed["result"]["isError"])
+        self.assertEqual(self.service.last_request.symbol, "resumed")
+
     def test_project_status_timeout_is_structured_and_server_stays_alive(self) -> None:
         from codebase_atlas.refresh_coordinator import SnapshotWaitTimeout
 

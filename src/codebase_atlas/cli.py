@@ -49,6 +49,7 @@ from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, Typ
 from .project_discovery import resolve_project
 from .provider_layout import provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
+from .project_lifecycle import operational_lifecycle_status
 from .refresh_coordinator import RefreshCoordinator, refresh_with_retry
 from .provider_migration import (
     plan_provider_migration,
@@ -1106,12 +1107,28 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mcp" and args.auto_update != "off":
             if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
                 raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
-        if args.command == "mcp" and args.auto_update == "session-start":
+        _apply_project_config(args)
+        lifecycle_status = operational_lifecycle_status(
+            args.data_dir, args.repo, args.project
+        )
+        if not lifecycle_status["ok"] and args.command != "mcp":
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "error",
+                "code": lifecycle_status["status"],
+                "message": "Codebase Atlas is not enabled for this project.",
+                "project": lifecycle_status,
+            }, ensure_ascii=False, indent=2))
+            return 4
+        if (
+            args.command == "mcp"
+            and lifecycle_status["ok"]
+            and args.auto_update == "session-start"
+        ):
             selected_config = args.config or Path.cwd() / CONFIG_NAME
             auto_update_status = session_start_update(
                 selected_config, timeout_seconds=args.auto_update_timeout
             )
-        _apply_project_config(args)
         if args.command == "mcp":
             args.index_status["identity"] = {
                 "repository": str(args.repo.resolve()),
@@ -1219,6 +1236,9 @@ def main(argv: list[str] | None = None) -> int:
                         refresh_coordinator=refresh_coordinator,
                         auto_update=args.auto_update,
                         auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
+                        availability=lambda: operational_lifecycle_status(
+                            args.data_dir, args.repo, args.project
+                        ),
                     )
                 )
             elif args.command == "query":
