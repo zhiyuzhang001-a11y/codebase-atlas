@@ -43,7 +43,7 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
   and verify the restoration receipt before enable restores it.
 - [x] Exercise one MCP connection through unconfigured, ready, stopped, resumed,
   and updated states, including replacement of a real backend subprocess.
-- [ ] Pass the final wheel, install/upgrade/downgrade/uninstall, publication
+- [x] Pass the final wheel, install/upgrade/downgrade/uninstall, publication
   hygiene, full local suite, and GitHub three-system Python matrix on the exact
   candidate commit.
 - [ ] Create and publish stable `v0.25.0` only after separate release approval.
