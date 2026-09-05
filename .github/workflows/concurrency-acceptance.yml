@@ -7,9 +7,11 @@ on:
       - .github/workflows/concurrency-acceptance.yml
       - scripts/extract_managed_provider.py
       - scripts/run_multi_mcp_stress.py
+      - scripts/ts_test_analyzer.mjs
       - src/codebase_atlas/**
       - tests/test_multi_mcp_stress.py
       - tests/test_refresh_coordinator.py
+      - tests/test_ts_tests.py
   workflow_dispatch:
     inputs:
       provider_run_id:
