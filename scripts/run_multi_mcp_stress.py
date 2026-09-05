@@ -103,9 +103,32 @@ class McpClient:
 
 
 def run_json(command: list[str], environment: dict[str, str], timeout: float = 180) -> dict[str, Any]:
-    completed = subprocess.run(
-        command, env=environment, check=False, capture_output=True, text=True, timeout=timeout
-    )
+    if os.name == "nt":
+        # A Windows Provider daemon may briefly inherit its frontend's standard
+        # handles. Pipe capture would then wait for descendant EOF even after
+        # the direct CLI process exits, so bind capture to seekable files.
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            completed = subprocess.run(
+                command,
+                env=environment,
+                check=False,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=timeout,
+            )
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            completed.stdout = stdout_file.read().decode("utf-8", "replace")
+            completed.stderr = stderr_file.read().decode("utf-8", "replace")
+    else:
+        completed = subprocess.run(
+            command,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
     if completed.returncode != 0:
         raise StressFailure(
             f"command failed ({completed.returncode}): {' '.join(command)}\n"

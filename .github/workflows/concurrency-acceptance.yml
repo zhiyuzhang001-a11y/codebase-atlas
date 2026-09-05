@@ -31,6 +31,7 @@ permissions:
 env:
   PROVIDER_COMMIT: e088a41b8e7619fb532afda0d611b944002cfebf
   PROVIDER_VERSION: 0.10.8-atlas.2+e088a41b
+  SERENA_COMMIT: 3ad624f511511bb7a77447e413425198fc574349
 
 jobs:
   native-provider:
@@ -100,8 +101,10 @@ jobs:
       - run: >-
           python scripts/extract_managed_provider.py provider-assets ${{ matrix.target }} provider
           --expected-commit ${{ env.PROVIDER_COMMIT }} --version ${{ env.PROVIDER_VERSION }}
-      - name: Install Atlas under test
-        run: python -m pip install .
+      - name: Install Atlas and pinned Serena under test
+        run: >-
+          python -m pip install .
+          "git+https://github.com/oraios/serena.git@${{ env.SERENA_COMMIT }}"
       - name: External termination phase matrix
         run: >-
           python -m unittest

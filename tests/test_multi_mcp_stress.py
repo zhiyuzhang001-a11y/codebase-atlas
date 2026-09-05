@@ -5,8 +5,10 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
-from scripts.run_multi_mcp_stress import parse_windows_process_table
+from scripts import run_multi_mcp_stress as stress_module
+from scripts.run_multi_mcp_stress import parse_windows_process_table, run_json
 
 
 class MultiMcpStressUnitTests(unittest.TestCase):
@@ -16,6 +18,20 @@ class MultiMcpStressUnitTests(unittest.TestCase):
             '{"ProcessId":13,"ParentProcessId":12,"CommandLine":null}]'
         )
         self.assertEqual(table, {12: (4, "atlas mcp"), 13: (12, "")})
+
+    def test_windows_command_capture_uses_files_not_descendant_pipes(self) -> None:
+        def run(_command, **arguments):
+            self.assertNotIn("capture_output", arguments)
+            self.assertNotIn("text", arguments)
+            arguments["stdout"].write(b'{"status":"ok"}')
+            arguments["stderr"].write(b"")
+            return subprocess.CompletedProcess(_command, 0)
+
+        with (
+            mock.patch.object(stress_module.os, "name", "nt"),
+            mock.patch.object(stress_module.subprocess, "run", side_effect=run),
+        ):
+            self.assertEqual(run_json(["atlas"], {}, timeout=1), {"status": "ok"})
 
 
 class MultiMcpStressIntegrationTests(unittest.TestCase):
