@@ -25,6 +25,12 @@ except ImportError:  # pragma: no cover - exercised only on Windows
 Runner = Callable[..., Any]
 
 
+def _project_lease_identity(repository: Path, project: str) -> str:
+    return hashlib.sha256(
+        f"{repository.resolve()}\0{project}".encode("utf-8")
+    ).hexdigest()[:24]
+
+
 def default_cbm_lock_path() -> Path:
     runtime = Path(
         os.environ.get("ATLAS_RUNTIME_DIR")
@@ -96,9 +102,7 @@ class ProjectRefreshLease:
     """Nonblocking cross-process writer lease for one exact Atlas project."""
 
     def __init__(self, data_dir: Path, repository: Path, project: str) -> None:
-        identity = hashlib.sha256(
-            f"{repository.resolve()}\0{project}".encode("utf-8")
-        ).hexdigest()[:24]
+        identity = _project_lease_identity(repository, project)
         self.path = data_dir.resolve() / f"refresh-{identity}.lock"
         self.repository = repository.resolve()
         self.project = project
@@ -232,6 +236,15 @@ class ProjectRefreshLease:
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.release()
+
+
+class ProjectOperationLease(ProjectRefreshLease):
+    """Exclusive cross-process lease for one project's lifecycle operations."""
+
+    def __init__(self, data_dir: Path, repository: Path, project: str) -> None:
+        super().__init__(data_dir, repository, project)
+        identity = _project_lease_identity(repository, project)
+        self.path = data_dir.resolve() / f"operation-{identity}.lock"
 
 
 class CodebaseMemoryDaemon:
