@@ -76,9 +76,17 @@ jobs:
         run: |
           run_id="$REQUESTED_RUN_ID"
           if [ -z "$run_id" ]; then
-            run_id="$(gh run list --workflow managed-provider.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+            for candidate in $(gh run list --workflow managed-provider.yml --status success --limit 20 --json databaseId --jq '.[].databaseId'); do
+              artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate}/artifacts" --jq '.artifacts[] | select(.name == "managed-provider-release-assets" and .expired == false) | .id')"
+              if [ -n "$artifact_id" ]; then
+                run_id="$candidate"
+                break
+              fi
+            done
           fi
           test -n "$run_id"
+          artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.name == "managed-provider-release-assets" and .expired == false) | .id')"
+          test -n "$artifact_id"
           echo "PROVIDER_RUN_ID=$run_id" >> "$GITHUB_ENV"
       - name: Download verified managed Provider set
         shell: bash
