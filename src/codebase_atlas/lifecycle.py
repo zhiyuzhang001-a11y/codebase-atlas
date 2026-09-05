@@ -155,7 +155,12 @@ class ProjectRefreshLease:
                 "repository": str(self.repository),
                 "project": self.project,
             }, sort_keys=True).encode("utf-8")
-            handle.seek(0)
+            if fcntl is None:  # Reserve byte zero for the Windows lock region.
+                handle.seek(0)
+                handle.write(b"\0")
+                handle.seek(1)
+            else:
+                handle.seek(0)
             handle.truncate()
             handle.write(payload)
             os.fsync(descriptor)
@@ -211,7 +216,17 @@ class ProjectRefreshLease:
             metadata = os.lstat(self.path)
             if not stat.S_ISREG(metadata.st_mode):
                 return {"status": "unsafe", "path": str(self.path)}
-            value = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+            try:
+                payload = self.path.read_bytes()
+            except OSError:
+                if fcntl is not None:
+                    raise
+                with self.path.open("rb") as stream:
+                    stream.seek(1)
+                    payload = stream.read()
+            if payload.startswith(b"\0"):
+                payload = payload[1:]
+            value = json.loads(payload.decode("utf-8") or "{}")
             if not isinstance(value, dict):
                 raise ValueError("lease payload is not an object")
             return {

@@ -44,7 +44,8 @@ class ProjectLifecycleStateTests(unittest.TestCase):
             self.assertEqual(loaded.status, "stopped")
             self.assertEqual(loaded.operation_generation, 2)
             self.assertEqual(loaded.last_ready_version, "0.24.0")
-            self.assertEqual(path.stat().st_mode & 0o077, 0)
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o077, 0)
             with self.assertRaisesRegex(ValueError, "identity mismatch"):
                 load_lifecycle_state(data, root / "other", "project-a")
 

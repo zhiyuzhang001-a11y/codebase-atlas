@@ -210,8 +210,15 @@ class CodexIntegrationTests(unittest.TestCase):
             updated = target.read_text(encoding="utf-8")
             self.assertTrue(applied["mutates"])
             self.assertTrue(updated.startswith('model = "preserved"\n'))
-            self.assertIn(str(new_atlas.resolve()), updated)
-            self.assertNotIn(str(old_atlas.resolve()), updated)
+            parsed = tomllib.loads(updated)
+            self.assertEqual(
+                parsed["mcp_servers"]["codebase_atlas"]["command"],
+                str(new_atlas.resolve()),
+            )
+            self.assertNotEqual(
+                parsed["mcp_servers"]["codebase_atlas"]["command"],
+                str(old_atlas.resolve()),
+            )
 
     def test_project_scope_refuses_foreign_or_invalid_atlas_config(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

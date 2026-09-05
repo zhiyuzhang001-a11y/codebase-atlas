@@ -31,6 +31,8 @@ def read_frame():
     first = sys.stdin.buffer.readline()
     if not first:
         return None
+    if not first.lower().startswith(b"content-length:"):
+        return json.loads(first)
     length = int(first.split(b":", 1)[1])
     while sys.stdin.buffer.readline() not in {b"\n", b"\r\n"}:
         pass
