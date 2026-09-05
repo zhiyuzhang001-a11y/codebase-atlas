@@ -8,6 +8,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from urllib.parse import unquote, urlparse
 import zipfile
 
@@ -16,6 +17,7 @@ from codebase_atlas.release_installation import (
     current_platform_target,
     download_asset,
     install_stable_release,
+    load_versioned_installation,
     parse_checksum_manifest,
     parse_stable_release,
     verify_downloaded_release,
@@ -60,6 +62,33 @@ class Response(io.BytesIO):
 
 
 class ReleaseInstallationTests(unittest.TestCase):
+    def test_version_selector_rejects_receipt_from_another_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            selected = Path(raw) / "1.2.3"
+            selected.mkdir()
+            (selected / "python").write_text("", encoding="utf-8")
+            (selected / "atlas").write_text("", encoding="utf-8")
+            (selected / "provider").write_text("", encoding="utf-8")
+            (selected / "installation.json").write_text(json.dumps({
+                "schema_version": 1,
+                "version": "9.9.9",
+                "target": "linux-x86_64",
+                "python": "python",
+                "atlas_executable": "atlas",
+                "provider_binary": "provider",
+                "provider_version": "provider-1",
+                "wheel_sha256": "a" * 64,
+                "provider_sha256": "b" * 64,
+            }), encoding="utf-8")
+            with (
+                patch(
+                    "codebase_atlas.release_installation.installation_root",
+                    return_value=Path(raw),
+                ),
+                self.assertRaisesRegex(RuntimeError, "does not match"),
+            ):
+                load_versioned_installation("1.2.3")
+
     def test_platform_aliases_are_exact(self) -> None:
         self.assertEqual(
             current_platform_target(system="Darwin", machine="aarch64"),

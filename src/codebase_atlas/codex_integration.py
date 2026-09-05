@@ -72,6 +72,14 @@ def _auto_transport(atlas_executable: str | Path | None) -> tuple[str, list[str]
     return str(Path(sys.executable).absolute()), ["-m", "codebase_atlas.cli", *tail]
 
 
+def _project_auto_transport(
+    repository: Path, atlas_executable: str | Path | None
+) -> tuple[str, list[str]]:
+    command, args = _auto_transport(atlas_executable)
+    position = 1 if args and args[0] == "mcp-auto" else 3
+    return command, [*args[:position], "--root", str(repository), *args[position:]]
+
+
 def _read_existing(
     codex: str, name: str, *, runner: Runner = subprocess.run
 ) -> dict[str, Any] | None:
@@ -242,13 +250,7 @@ def _project_plan(
     codex_project_root: Path | None,
 ) -> dict[str, Any]:
     repository, project_root, target = _project_paths(config, codex_project_root)
-    command, transport_args = _atlas_transport(config, atlas_executable)
-    args = [
-        *transport_args,
-        "--auto-update", "on-query",
-        "--auto-update-timeout", "60",
-        "--version-check", "notify",
-    ]
+    command, args = _project_auto_transport(repository, atlas_executable)
     state, original, block = _project_state(target, name, command, args)
     return {
         "schema_version": 1,

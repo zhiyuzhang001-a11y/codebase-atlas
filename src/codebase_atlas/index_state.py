@@ -127,14 +127,25 @@ def _is_atlas_project_codex_config(repository: Path, relative: str) -> bool:
             if not isinstance(entry, dict):
                 continue
             args = entry.get("args")
-            if not isinstance(args, list) or "--config" not in args:
+            if not isinstance(args, list) or not all(
+                isinstance(argument, str) for argument in args
+            ):
                 continue
-            position = args.index("--config")
-            if position + 1 >= len(args) or not isinstance(args[position + 1], str):
-                continue
-            atlas_config = Path(args[position + 1])
-            if _atlas_config_targets_repository(atlas_config, repository):
-                return True
+            if "--config" in args:
+                position = args.index("--config")
+                if position + 1 < len(args):
+                    atlas_config = Path(args[position + 1])
+                    if _atlas_config_targets_repository(atlas_config, repository):
+                        return True
+            if "--root" in args:
+                position = args.index("--root")
+                if position + 1 < len(args):
+                    root = Path(args[position + 1])
+                    try:
+                        if root.resolve() == repository:
+                            return True
+                    except OSError:
+                        pass
         return False
     except (OSError, TypeError, ValueError, tomllib.TOMLDecodeError):
         return False

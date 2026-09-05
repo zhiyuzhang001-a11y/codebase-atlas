@@ -293,6 +293,15 @@ def installation_root() -> Path:
     return atlas_data_root() / "_installations" / "v1"
 
 
+def load_versioned_installation(version: str) -> VersionedInstallation:
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise RuntimeError("Atlas installation version is invalid")
+    installation = _installation_from_receipt(installation_root() / version)
+    if installation.version != version:
+        raise RuntimeError("Atlas installation receipt version does not match its directory")
+    return installation
+
+
 def _safe_relative(name: str) -> Path:
     path = Path(name)
     if path.is_absolute() or not path.parts or ".." in path.parts:
@@ -492,6 +501,8 @@ def install_stable_release(
     destination = parent / release.version
     if destination.exists():
         installed = _installation_from_receipt(destination)
+        if installed.version != release.version or installed.target != release.target:
+            raise RuntimeError("existing Atlas installation identity does not match release")
         if installed.version != release.version or installed.target != release.target:
             raise RuntimeError("existing versioned Atlas installation conflicts")
         return installed, False

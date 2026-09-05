@@ -168,6 +168,10 @@ class CodexIntegrationTests(unittest.TestCase):
             parsed = tomllib.loads(target.read_text(encoding="utf-8"))
             entry = parsed["mcp_servers"]["codebase_atlas"]
             self.assertEqual(entry["command"], str(atlas.resolve()))
+            self.assertEqual(entry["args"][:3], [
+                "mcp-auto", "--root", str(repository.resolve())
+            ])
+            self.assertNotIn("--config", entry["args"])
             self.assertIn("on-query", entry["args"])
             self.assertEqual(applied["existing"], "matching")
             repeated = codex_apply(config, scope="project", atlas_executable=atlas)

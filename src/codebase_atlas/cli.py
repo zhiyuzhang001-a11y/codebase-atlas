@@ -47,6 +47,7 @@ from .operations import (
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
+from .reloadable_mcp import ReloadingMcpServer
 from .provider_layout import provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
 from .project_lifecycle import operational_lifecycle_status
@@ -453,25 +454,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
         return 0
     if args.command == "mcp-auto":
-        resolution = resolve_project(args.root or Path.cwd())
-        if resolution.status == "configured":
-            forwarded = [
-                "mcp", "--config", str(resolution.config),
-                "--stale-policy", args.stale_policy,
-                "--auto-update", args.auto_update,
-                "--auto-update-timeout", str(args.auto_update_timeout),
-                "--version-check", args.version_check,
-            ]
-            return main(forwarded)
-        status = resolution.operational_status()
-        instructions = (
-            f"Codebase Atlas is {resolution.status} for {resolution.root}. "
-            "Call project_status and follow next_action. Never use results from "
-            "another repository."
+        server = ReloadingMcpServer(
+            args.root or Path.cwd(),
+            stale_policy=args.stale_policy,
+            auto_update=args.auto_update,
+            auto_update_timeout=args.auto_update_timeout,
+            version_check=args.version_check,
         )
-        _run_mcp_with_graceful_termination(
-            McpServer(None, status, "error", instructions=instructions)
-        )
+        try:
+            _run_mcp_with_graceful_termination(server)
+        finally:
+            server.close()
         return 0
     if args.command == "inspect":
         config = AtlasConfig.load(args.config)
