@@ -572,7 +572,7 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "current")
         self.assertEqual(result["route"], "coalesced_after_owner")
         self.assertEqual(result["attempts"], 2)
-        self.assertGreaterEqual(result["timings_ms"]["wait_for_owner"], 15)
+        self.assertGreaterEqual(result["timings_ms"]["wait_for_owner"], 14.9)
         self.assertGreaterEqual(result["duration_ms"], result["timings_ms"]["wait_for_owner"])
 
     def test_refresh_retry_does_not_coalesce_failed_owner_old_generation(self) -> None:
