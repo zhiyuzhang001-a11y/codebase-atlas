@@ -188,6 +188,27 @@ class CodexIntegrationTests(unittest.TestCase):
             codex_remove(config, scope="project", atlas_executable=atlas)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
+    def test_project_scope_updates_only_owned_managed_block(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, old_atlas = self.project_paths(root)
+            new_atlas = root / "new atlas"
+            new_atlas.write_text("")
+            codex_apply(config, scope="project", atlas_executable=old_atlas)
+            target = repository / ".codex/config.toml"
+            original = target.read_text(encoding="utf-8")
+            target.write_text('model = "preserved"\n' + original, encoding="utf-8")
+            plan = codex_plan(config, scope="project", atlas_executable=new_atlas)
+            self.assertEqual(plan["existing"], "managed_different")
+            applied = codex_apply(
+                config, scope="project", atlas_executable=new_atlas
+            )
+            updated = target.read_text(encoding="utf-8")
+            self.assertTrue(applied["mutates"])
+            self.assertTrue(updated.startswith('model = "preserved"\n'))
+            self.assertIn(str(new_atlas.resolve()), updated)
+            self.assertNotIn(str(old_atlas.resolve()), updated)
+
     def test_project_scope_refuses_foreign_or_invalid_atlas_config(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, atlas = self.project_paths(Path(raw))

@@ -211,6 +211,26 @@ def _project_state(
     managed = original[start:finish].strip() + "\n"
     if managed == block:
         return "matching", original, block
+    try:
+        managed_value = tomllib.loads(managed)
+    except tomllib.TOMLDecodeError:
+        return "conflict", original, block
+    managed_servers = managed_value.get("mcp_servers")
+    managed_entry = (
+        managed_servers.get(name) if isinstance(managed_servers, dict) else None
+    )
+    if (
+        set(managed_value) == {"mcp_servers"}
+        and isinstance(managed_servers, dict)
+        and set(managed_servers) == {name}
+        and isinstance(managed_entry, dict)
+        and set(managed_entry) == {"command", "args", "startup_timeout_sec"}
+        and isinstance(managed_entry.get("command"), str)
+        and isinstance(managed_entry.get("args"), list)
+        and all(isinstance(item, str) for item in managed_entry["args"])
+        and managed_entry.get("startup_timeout_sec") == 65
+    ):
+        return "managed_different", original, block
     return "conflict", original, block
 
 
@@ -323,6 +343,46 @@ def _remove_project_block(original: str) -> str:
     return original[:start] + original[finish:]
 
 
+def _replace_project_block(target: Path, original: str, block: str) -> None:
+    start = original.index(PROJECT_SCOPE_BEGIN)
+    finish = original.index(PROJECT_SCOPE_END, start) + len(PROJECT_SCOPE_END)
+    if finish < len(original) and original[finish] == "\n":
+        finish += 1
+    payload = original[:start] + block + original[finish:]
+    before = os.lstat(target)
+    if not stat.S_ISREG(before.st_mode) or target.is_symlink():
+        raise RuntimeError("project Codex config changed before managed update")
+    identity = (before.st_dev, before.st_ino)
+    descriptor = os.open(target, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(target)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != identity
+            or (current.st_dev, current.st_ino) != identity
+        ):
+            raise RuntimeError("project Codex config changed before managed update")
+        with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
+            descriptor = -1
+            try:
+                stream.seek(0)
+                stream.truncate()
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            except OSError:
+                stream.seek(0)
+                stream.truncate()
+                stream.write(original)
+                stream.flush()
+                os.fsync(stream.fileno())
+                raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def codex_plan(
     config: Path,
     *,
@@ -398,9 +458,26 @@ def codex_apply(
             return plan | {"status": "ready", "mode": "applied", "mutates": False}
         target = Path(plan["target"])
         original = target.read_text(encoding="utf-8") if target.exists() else ""
-        _write_project_config(target, original, str(plan["managed_block"]))
+        if plan["existing"] == "managed_different":
+            _replace_project_block(target, original, str(plan["managed_block"]))
+        else:
+            _write_project_config(target, original, str(plan["managed_block"]))
         verified = codex_plan(config, runner=runner, **kwargs)
         if verified["existing"] != "matching":
+            if plan["existing"] == "managed_different":
+                try:
+                    current = target.read_text(encoding="utf-8")
+                    old_start = original.index(PROJECT_SCOPE_BEGIN)
+                    old_finish = (
+                        original.index(PROJECT_SCOPE_END, old_start)
+                        + len(PROJECT_SCOPE_END)
+                    )
+                    old_block = original[old_start:old_finish].strip() + "\n"
+                    _replace_project_block(target, current, old_block)
+                except (OSError, RuntimeError, ValueError):
+                    raise RuntimeError(
+                        "project Codex MCP verification failed and rollback failed"
+                    )
             raise RuntimeError("project Codex MCP verification did not match the requested transport")
         return verified | {"status": "ready", "mode": "applied", "mutates": True}
     if plan["existing"] == "conflict":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 import json
 import os
@@ -32,6 +33,12 @@ from .project_lifecycle import (
     publish_lifecycle_state,
 )
 from .runtime import required_checks_ok
+from .release_installation import (
+    VersionedInstallation,
+    fetch_stable_release,
+    install_stable_release,
+)
+from .version_check import _version_tuple
 
 
 def _result(
@@ -163,18 +170,34 @@ def _verification_candidate(config: AtlasConfig) -> tuple[str, str, bytes]:
 
 
 def _query_payload(
-    config: AtlasConfig, config_path: Path, symbol: str, target_path: str
+    config: AtlasConfig,
+    config_path: Path,
+    symbol: str,
+    target_path: str,
+    *,
+    executable: Path | None = None,
+    runner: Any = subprocess.run,
 ) -> dict[str, Any]:
-    output = StringIO()
-    with redirect_stdout(output):
-        code = advanced_main([
+    arguments = [
             "query", "definition", symbol,
             "--config", str(config_path),
             "--target-path", target_path,
             "--stale-policy", "error",
-        ])
+    ]
+    if executable is None:
+        output = StringIO()
+        with redirect_stdout(output):
+            code = advanced_main(arguments)
+        raw_output = output.getvalue()
+    else:
+        completed = runner(
+            [str(executable), *arguments],
+            check=False, capture_output=True, text=True,
+        )
+        code = completed.returncode
+        raw_output = completed.stdout
     try:
-        payload = json.loads(output.getvalue())
+        payload = json.loads(raw_output)
     except json.JSONDecodeError as exc:
         raise RuntimeError("verification query returned invalid JSON") from exc
     if code != 0:
@@ -182,9 +205,18 @@ def _query_payload(
     return payload
 
 
-def _verification_query(config: AtlasConfig, config_path: Path) -> dict[str, Any]:
+def _verification_query(
+    config: AtlasConfig,
+    config_path: Path,
+    *,
+    executable: Path | None = None,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
     symbol, target_path, before = _verification_candidate(config)
-    positive = _query_payload(config, config_path, symbol, target_path)
+    positive = _query_payload(
+        config, config_path, symbol, target_path,
+        executable=executable, runner=runner,
+    )
     nodes = positive.get("nodes")
     if not isinstance(nodes, list) or not any(
         isinstance(node, dict)
@@ -194,7 +226,10 @@ def _verification_query(config: AtlasConfig, config_path: Path) -> dict[str, Any
     ):
         raise RuntimeError("verification symbol did not resolve to the target source file")
     negative_symbol = "__atlas_wrong_project_" + secrets.token_hex(12)
-    negative = _query_payload(config, config_path, negative_symbol, "")
+    negative = _query_payload(
+        config, config_path, negative_symbol, "",
+        executable=executable, runner=runner,
+    )
     if negative.get("nodes"):
         raise RuntimeError("cross-project negative verification returned unexpected facts")
     if (config.repository / target_path).read_bytes() != before:
@@ -459,6 +494,202 @@ def stop_project(
         operation_lock.release()
 
 
+def _regular_snapshot(path: Path) -> tuple[tuple[int, int], bytes]:
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise RuntimeError("managed file must remain a regular non-symlink file")
+    identity = (metadata.st_dev, metadata.st_ino)
+    payload = path.read_bytes()
+    current = os.lstat(path)
+    if (current.st_dev, current.st_ino) != identity:
+        raise RuntimeError("managed file changed while taking a snapshot")
+    return identity, payload
+
+
+def _external_doctor(
+    installation: VersionedInstallation,
+    config_path: Path,
+    *,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    completed = runner(
+        [str(installation.atlas_executable), "doctor", "--config", str(config_path)],
+        check=False, capture_output=True, text=True,
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("updated Atlas doctor returned invalid JSON") from exc
+    if completed.returncode != 0 or payload.get("status") != "ready":
+        raise RuntimeError("updated Atlas doctor did not report ready")
+    return payload
+
+
+def update_project(
+    repository: Path,
+    *,
+    timeout_seconds: float = 30.0,
+    release_fetcher: Any = fetch_stable_release,
+    installer: Any = install_stable_release,
+    runner: Any = subprocess.run,
+) -> tuple[dict[str, Any], int]:
+    root, resolution = _repository_root(repository)
+    if resolution.status != "configured" or resolution.config is None:
+        return _result(
+            "update", "not_enabled", root, mutates=False,
+            project_state=resolution.status, index_status="unavailable",
+            connection_status="unchanged", next_action="atlas enable",
+        ), 2
+    config_path = resolution.config.resolve()
+    config = AtlasConfig.load(config_path)
+    previous = load_lifecycle_state(
+        config.data_dir, config.repository, config.project
+    )
+    if previous.status not in {"ready", "stopped"}:
+        return _result(
+            "update", "blocked", root, mutates=False,
+            project_state=previous.status, index_status="preserved",
+            connection_status="unchanged",
+            error="project must be ready or stopped before update",
+        ), 2
+    release = release_fetcher()
+    current_version = previous.atlas_version or __version__
+    latest_tuple = _version_tuple(release.version)
+    current_tuple = _version_tuple(current_version)
+    if latest_tuple is None or current_tuple is None:
+        raise RuntimeError("Atlas version cannot be compared safely")
+    if latest_tuple <= current_tuple:
+        return _result(
+            "update", "current", root, mutates=False,
+            project_state=previous.status, index_status="preserved",
+            connection_status="unchanged", latest_version=release.version,
+        ), 0
+    installation, installation_mutated = installer(release)
+    operation_lock = ProjectOperationLease(
+        config.data_dir, root, _operation_project(root)
+    )
+    if not operation_lock.acquire():
+        return _result(
+            "update", "blocked", root, mutates=installation_mutated,
+            project_state=previous.status, index_status="preserved",
+            connection_status="unchanged",
+            error="another lifecycle operation owns this project",
+        ), 2
+    refresh = ProjectRefreshLease(config.data_dir, config.repository, config.project)
+    config_identity: tuple[int, int] | None = None
+    config_bytes = b""
+    codex_target: Path | None = None
+    codex_identity: tuple[int, int] | None = None
+    codex_bytes = b""
+    lifecycle_mutated = False
+    try:
+        if not _acquire_refresh(refresh, timeout_seconds=timeout_seconds):
+            raise RuntimeError("timed out waiting for the active project refresh")
+        current = load_lifecycle_state(
+            config.data_dir, config.repository, config.project
+        )
+        if current.operation_generation != previous.operation_generation:
+            raise RuntimeError("project lifecycle changed while preparing update")
+        operation_id = secrets.token_hex(16)
+        updating = current.transition("updating", operation_id=operation_id)
+        publish_lifecycle_state(config.data_dir, updating)
+        lifecycle_mutated = True
+        preview = codex_plan(config_path, scope="project", codex_project_root=root)
+        if preview["status"] == "blocked":
+            raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
+        codex_target = Path(str(preview["target"]))
+        if codex_target.exists():
+            codex_identity, codex_bytes = _regular_snapshot(codex_target)
+        config_identity, config_bytes = _regular_snapshot(config_path)
+        candidate = replace(config, cbm_binary=installation.provider_binary)
+        candidate.write_verified(config_path, config_identity)
+        codex_apply(
+            config_path, scope="project", codex_project_root=root,
+            atlas_executable=installation.atlas_executable,
+        )
+        candidate_ready = updating.transition(
+            "ready",
+            atlas_version=installation.version,
+            provider_version=installation.provider_version,
+        )
+        publish_lifecycle_state(config.data_dir, candidate_ready)
+        doctor = _external_doctor(installation, config_path, runner=runner)
+        inspection = inspect_installation(candidate, deep=True)
+        verification = _verification_query(
+            candidate, config_path,
+            executable=installation.atlas_executable, runner=runner,
+        )
+        if not inspection.get("ok"):
+            raise RuntimeError("updated Provider deep inspection failed")
+        final = (
+            candidate_ready
+            if previous.status == "ready"
+            else candidate_ready.transition("stopped")
+        )
+        if final != candidate_ready:
+            publish_lifecycle_state(config.data_dir, final)
+        return _result(
+            "update", "updated", root,
+            mutates=True,
+            project_state=final.status, index_status="fresh",
+            connection_status="configured_task_start_required",
+            previous_version=current_version,
+            atlas_version=installation.version,
+            provider_version=installation.provider_version,
+            installation_reused=not installation_mutated,
+            doctor=doctor.get("status"), verification=verification,
+            current_session_refresh_required=True,
+        ), 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        rollback_errors = []
+        if config_identity is not None:
+            try:
+                AtlasConfig.restore_verified(config_path, config_identity, config_bytes)
+            except (OSError, ValueError) as rollback:
+                rollback_errors.append(f"config: {rollback}")
+        if codex_target is not None:
+            try:
+                if codex_identity is not None:
+                    AtlasConfig.restore_verified(
+                        codex_target, codex_identity, codex_bytes
+                    )
+                elif codex_target.exists():
+                    from .codex_integration import codex_remove
+                    codex_remove(config_path, scope="project", codex_project_root=root)
+            except (OSError, RuntimeError, ValueError) as rollback:
+                rollback_errors.append(f"codex: {rollback}")
+        if lifecycle_mutated:
+            try:
+                rollback_state = load_lifecycle_state(
+                    config.data_dir, config.repository, config.project,
+                    missing_status=previous.status,
+                ).transition(
+                    previous.status,
+                    atlas_version=previous.atlas_version,
+                    provider_version=previous.provider_version,
+                    index_generation=previous.index_generation,
+                    failure_reason=(
+                        previous.failure_reason if previous.status == "failed" else ""
+                    ),
+                )
+                publish_lifecycle_state(config.data_dir, rollback_state)
+            except (OSError, ValueError) as rollback:
+                rollback_errors.append(f"lifecycle: {rollback}")
+        detail = str(exc)
+        if rollback_errors:
+            detail += "; rollback failed: " + "; ".join(rollback_errors)
+        return _result(
+            "update", "incomplete", root,
+            mutates=installation_mutated or lifecycle_mutated,
+            project_state=previous.status, index_status="preserved",
+            connection_status="unchanged", error=detail,
+            previous_version=current_version,
+        ), 2
+    finally:
+        refresh.release()
+        operation_lock.release()
+
+
 def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -493,6 +724,10 @@ def main(argv: list[str] | None = None) -> int:
     stop.add_argument("--repo", type=Path, default=Path.cwd())
     stop.add_argument("--timeout", type=float, default=30.0)
     stop.add_argument("--json", action="store_true")
+    update = commands.add_parser("update", help="update this project to the latest stable Atlas Release")
+    update.add_argument("--repo", type=Path, default=Path.cwd())
+    update.add_argument("--timeout", type=float, default=30.0)
+    update.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "enable":
@@ -502,10 +737,14 @@ def main(argv: list[str] | None = None) -> int:
                 serena_python=args.serena_python, node_bin_dir=args.node_bin_dir,
                 tsconfig=args.tsconfig, data_dir=args.data_dir, mode=args.mode,
             )
-        else:
+        elif args.command == "stop":
             if args.timeout < 0 or args.timeout > 300:
                 raise ValueError("--timeout must be between 0 and 300 seconds")
             payload, code = stop_project(args.repo, timeout_seconds=args.timeout)
+        else:
+            if args.timeout < 0 or args.timeout > 300:
+                raise ValueError("--timeout must be between 0 and 300 seconds")
+            payload, code = update_project(args.repo, timeout_seconds=args.timeout)
     except (OSError, RuntimeError, ValueError) as exc:
         payload = _result(
             args.command, "blocked", args.repo, mutates=False,
