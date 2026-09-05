@@ -34,6 +34,7 @@ from .index_state import (
     repository_snapshot,
 )
 from .lifecycle import CodebaseMemoryDaemon, SharedCodebaseMemorySession
+from .provider_process import run_provider_command
 from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
 from .operations import (
@@ -1384,10 +1385,7 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
         ]
         if config.project:
             command.extend(["--name", config.project])
-        completed = subprocess.run(
-            command,
-            check=False, capture_output=True, text=True, env=environment,
-        )
+        completed = run_provider_command(command, env=environment)
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "Codebase Memory indexing failed")
     envelope = json.loads(completed.stdout)

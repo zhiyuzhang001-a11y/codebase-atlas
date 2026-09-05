@@ -13,6 +13,7 @@ import time
 from typing import Callable, Any
 
 from .provider_layout import provider_environment
+from .provider_process import run_provider_command
 
 try:
     import fcntl
@@ -253,13 +254,17 @@ class CodebaseMemoryDaemon:
 
     def _run(self, action: str):
         environment = provider_environment(self.cache_dir, self.repository)
-        completed = self.runner(
-            [str(self.binary), "daemon", action],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
+        command = [str(self.binary), "daemon", action]
+        if self.runner is subprocess.run:
+            completed = run_provider_command(command, env=environment)
+        else:
+            completed = self.runner(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
         combined = f"{completed.stdout}\n{completed.stderr}".lower()
         if completed.returncode != 0 and not (
             action == "status" and "not running" in combined

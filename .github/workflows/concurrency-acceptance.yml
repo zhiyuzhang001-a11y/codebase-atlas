@@ -61,6 +61,15 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
+      - name: Set up Serena compatibility Python
+        if: matrix.target == 'windows-arm64'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          architecture: x64
+      - name: Record Serena compatibility Python
+        if: matrix.target == 'windows-arm64'
+        run: python -c "import os,sys; open(os.environ['GITHUB_ENV'], 'a').write('ATLAS_CONCURRENCY_SERENA_PYTHON=' + sys.executable + '\n')"
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -68,7 +77,7 @@ jobs:
         with:
           node-version: "22"
       - name: Record runtime executables
-        run: python -c "import os,shutil,sys; open(os.environ['GITHUB_ENV'], 'a').write('ATLAS_CONCURRENCY_NODE=' + shutil.which('node') + '\nATLAS_CONCURRENCY_SERENA_PYTHON=' + sys.executable + '\n')"
+        run: python -c "import os,shutil,sys; serena=os.environ.get('ATLAS_CONCURRENCY_SERENA_PYTHON', sys.executable); open(os.environ['GITHUB_ENV'], 'a').write('ATLAS_CONCURRENCY_NODE=' + shutil.which('node') + '\nATLAS_CONCURRENCY_SERENA_PYTHON=' + serena + '\n')"
       - name: Resolve verified Provider run
         shell: bash
         env:
@@ -101,9 +110,11 @@ jobs:
       - run: >-
           python scripts/extract_managed_provider.py provider-assets ${{ matrix.target }} provider
           --expected-commit ${{ env.PROVIDER_COMMIT }} --version ${{ env.PROVIDER_VERSION }}
-      - name: Install Atlas and pinned Serena under test
+      - name: Install Atlas under test
+        run: python -m pip install .
+      - name: Install pinned Serena under test
         run: >-
-          python -m pip install .
+          ${{ env.ATLAS_CONCURRENCY_SERENA_PYTHON }} -m pip install
           "git+https://github.com/oraios/serena.git@${{ env.SERENA_COMMIT }}"
       - name: External termination phase matrix
         run: >-

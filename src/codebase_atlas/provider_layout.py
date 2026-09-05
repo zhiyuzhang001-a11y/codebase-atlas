@@ -11,6 +11,8 @@ import stat
 import subprocess
 from typing import Any, Callable, Mapping
 
+from .provider_process import run_provider_command
+
 
 PROVIDER_LAYOUT = "v1"
 
@@ -61,15 +63,21 @@ def configure_managed_provider_cache(
         cache.chmod(0o700)
     environment = provider_environment(cache, repository)
     for key in ("auto_watch", "watcher_enabled"):
-        completed = runner(
-            [str(binary.resolve()), "config", "set", key, "false"],
-            cwd=repository.resolve(),
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-        )
+        command = [str(binary.resolve()), "config", "set", key, "false"]
+        if runner is subprocess.run:
+            completed = run_provider_command(
+                command, cwd=repository.resolve(), env=environment, timeout=10.0
+            )
+        else:
+            completed = runner(
+                command,
+                cwd=repository.resolve(),
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+            )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "").strip()
             raise RuntimeError(

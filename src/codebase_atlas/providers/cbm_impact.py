@@ -13,6 +13,7 @@ from typing import Any
 from ..contracts import Edge, Node, SourceRange
 from ..graph import EvidenceGraph, ImpactHit, ImpactTraversal
 from ..provider_layout import provider_environment
+from ..provider_process import run_provider_command
 from ..provider_transport import CodebaseMemoryMcpTransport
 
 
@@ -82,11 +83,8 @@ class CodebaseMemoryImpactProvider:
     def _run(self, tool: str, *args: str, timeout_seconds: float | None = None) -> dict[str, Any]:
         environment = provider_environment(self.cache_dir, self.repository)
         try:
-            completed = subprocess.run(
+            completed = run_provider_command(
                 [str(self.binary), "cli", "--json", tool, *args],
-                check=False,
-                capture_output=True,
-                text=True,
                 env=environment,
                 timeout=timeout_seconds,
             )
