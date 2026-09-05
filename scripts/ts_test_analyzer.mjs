@@ -37,8 +37,19 @@ function parseArguments(argv) {
 }
 
 function normalizedRelativePath(root, filename) {
-  return path.relative(root, filename).split(path.sep).join('/');
+  const canonicalRoot = fs.realpathSync.native(root);
+  const canonicalFilename = fs.realpathSync.native(filename);
+  const relative = path.relative(canonicalRoot, canonicalFilename);
+  if (
+    !relative || path.isAbsolute(relative) || relative === '..' ||
+    relative.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(`TypeScript source escapes repository: ${filename}`);
+  }
+  return relative.split(path.sep).join('/');
 }
+
+export { normalizedRelativePath };
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -581,7 +592,12 @@ function main() {
 }
 
 try {
+if (
+  process.argv[1] &&
+  fs.realpathSync.native(process.argv[1]) === fs.realpathSync.native(fileURLToPath(import.meta.url))
+) {
   main();
+}
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;

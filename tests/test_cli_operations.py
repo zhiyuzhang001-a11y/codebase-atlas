@@ -18,6 +18,10 @@ from codebase_atlas.cli import (
 from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.index_state import record_index_state, state_path
 from codebase_atlas.python_registration_store import registration_index_path
+from codebase_atlas.project_lifecycle import (
+    ProjectLifecycleState,
+    publish_lifecycle_state,
+)
 
 
 class CliOperationTests(unittest.TestCase):
@@ -30,6 +34,24 @@ class CliOperationTests(unittest.TestCase):
         with patch("codebase_atlas.cli.run_stdio", side_effect=terminate_during_stdio):
             _run_mcp_with_graceful_termination(object())
         self.assertIs(signal.getsignal(signal.SIGTERM), previous)
+
+    def test_stopped_project_refuses_query_before_provider_start(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config, path = self.config(Path(raw))
+            stopped = ProjectLifecycleState.initial(
+                config.repository, config.project
+            ).transition("stopped")
+            publish_lifecycle_state(config.data_dir, stopped)
+            output = StringIO()
+            with patch("codebase_atlas.cli._provider_lifecycle") as provider:
+                with redirect_stdout(output):
+                    code = main([
+                        "query", "definition", "blocked",
+                        "--config", str(path),
+                    ])
+            self.assertEqual(code, 4)
+            self.assertEqual(json.loads(output.getvalue())["code"], "stopped")
+            provider.assert_not_called()
 
     def config(self, root: Path) -> tuple[AtlasConfig, Path]:
         repository = root / "repo"

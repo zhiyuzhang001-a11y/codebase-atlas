@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
-from time import monotonic
+from time import monotonic, sleep
 import statistics
 import unittest
 from unittest.mock import patch
@@ -21,9 +23,16 @@ from codebase_atlas.python_registration_store import (
     registration_index_path,
     stage_registration_index,
 )
-from codebase_atlas.refresh_coordinator import RefreshCoordinator
+from codebase_atlas.refresh_coordinator import (
+    RefreshCoordinator,
+    SnapshotWaitTimeout,
+    refresh_with_retry,
+)
+from codebase_atlas.lifecycle import ProjectRefreshLease
 from codebase_atlas.refresh_planner import build_generation_manifest, manifest_path
 from codebase_atlas.refresh_recovery import (
+    ACCEPT_PUBLISHED_PHASES,
+    REFRESH_PHASES,
     RefreshRecoveryJournal,
     journal_path,
     recover_refresh_transaction,
@@ -97,6 +106,47 @@ class FakeTransport:
             "nodes": 2,
             "edges": 0,
         }
+
+
+def external_refresh_until_phase(
+    root_text: str, repository_text: str, phase: str, marker_text: str
+) -> None:
+    root = Path(root_text)
+    repository = Path(repository_text)
+    config = AtlasConfig(
+        repository,
+        "python",
+        root / "node",
+        root / "cbm",
+        root / "serena",
+        root / "data",
+        "project",
+    )
+    database = config.cache_dir / "project.db"
+    status = operational_index_status(
+        config.data_dir, repository, config.cache_dir, config.project
+    )
+    service = AtlasService(repository=repository, session_continuations=True)
+    service.start()
+
+    def observe(observed: str) -> None:
+        if observed != phase:
+            return
+        Path(marker_text).write_text(observed, encoding="utf-8")
+        while True:
+            sleep(1)
+
+    try:
+        coordinator = RefreshCoordinator(
+            config,
+            FakeTransport(database, repository, config.project),
+            service,
+            status,
+            phase_observer=observe,
+        )
+        coordinator.refresh(force_provider=True)
+    finally:
+        service.close()
 
 
 class RefreshCoordinatorTests(unittest.TestCase):
@@ -218,6 +268,22 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(len(self.transport.calls), 1)
         self.assertNotEqual(result["generation_after"], "generation-1")
         self.assertEqual(self.status["generation_id"], result["generation_after"])
+
+    def test_refresh_persists_every_publication_phase_in_order(self) -> None:
+        from codebase_atlas import refresh_recovery as recovery_module
+
+        phases = []
+        writer = recovery_module._write_atomic
+
+        def record(path, value):
+            if path == journal_path(self.config.data_dir):
+                phases.append(value["phase"])
+            return writer(path, value)
+
+        with patch("codebase_atlas.refresh_recovery._write_atomic", side_effect=record):
+            result = self.coordinator.refresh(force_provider=True)
+        self.assertEqual(result["status"], "refreshed")
+        self.assertEqual(phases, list(REFRESH_PHASES))
 
     def test_provider_input_change_refreshes_even_without_python_source_delta(self) -> None:
         (self.repository / "settings.json").write_text('{"enabled": true}\n')
@@ -429,6 +495,117 @@ class RefreshCoordinatorTests(unittest.TestCase):
         p95 = ordered[int(len(ordered) * 0.95) - 1]
         self.assertLessEqual(p95, 2.022, (p95, statistics.median(samples)))
 
+    def test_snapshot_timeout_is_diagnostic_and_does_not_adopt_old_state(self) -> None:
+        owner = ProjectRefreshLease(
+            self.config.data_dir, self.repository, self.config.project
+        )
+        self.assertTrue(owner.acquire())
+        try:
+            with self.assertRaises(SnapshotWaitTimeout) as raised:
+                with self.coordinator.query_snapshot(timeout_ms=20):
+                    self.fail("snapshot must not be yielded while writer is active")
+            status = raised.exception.status()
+            self.assertEqual(status["status"], "refresh_wait_timeout")
+            self.assertGreaterEqual(status["coordination"]["waited_ms"], 15)
+            self.assertEqual(status["coordination"]["owner"]["project"], "project")
+        finally:
+            owner.release()
+
+    def test_new_coordinator_does_not_delete_live_owner_staging(self) -> None:
+        live = self.config.data_dir / ".python-registrations-live-owner.json"
+        live.write_text("live")
+        owner = ProjectRefreshLease(
+            self.config.data_dir, self.repository, self.config.project
+        )
+        self.assertTrue(owner.acquire())
+        other_service = AtlasService(repository=self.repository)
+        other_service.start()
+        try:
+            other = RefreshCoordinator(
+                self.config,
+                FakeTransport(self.database, self.repository, self.config.project),
+                other_service,
+                dict(self.status),
+            )
+            self.assertEqual(other.recovery_status["status"], "deferred")
+            self.assertTrue(live.exists())
+        finally:
+            owner.release()
+        try:
+            result = other.refresh()
+            self.assertEqual(result["status"], "current")
+            self.assertFalse(live.exists())
+            self.assertIn("recovery", result["timings_ms"])
+        finally:
+            other_service.close()
+
+    def test_refresh_retry_waits_for_owner_and_reports_wall_wait(self) -> None:
+        class CoalescingCoordinator:
+            def __init__(self):
+                self.calls = 0
+
+            def refresh(self, **_arguments):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "status": "refresh_owned_elsewhere",
+                        "duration_ms": 0.1,
+                        "timings_ms": {"total": 0.1},
+                    }
+                return {
+                    "status": "current",
+                    "generation_after": "generation-2",
+                    "duration_ms": 0.1,
+                    "timings_ms": {"plan": 0.05, "total": 0.1},
+                }
+
+            @contextmanager
+            def query_snapshot(self, *, timeout_ms):
+                self.assert_timeout = timeout_ms
+                threading.Event().wait(0.02)
+                yield {"generation_id": "generation-2"}
+
+        import threading
+
+        coordinator = CoalescingCoordinator()
+        result = refresh_with_retry(coordinator, timeout_ms=1000)
+        self.assertEqual(result["status"], "current")
+        self.assertEqual(result["route"], "coalesced_after_owner")
+        self.assertEqual(result["attempts"], 2)
+        self.assertGreaterEqual(result["timings_ms"]["wait_for_owner"], 14.9)
+        self.assertGreaterEqual(result["duration_ms"], result["timings_ms"]["wait_for_owner"])
+
+    def test_refresh_retry_does_not_coalesce_failed_owner_old_generation(self) -> None:
+        class FailedOwnerCoordinator:
+            def __init__(self):
+                self.calls = 0
+                self.index_status = {"generation_id": "generation-1"}
+
+            def refresh(self, **_arguments):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"status": "refresh_owned_elsewhere", "timings_ms": {}}
+                return {
+                    "status": "failed",
+                    "error": "provider failed",
+                    "generation_before": "generation-1",
+                    "generation_after": "generation-1",
+                    "timings_ms": {},
+                }
+
+            @contextmanager
+            def query_snapshot(self, *, timeout_ms):
+                yield {
+                    "status": "fresh",
+                    "ok": True,
+                    "generation_id": "generation-1",
+                }
+
+        coordinator = FailedOwnerCoordinator()
+        result = refresh_with_retry(coordinator, timeout_ms=1000)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(coordinator.calls, 2)
+
     def test_restart_journal_restores_previous_generation(self) -> None:
         before = self.hashes()
         journal = RefreshRecoveryJournal.begin(self.config, "generation-1")
@@ -456,6 +633,105 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(self.database.read_bytes(), candidate)
         self.assertFalse(journal_path(self.config.data_dir).exists())
 
+    def test_every_durable_phase_has_deterministic_recovery_semantics(self) -> None:
+        original = self.database.read_bytes()
+        for target_phase in REFRESH_PHASES:
+            with self.subTest(phase=target_phase):
+                replace_bytes(self.database, original)
+                journal = RefreshRecoveryJournal.begin(self.config, "generation-1")
+                if target_phase != "prepared":
+                    for phase in REFRESH_PHASES[1:]:
+                        if phase == "candidate_ready":
+                            journal.set_candidate("generation-2")
+                        else:
+                            journal.advance(phase)
+                        if phase == target_phase:
+                            break
+                replace_bytes(self.database, f"candidate:{target_phase}".encode())
+                result = recover_refresh_transaction(self.config)
+                expected = (
+                    "accepted_published_generation"
+                    if target_phase in ACCEPT_PUBLISHED_PHASES
+                    else "restored_previous_generation"
+                )
+                self.assertEqual(result["action"], expected)
+                if target_phase in ACCEPT_PUBLISHED_PHASES:
+                    self.assertEqual(
+                        self.database.read_bytes(), f"candidate:{target_phase}".encode()
+                    )
+                else:
+                    self.assertEqual(self.database.read_bytes(), original)
+        replace_bytes(self.database, original)
+
+    def test_external_process_termination_recovers_every_durable_phase(self) -> None:
+        context = multiprocessing.get_context("spawn")
+        marker = self.root / "observed-refresh-phase"
+        for target_phase in REFRESH_PHASES:
+            with self.subTest(phase=target_phase):
+                before = self.hashes()
+                marker.unlink(missing_ok=True)
+                process = context.Process(
+                    target=external_refresh_until_phase,
+                    args=(
+                        str(self.root),
+                        str(self.repository),
+                        target_phase,
+                        str(marker),
+                    ),
+                )
+                process.start()
+                deadline = monotonic() + 20
+                while (
+                    not marker.exists()
+                    and process.is_alive()
+                    and monotonic() < deadline
+                ):
+                    sleep(0.02)
+                if not marker.exists():
+                    process.terminate()
+                    process.join(timeout=5)
+                    self.fail(
+                        f"external refresh did not reach {target_phase}; "
+                        f"exitcode={process.exitcode}"
+                    )
+                document = json.loads(
+                    journal_path(self.config.data_dir).read_text(encoding="utf-8")
+                )
+                self.assertEqual(document["phase"], target_phase)
+                candidate = document.get("generation_after")
+                process.terminate()
+                process.join(timeout=10)
+                self.assertFalse(process.is_alive())
+
+                recovered = recover_refresh_transaction(self.config)
+                expected_action = (
+                    "accepted_published_generation"
+                    if target_phase in ACCEPT_PUBLISHED_PHASES
+                    else "restored_previous_generation"
+                )
+                self.assertEqual(recovered["action"], expected_action)
+                if target_phase in ACCEPT_PUBLISHED_PHASES:
+                    published = json.loads(
+                        manifest_path(self.config.data_dir).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(published["generation_id"], candidate)
+                else:
+                    self.assertEqual(self.hashes(), before)
+                clean = recover_refresh_transaction(self.config)
+                self.assertEqual(clean, {
+                    "status": "clean",
+                    "action": "removed_owned_staging",
+                    "removed": 0,
+                })
+
+    def test_journal_rejects_non_monotonic_and_unknown_phases(self) -> None:
+        journal = RefreshRecoveryJournal.begin(self.config, "generation-1")
+        with self.assertRaisesRegex(ValueError, "did not advance"):
+            journal.advance("prepared")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            journal.advance("not-a-phase")
+        journal.rollback()
+
     def test_foreign_recovery_journal_fails_closed(self) -> None:
         journal = RefreshRecoveryJournal.begin(self.config, "generation-1")
         value = json.loads(journal.path.read_text())
@@ -472,11 +748,17 @@ class RefreshCoordinatorTests(unittest.TestCase):
     def test_restart_removes_only_recognized_regular_staging(self) -> None:
         candidate = self.config.data_dir / ".generation-manifest-candidate-owned.json"
         candidate.write_text("candidate")
+        orphan = self.config.data_dir / ".refresh-recovery-state-owned.bak"
+        orphan.write_text("backup")
+        provider_orphan = self.config.cache_dir / ".refresh-recovery-provider-owned.bak"
+        provider_orphan.write_text("backup")
         unrelated = self.config.data_dir / "unrelated.tmp"
         unrelated.write_text("keep")
         result = recover_refresh_transaction(self.config)
-        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["removed"], 3)
         self.assertFalse(candidate.exists())
+        self.assertFalse(orphan.exists())
+        self.assertFalse(provider_orphan.exists())
         self.assertTrue(unrelated.exists())
 
 

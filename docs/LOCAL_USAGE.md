@@ -8,6 +8,34 @@ version-controlled `docs/CODEX_DEPLOYMENT_RULES.md`. It requires stable GitHub
 Release assets, checksum verification, project isolation and an end-to-end
 identity/health/query acceptance gate.
 
+## Four-command project lifecycle
+
+After the one-time machine installation of Codebase Atlas, ordinary project
+management uses only:
+
+```bash
+atlas enable --repo /absolute/path/to/repository
+atlas stop --repo /absolute/path/to/repository
+atlas update --repo /absolute/path/to/repository
+atlas remove --repo /absolute/path/to/repository
+```
+
+Omit `--repo` inside the intended Git repository. `enable` prepares or reuses a
+verified runtime, creates or restores the exact project state, indexes it,
+installs only Atlas's project-scoped Codex block, and passes doctor, deep health,
+positive-query and cross-project-negative gates before reporting ready. `stop`
+preserves configuration and data. `update` means a verified software upgrade;
+routine source edits refresh automatically before the next query. `remove`
+moves Atlas-owned project assets to a verified recovery receipt rather than
+permanently deleting them. Add `--json` for the stable structured result.
+
+The first MCP registration requires one new Codex task. The 0.25 `mcp-auto`
+bootstrap then rechecks exact project identity, lifecycle state and selected
+version at every request boundary, so later stop, resume and update operations
+take effect in that already-connected task. A task that never loaded Atlas, or
+still runs an older fixed backend, cannot be injected or upgraded in place by
+changing its files.
+
 ## Requirements
 
 - Python 3.11 through 3.14
@@ -435,8 +463,10 @@ Atlas never edits the global trust list.
 This creates or appends one marker-delimited block in `.codex/config.toml`,
 preserves unrelated valid TOML bytes, refuses symlinks/foreign Atlas entries,
 and never changes `~/.codex/config.toml`. The file contains absolute local paths
-and should not be committed. Start a new Codex task rooted at the repository and
-call `project_status` to verify the resolved repository and index freshness.
+and should not be committed. Start a new Codex task once after first registration,
+then call `project_status` to verify the resolved repository and index freshness.
+That task's stable bootstrap reloads project lifecycle and selected backend state
+on later requests; it does not make an older or never-loaded task hot-load MCP.
 The managed transport checks for changes before each Atlas code query and calls
 the Provider only when indexed source changed. Remove only Atlas's matching block with
 `codebase-atlas codex remove --scope project`.

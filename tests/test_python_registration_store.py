@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ast
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -190,6 +191,32 @@ class PythonRegistrationStoreTests(unittest.TestCase):
                 ).registrations),
                 2,
             )
+
+    def test_rollback_never_replaces_a_later_transactions_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.repository(root)
+            data = root / "data"
+            first = stage_registration_index(data, repository, "project", "1" * 64)
+            second = stage_registration_index(data, repository, "project", "1" * 64)
+            try:
+                self.assertNotEqual(first.transaction_id, second.transaction_id)
+                self.assertIn(str(os.getpid()), first.temporary.name)
+                first.publish()
+                second.publish()
+                destination = registration_index_path(data)
+                second_identity = (destination.stat().st_dev, destination.stat().st_ino)
+                with self.assertRaisesRegex(
+                    RegistrationIndexError, "ownership changed"
+                ):
+                    first.rollback()
+                self.assertEqual(
+                    (destination.stat().st_dev, destination.stat().st_ino),
+                    second_identity,
+                )
+            finally:
+                first.close()
+                second.close()
 
 
 if __name__ == "__main__":

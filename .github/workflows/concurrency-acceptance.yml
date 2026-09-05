@@ -1,0 +1,147 @@
+name: Concurrency Acceptance
+
+on:
+  push:
+    branches: [codex/multi-mcp-concurrency-stability]
+    paths:
+      - .github/workflows/concurrency-acceptance.yml
+      - scripts/extract_managed_provider.py
+      - scripts/run_multi_mcp_stress.py
+      - scripts/ts_test_analyzer.mjs
+      - src/codebase_atlas/**
+      - tests/test_multi_mcp_stress.py
+      - tests/test_refresh_coordinator.py
+      - tests/test_ts_tests.py
+  workflow_dispatch:
+    inputs:
+      provider_run_id:
+        description: Successful Managed Provider Bundles run (latest successful run when empty)
+        required: false
+        type: string
+      rounds:
+        description: Qualification rounds per language
+        required: false
+        default: "10"
+        type: string
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  PROVIDER_COMMIT: e088a41b8e7619fb532afda0d611b944002cfebf
+  PROVIDER_VERSION: 0.10.8-atlas.2+e088a41b
+  SERENA_COMMIT: 3ad624f511511bb7a77447e413425198fc574349
+
+jobs:
+  native-provider:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x86_64
+            binary: codebase-memory-mcp
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            binary: codebase-memory-mcp
+          - runner: macos-15-intel
+            target: macos-x86_64
+            binary: codebase-memory-mcp
+          - runner: macos-14
+            target: macos-arm64
+            binary: codebase-memory-mcp
+          - runner: windows-latest
+            target: windows-x86_64
+            binary: codebase-memory-mcp.exe
+          - runner: windows-11-arm
+            target: windows-arm64
+            binary: codebase-memory-mcp.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Serena compatibility Python
+        if: matrix.target == 'windows-arm64'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          architecture: x64
+      - name: Record Serena compatibility Python
+        if: matrix.target == 'windows-arm64'
+        run: python -c "import os,sys; open(os.environ['GITHUB_ENV'], 'a').write('ATLAS_CONCURRENCY_SERENA_PYTHON=' + sys.executable + '\n')"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Record runtime executables
+        run: python -c "import os,shutil,sys; serena=os.environ.get('ATLAS_CONCURRENCY_SERENA_PYTHON', sys.executable); open(os.environ['GITHUB_ENV'], 'a').write('ATLAS_CONCURRENCY_NODE=' + shutil.which('node') + '\nATLAS_CONCURRENCY_SERENA_PYTHON=' + serena + '\n')"
+      - name: Resolve verified Provider run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RUN_ID: ${{ inputs.provider_run_id }}
+        run: |
+          run_id="$REQUESTED_RUN_ID"
+          if [ -z "$run_id" ]; then
+            for candidate in $(gh run list --workflow managed-provider.yml --status success --limit 20 --json databaseId --jq '.[].databaseId'); do
+              artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate}/artifacts" --jq '.artifacts[] | select(.name == "managed-provider-release-assets" and .expired == false) | .id')"
+              if [ -n "$artifact_id" ]; then
+                run_id="$candidate"
+                break
+              fi
+            done
+          fi
+          test -n "$run_id"
+          artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" --jq '.artifacts[] | select(.name == "managed-provider-release-assets" and .expired == false) | .id')"
+          test -n "$artifact_id"
+          echo "PROVIDER_RUN_ID=$run_id" >> "$GITHUB_ENV"
+      - name: Download verified managed Provider set
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$PROVIDER_RUN_ID" --name managed-provider-release-assets --dir provider-assets
+      - name: Verify and extract Provider
+        run: >-
+          python scripts/verify_managed_provider_bundles.py provider-assets
+          --expected-commit ${{ env.PROVIDER_COMMIT }} --version ${{ env.PROVIDER_VERSION }}
+      - run: >-
+          python scripts/extract_managed_provider.py provider-assets ${{ matrix.target }} provider
+          --expected-commit ${{ env.PROVIDER_COMMIT }} --version ${{ env.PROVIDER_VERSION }}
+      - name: Install Atlas under test
+        run: python -m pip install .
+      - name: Install pinned Serena under test
+        run: >-
+          ${{ env.ATLAS_CONCURRENCY_SERENA_PYTHON }} -m pip install
+          "git+https://github.com/oraios/serena.git@${{ env.SERENA_COMMIT }}"
+      - name: External termination phase matrix
+        run: >-
+          python -m unittest
+          tests.test_refresh_coordinator.RefreshCoordinatorTests.test_external_process_termination_recovers_every_durable_phase
+      - name: Python and TypeScript 10-round qualification
+        env:
+          ATLAS_CONCURRENCY_PROVIDER_BINARY: ${{ github.workspace }}/provider/${{ matrix.target }}/${{ matrix.binary }}
+          ATLAS_CONCURRENCY_LANGUAGES: python,typescript
+          ATLAS_CONCURRENCY_ROUNDS: ${{ inputs.rounds || '10' }}
+          ATLAS_CONCURRENCY_LEDGER_DIR: artifacts/qualification
+        run: python -m unittest tests.test_multi_mcp_stress -v
+      - name: Eight-client 100-file contention profile
+        env:
+          ATLAS_CONCURRENCY_PROVIDER_BINARY: ${{ github.workspace }}/provider/${{ matrix.target }}/${{ matrix.binary }}
+          ATLAS_CONCURRENCY_LANGUAGES: python
+          ATLAS_CONCURRENCY_ROUNDS: "1"
+          ATLAS_CONCURRENCY_CLIENTS: "8"
+          ATLAS_CONCURRENCY_WRITERS: "6"
+          ATLAS_CONCURRENCY_FILES_PER_WRITER: "100"
+          ATLAS_CONCURRENCY_LEDGER_DIR: artifacts/contention
+        run: python -m unittest tests.test_multi_mcp_stress -v
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: concurrency-${{ matrix.target }}
+          path: artifacts/**/*.json
+          if-no-files-found: warn

@@ -168,6 +168,10 @@ class CodexIntegrationTests(unittest.TestCase):
             parsed = tomllib.loads(target.read_text(encoding="utf-8"))
             entry = parsed["mcp_servers"]["codebase_atlas"]
             self.assertEqual(entry["command"], str(atlas.resolve()))
+            self.assertEqual(entry["args"][:3], [
+                "mcp-auto", "--root", str(repository.resolve())
+            ])
+            self.assertNotIn("--config", entry["args"])
             self.assertIn("on-query", entry["args"])
             self.assertEqual(applied["existing"], "matching")
             repeated = codex_apply(config, scope="project", atlas_executable=atlas)
@@ -187,6 +191,34 @@ class CodexIntegrationTests(unittest.TestCase):
             self.assertTrue(target.read_text(encoding="utf-8").startswith(original))
             codex_remove(config, scope="project", atlas_executable=atlas)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+    def test_project_scope_updates_only_owned_managed_block(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, old_atlas = self.project_paths(root)
+            new_atlas = root / "new atlas"
+            new_atlas.write_text("")
+            codex_apply(config, scope="project", atlas_executable=old_atlas)
+            target = repository / ".codex/config.toml"
+            original = target.read_text(encoding="utf-8")
+            target.write_text('model = "preserved"\n' + original, encoding="utf-8")
+            plan = codex_plan(config, scope="project", atlas_executable=new_atlas)
+            self.assertEqual(plan["existing"], "managed_different")
+            applied = codex_apply(
+                config, scope="project", atlas_executable=new_atlas
+            )
+            updated = target.read_text(encoding="utf-8")
+            self.assertTrue(applied["mutates"])
+            self.assertTrue(updated.startswith('model = "preserved"\n'))
+            parsed = tomllib.loads(updated)
+            self.assertEqual(
+                parsed["mcp_servers"]["codebase_atlas"]["command"],
+                str(new_atlas.resolve()),
+            )
+            self.assertNotEqual(
+                parsed["mcp_servers"]["codebase_atlas"]["command"],
+                str(old_atlas.resolve()),
+            )
 
     def test_project_scope_refuses_foreign_or_invalid_atlas_config(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

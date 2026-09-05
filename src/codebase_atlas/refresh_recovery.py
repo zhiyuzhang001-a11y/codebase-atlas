@@ -17,6 +17,20 @@ from .refresh_planner import manifest_path
 
 
 JOURNAL_NAME = "refresh-transaction-v1.json"
+REFRESH_PHASES = (
+    "prepared",
+    "provider_indexed",
+    "provider_validated",
+    "candidate_ready",
+    "sidecar_published",
+    "manifest_published",
+    "state_published",
+    "generation_activated",
+    "committing",
+)
+ACCEPT_PUBLISHED_PHASES = frozenset({
+    "state_published", "generation_activated", "committing",
+})
 
 
 def _cleanup_owned_stage_files(config: AtlasConfig) -> int:
@@ -27,8 +41,14 @@ def _cleanup_owned_stage_files(config: AtlasConfig) -> int:
             (".python-registrations-backup-", ".json"),
             (".python-registrations-", ".json"),
             (".refresh-journal-", ".json"),
+            (".refresh-recovery-sidecar-", ".bak"),
+            (".refresh-recovery-manifest-", ".bak"),
+            (".refresh-recovery-state-", ".bak"),
         )),
-        (config.cache_dir, ((".provider-generation-backup-", ".db"),)),
+        (config.cache_dir, (
+            (".provider-generation-backup-", ".db"),
+            (".refresh-recovery-provider-", ".bak"),
+        )),
     )
     removed = 0
     for directory, patterns in recognized:
@@ -143,14 +163,23 @@ class RefreshRecoveryJournal:
         _write_atomic(path, document)
         return cls(path, document)
 
-    def set_candidate(self, generation_after: str) -> None:
-        self.document["generation_after"] = generation_after
-        self.document["phase"] = "candidate_ready"
+    def advance(self, phase: str) -> None:
+        if phase not in REFRESH_PHASES:
+            raise ValueError(f"unsupported refresh recovery phase: {phase}")
+        current = self.document.get("phase")
+        if current not in REFRESH_PHASES:
+            raise ValueError("refresh recovery journal phase is invalid")
+        if REFRESH_PHASES.index(phase) <= REFRESH_PHASES.index(current):
+            raise ValueError(f"refresh recovery phase did not advance: {current} -> {phase}")
+        self.document["phase"] = phase
         _write_atomic(self.path, self.document)
 
+    def set_candidate(self, generation_after: str) -> None:
+        self.document["generation_after"] = generation_after
+        self.advance("candidate_ready")
+
     def mark_state_published(self) -> None:
-        self.document["phase"] = "state_published"
-        _write_atomic(self.path, self.document)
+        self.advance("state_published")
 
     def rollback(self) -> None:
         for label in ("state", "manifest", "sidecar", "provider"):
@@ -184,6 +213,8 @@ def recover_refresh_transaction(config: AtlasConfig) -> dict[str, Any]:
     }
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise ValueError("refresh recovery journal schema is invalid")
+    if value.get("phase") not in REFRESH_PHASES:
+        raise ValueError("refresh recovery journal phase is invalid")
     if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         raise ValueError("refresh recovery journal identity mismatch")
     artifacts = value.get("artifacts")
@@ -200,7 +231,7 @@ def recover_refresh_transaction(config: AtlasConfig) -> dict[str, Any]:
         if not isinstance(entry, dict) or entry.get("destination") != destination:
             raise ValueError("refresh recovery artifact identity mismatch")
     journal = RefreshRecoveryJournal(path, value)
-    if value.get("phase") == "state_published":
+    if value.get("phase") in ACCEPT_PUBLISHED_PHASES:
         journal.commit()
         removed = _cleanup_owned_stage_files(config)
         return {"status": "recovered", "action": "accepted_published_generation", "removed": removed}

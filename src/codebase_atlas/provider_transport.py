@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -11,7 +12,7 @@ from time import monotonic_ns
 from typing import Any, BinaryIO, Callable
 
 from .lifecycle import GlobalCbmLock
-from .provider_layout import provider_environment
+from .provider_layout import configure_managed_provider_cache, provider_environment
 
 
 MAX_FRAME_BYTES = 8 * 1024 * 1024
@@ -30,7 +31,15 @@ def _read_frame(stream: BinaryIO) -> dict[str, Any]:
     if not first:
         raise EOFError("Provider stdout closed")
     if not first.lower().startswith(b"content-length:"):
-        raise ValueError("Provider returned malformed MCP framing")
+        if len(first) > MAX_FRAME_BYTES:
+            raise ValueError("Provider returned oversized MCP line")
+        try:
+            value = json.loads(first)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Provider returned malformed MCP framing") from exc
+        if not isinstance(value, dict):
+            raise ValueError("Provider returned a non-object MCP response")
+        return value
     try:
         length = int(first.split(b":", 1)[1].strip())
     except ValueError as exc:
@@ -69,6 +78,7 @@ class CodebaseMemoryMcpTransport:
         lock: GlobalCbmLock | None = None,
         observer: Callable[[dict[str, Any]], None] | None = None,
         arguments: tuple[str, ...] = (),
+        managed_cache: bool = False,
     ) -> None:
         self.binary = binary.resolve()
         self.arguments = tuple(arguments)
@@ -76,7 +86,8 @@ class CodebaseMemoryMcpTransport:
         self.cache_dir = cache_dir.resolve()
         self.exclusive = exclusive
         self.client_version = client_version
-        self.lock = (lock or GlobalCbmLock()) if exclusive else None
+        self.lock = lock or GlobalCbmLock()
+        self.managed_cache = managed_cache
         self.observer = observer
         self.process: subprocess.Popen[bytes] | None = None
         self._next_id = 1
@@ -140,8 +151,11 @@ class CodebaseMemoryMcpTransport:
     @staticmethod
     def _write(stream: BinaryIO, message: dict[str, Any]) -> None:
         payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
-        stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
-        stream.write(payload)
+        if os.name == "nt":
+            stream.write(payload + b"\n")
+        else:
+            stream.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))
+            stream.write(payload)
         stream.flush()
 
     def _request(self, method: str, params: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
@@ -206,10 +220,18 @@ class CodebaseMemoryMcpTransport:
         with self._state_lock:
             if self.process is not None and self.process.poll() is None:
                 return False
-            if self.lock is not None:
-                self.lock.acquire(timeout_seconds=lock_timeout_seconds)
+            admission_started = monotonic_ns()
+            self.lock.acquire(timeout_seconds=lock_timeout_seconds)
+            self._event(
+                "provider_admission_acquired",
+                wait_ms=(monotonic_ns() - admission_started) / 1_000_000.0,
+            )
             try:
                 environment = provider_environment(self.cache_dir, self.repository)
+                if self.managed_cache:
+                    configure_managed_provider_cache(
+                        self.binary, self.cache_dir, self.repository
+                    )
                 process = subprocess.Popen(
                     [str(self.binary), *self.arguments], cwd=self.repository, env=environment,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -238,6 +260,8 @@ class CodebaseMemoryMcpTransport:
                 if not isinstance(result.get("serverInfo"), dict):
                     raise RuntimeError("Provider initialize response lacks serverInfo")
                 self._notify("notifications/initialized")
+                if not self.exclusive:
+                    self.lock.release()
                 return True
             except BaseException:
                 self._shutdown()
@@ -306,8 +330,7 @@ class CodebaseMemoryMcpTransport:
             finally:
                 self._reader_thread = None
                 self._stderr_thread = None
-                if self.lock is not None:
-                    self.lock.release()
+                self.lock.release()
                 self._event(
                     "cleanup_complete",
                     child_returncode=None if process is None else process.returncode,

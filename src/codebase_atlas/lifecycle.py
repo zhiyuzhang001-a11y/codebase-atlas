@@ -13,6 +13,7 @@ import time
 from typing import Callable, Any
 
 from .provider_layout import provider_environment
+from .provider_process import run_provider_command
 
 try:
     import fcntl
@@ -24,6 +25,12 @@ except ImportError:  # pragma: no cover - exercised only on Windows
 Runner = Callable[..., Any]
 
 
+def _project_lease_identity(repository: Path, project: str) -> str:
+    return hashlib.sha256(
+        f"{repository.resolve()}\0{project}".encode("utf-8")
+    ).hexdigest()[:24]
+
+
 def default_cbm_lock_path() -> Path:
     runtime = Path(
         os.environ.get("ATLAS_RUNTIME_DIR")
@@ -32,6 +39,16 @@ def default_cbm_lock_path() -> Path:
     )
     user = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
     return runtime / f"codebase-atlas-cbm-{user}.lock"
+
+
+def default_project_operation_dir() -> Path:
+    runtime = Path(
+        os.environ.get("ATLAS_RUNTIME_DIR")
+        or os.environ.get("XDG_RUNTIME_DIR")
+        or tempfile.gettempdir()
+    )
+    user = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
+    return runtime / f"codebase-atlas-project-operations-{user}"
 
 
 class GlobalCbmLock:
@@ -95,9 +112,7 @@ class ProjectRefreshLease:
     """Nonblocking cross-process writer lease for one exact Atlas project."""
 
     def __init__(self, data_dir: Path, repository: Path, project: str) -> None:
-        identity = hashlib.sha256(
-            f"{repository.resolve()}\0{project}".encode("utf-8")
-        ).hexdigest()[:24]
+        identity = _project_lease_identity(repository, project)
         self.path = data_dir.resolve() / f"refresh-{identity}.lock"
         self.repository = repository.resolve()
         self.project = project
@@ -140,7 +155,12 @@ class ProjectRefreshLease:
                 "repository": str(self.repository),
                 "project": self.project,
             }, sort_keys=True).encode("utf-8")
-            handle.seek(0)
+            if fcntl is None:  # Reserve byte zero for the Windows lock region.
+                handle.seek(0)
+                handle.write(b"\0")
+                handle.seek(1)
+            else:
+                handle.seek(0)
             handle.truncate()
             handle.write(payload)
             os.fsync(descriptor)
@@ -190,6 +210,36 @@ class ProjectRefreshLease:
             handle.close()
             raise
 
+    def owner_status(self) -> dict[str, Any]:
+        """Best-effort diagnostics for the process currently holding the lease."""
+        try:
+            metadata = os.lstat(self.path)
+            if not stat.S_ISREG(metadata.st_mode):
+                return {"status": "unsafe", "path": str(self.path)}
+            try:
+                payload = self.path.read_bytes()
+            except OSError:
+                if fcntl is not None:
+                    raise
+                with self.path.open("rb") as stream:
+                    stream.seek(1)
+                    payload = stream.read()
+            if payload.startswith(b"\0"):
+                payload = payload[1:]
+            value = json.loads(payload.decode("utf-8") or "{}")
+            if not isinstance(value, dict):
+                raise ValueError("lease payload is not an object")
+            return {
+                "status": "observed",
+                "pid": value.get("pid"),
+                "repository": value.get("repository"),
+                "project": value.get("project"),
+            }
+        except FileNotFoundError:
+            return {"status": "absent"}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "unreadable", "detail": str(exc)}
+
     def release(self) -> None:
         handle = self._handle
         if handle is None:
@@ -213,6 +263,15 @@ class ProjectRefreshLease:
         self.release()
 
 
+class ProjectOperationLease(ProjectRefreshLease):
+    """Exclusive cross-process lease for one project's lifecycle operations."""
+
+    def __init__(self, data_dir: Path, repository: Path, project: str) -> None:
+        super().__init__(data_dir, repository, project)
+        identity = _project_lease_identity(repository, project)
+        self.path = data_dir.resolve() / f"operation-{identity}.lock"
+
+
 class CodebaseMemoryDaemon:
     def __init__(
         self,
@@ -233,13 +292,17 @@ class CodebaseMemoryDaemon:
 
     def _run(self, action: str):
         environment = provider_environment(self.cache_dir, self.repository)
-        completed = self.runner(
-            [str(self.binary), "daemon", action],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
+        command = [str(self.binary), "daemon", action]
+        if self.runner is subprocess.run:
+            completed = run_provider_command(command, env=environment)
+        else:
+            completed = self.runner(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
         combined = f"{completed.stdout}\n{completed.stderr}".lower()
         if completed.returncode != 0 and not (
             action == "status" and "not running" in combined

@@ -15,6 +15,7 @@ from scripts.build_managed_provider import (
     write_tar,
     write_zip,
 )
+from scripts.extract_managed_provider import main as extract_main
 from scripts.verify_managed_provider_bundles import main as verify_main
 
 
@@ -77,6 +78,21 @@ class ManagedProviderBundleTests(unittest.TestCase):
             with mock.patch.object(sys, "argv", ["verify", str(directory)]):
                 with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
                     verify_main()
+
+    def test_extracts_one_verified_native_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            self.make_release_set(directory)
+            destination = directory / "extracted"
+            target = "windows-arm64"
+            with mock.patch.object(
+                sys,
+                "argv",
+                ["extract", str(directory), target, str(destination)],
+            ):
+                self.assertEqual(extract_main(), 0)
+            binary = destination / target / TARGETS[target][1]
+            self.assertEqual(binary.read_bytes(), f"managed-provider:{target}".encode())
 
 
 if __name__ == "__main__":

@@ -129,15 +129,20 @@ class ProjectDiscoveryTests(unittest.TestCase):
     def test_mcp_auto_unconfigured_builds_status_only_server(self) -> None:
         with tempfile.TemporaryDirectory(prefix="项目 with spaces ") as raw:
             root = Path(raw)
-            with patch("codebase_atlas.cli._run_mcp_with_graceful_termination") as run:
+            with (
+                patch("codebase_atlas.cli.ReloadingMcpServer") as server_type,
+                patch("codebase_atlas.cli._run_mcp_with_graceful_termination") as run,
+            ):
                 self.assertEqual(main(["mcp-auto", "--root", str(root)]), 0)
-            server = run.call_args.args[0]
-            self.assertIsNone(server.service)
-            self.assertEqual(server.index_status["status"], "not_configured")
-            self.assertEqual(
-                server.index_status["setup_argv"],
-                ["codebase-atlas", "onboard", "--repo", str(root.resolve())],
+            server_type.assert_called_once_with(
+                root,
+                stale_policy="warn",
+                auto_update="on-query",
+                auto_update_timeout=60.0,
+                version_check="notify",
             )
+            run.assert_called_once_with(server_type.return_value)
+            server_type.return_value.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

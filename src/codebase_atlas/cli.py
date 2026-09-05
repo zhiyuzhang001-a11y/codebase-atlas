@@ -34,6 +34,7 @@ from .index_state import (
     repository_snapshot,
 )
 from .lifecycle import CodebaseMemoryDaemon, SharedCodebaseMemorySession
+from .provider_process import run_provider_command
 from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
 from .operations import (
@@ -46,8 +47,10 @@ from .operations import (
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
+from .reloadable_mcp import ReloadingMcpServer
 from .provider_layout import provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
+from .project_lifecycle import operational_lifecycle_status
 from .refresh_coordinator import RefreshCoordinator, refresh_with_retry
 from .provider_migration import (
     plan_provider_migration,
@@ -451,25 +454,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
         return 0
     if args.command == "mcp-auto":
-        resolution = resolve_project(args.root or Path.cwd())
-        if resolution.status == "configured":
-            forwarded = [
-                "mcp", "--config", str(resolution.config),
-                "--stale-policy", args.stale_policy,
-                "--auto-update", args.auto_update,
-                "--auto-update-timeout", str(args.auto_update_timeout),
-                "--version-check", args.version_check,
-            ]
-            return main(forwarded)
-        status = resolution.operational_status()
-        instructions = (
-            f"Codebase Atlas is {resolution.status} for {resolution.root}. "
-            "Call project_status and follow next_action. Never use results from "
-            "another repository."
+        server = ReloadingMcpServer(
+            args.root or Path.cwd(),
+            stale_policy=args.stale_policy,
+            auto_update=args.auto_update,
+            auto_update_timeout=args.auto_update_timeout,
+            version_check=args.version_check,
         )
-        _run_mcp_with_graceful_termination(
-            McpServer(None, status, "error", instructions=instructions)
-        )
+        try:
+            _run_mcp_with_graceful_termination(server)
+        finally:
+            server.close()
         return 0
     if args.command == "inspect":
         config = AtlasConfig.load(args.config)
@@ -1105,12 +1100,28 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "mcp" and args.auto_update != "off":
             if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
                 raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
-        if args.command == "mcp" and args.auto_update == "session-start":
+        _apply_project_config(args)
+        lifecycle_status = operational_lifecycle_status(
+            args.data_dir, args.repo, args.project
+        )
+        if not lifecycle_status["ok"] and args.command != "mcp":
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "error",
+                "code": lifecycle_status["status"],
+                "message": "Codebase Atlas is not enabled for this project.",
+                "project": lifecycle_status,
+            }, ensure_ascii=False, indent=2))
+            return 4
+        if (
+            args.command == "mcp"
+            and lifecycle_status["ok"]
+            and args.auto_update == "session-start"
+        ):
             selected_config = args.config or Path.cwd() / CONFIG_NAME
             auto_update_status = session_start_update(
                 selected_config, timeout_seconds=args.auto_update_timeout
             )
-        _apply_project_config(args)
         if args.command == "mcp":
             args.index_status["identity"] = {
                 "repository": str(args.repo.resolve()),
@@ -1133,6 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.binary, args.repo, args.cache_dir,
                 exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
                 client_version=__version__,
+                managed_cache=provider_layout == SHARED_PROVIDER_LAYOUT,
             )
             if args.command == "mcp"
             else None
@@ -1217,6 +1229,9 @@ def main(argv: list[str] | None = None) -> int:
                         refresh_coordinator=refresh_coordinator,
                         auto_update=args.auto_update,
                         auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
+                        availability=lambda: operational_lifecycle_status(
+                            args.data_dir, args.repo, args.project
+                        ),
                     )
                 )
             elif args.command == "query":
@@ -1383,10 +1398,7 @@ def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
         ]
         if config.project:
             command.extend(["--name", config.project])
-        completed = subprocess.run(
-            command,
-            check=False, capture_output=True, text=True, env=environment,
-        )
+        completed = run_provider_command(command, env=environment)
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or "Codebase Memory indexing failed")
     envelope = json.loads(completed.stdout)
@@ -1419,6 +1431,7 @@ def _transactional_refresh(
         config.cache_dir,
         exclusive=False,
         client_version=__version__,
+        managed_cache=True,
     )
     service = AtlasService(repository=config.repository, lifecycle=transport)
     coordinator = RefreshCoordinator(config, transport, service, status)
