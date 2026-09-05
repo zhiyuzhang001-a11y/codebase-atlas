@@ -10,7 +10,7 @@ import select
 import subprocess
 from typing import Any
 
-from ..contracts import Node, SourceRange
+from ..contracts import Node, SourceRange, repository_path
 
 
 def _hash(value: Any) -> str:
@@ -18,14 +18,47 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def normalize_serena_rows(rows: Any, *, query_type: str, symbol: str) -> tuple[Node, ...]:
+def _normalize_result_path(value: str, repository: Path | None) -> str:
+    try:
+        return repository_path(value)
+    except ValueError:
+        if repository is None:
+            raise
+    candidate = (repository / value).resolve(strict=True)
+    root = repository.resolve(strict=True)
+    try:
+        return repository_path(candidate.relative_to(root).as_posix())
+    except ValueError:
+        # Windows may expose the same directory through both an 8.3 short path
+        # (RUNNER~1) and its long spelling.  Compare directory identities while
+        # walking upward instead of trusting their textual prefixes.
+        parts: list[str] = []
+        current = candidate
+        while current != current.parent:
+            try:
+                if current.samefile(root):
+                    return repository_path(Path(*reversed(parts)).as_posix())
+            except OSError:
+                pass
+            parts.append(current.name)
+            current = current.parent
+        raise
+
+
+def normalize_serena_rows(
+    rows: Any,
+    *,
+    query_type: str,
+    symbol: str,
+    repository: Path | None = None,
+) -> tuple[Node, ...]:
     if not isinstance(rows, list):
         raise ValueError("Serena results must be a list")
     nodes: list[Node] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        path = row["path"]
+        path = _normalize_result_path(row["path"], repository)
         start = row["start_line"]
         end = row.get("end_line", start)
         start_column = row.get("start_column")
@@ -169,7 +202,12 @@ class SerenaSemanticProvider:
             raise
         if response.get("status") != "ok":
             raise RuntimeError(str(response.get("message", "unknown Serena error")))
-        return normalize_serena_rows(response.get("results"), query_type=query_type, symbol=symbol)
+        return normalize_serena_rows(
+            response.get("results"),
+            query_type=query_type,
+            symbol=symbol,
+            repository=self.repository,
+        )
 
     def close(self) -> None:
         process = self._process

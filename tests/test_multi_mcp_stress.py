@@ -8,7 +8,11 @@ import unittest
 from unittest import mock
 
 from scripts import run_multi_mcp_stress as stress_module
-from scripts.run_multi_mcp_stress import parse_windows_process_table, run_json
+from scripts.run_multi_mcp_stress import (
+    parse_windows_process_table,
+    remove_tree_with_retries,
+    run_json,
+)
 
 
 class MultiMcpStressUnitTests(unittest.TestCase):
@@ -32,6 +36,30 @@ class MultiMcpStressUnitTests(unittest.TestCase):
             mock.patch.object(stress_module.subprocess, "run", side_effect=run),
         ):
             self.assertEqual(run_json(["atlas"], {}, timeout=1), {"status": "ok"})
+
+    def test_cleanup_retries_transient_windows_permission_error(self) -> None:
+        with (
+            mock.patch.object(
+                stress_module.shutil,
+                "rmtree",
+                side_effect=[PermissionError("busy"), None],
+            ) as remove,
+            mock.patch.object(stress_module.time, "sleep") as sleep,
+        ):
+            self.assertTrue(remove_tree_with_retries(Path("diagnostics"), attempts=2))
+        self.assertEqual(remove.call_count, 2)
+        sleep.assert_called_once_with(0.2)
+
+    def test_cleanup_failure_does_not_replace_passed_result(self) -> None:
+        with (
+            mock.patch.object(
+                stress_module.shutil,
+                "rmtree",
+                side_effect=PermissionError("busy"),
+            ),
+            mock.patch.object(stress_module.time, "sleep"),
+        ):
+            self.assertFalse(remove_tree_with_retries(Path("diagnostics"), attempts=2))
 
 
 class MultiMcpStressIntegrationTests(unittest.TestCase):

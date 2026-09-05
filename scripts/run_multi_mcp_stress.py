@@ -26,6 +26,21 @@ class StressFailure(RuntimeError):
     pass
 
 
+def remove_tree_with_retries(path: Path, *, attempts: int = 10) -> bool:
+    """Best-effort cleanup without replacing a successful stress result."""
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if attempt + 1 == attempts:
+                return False
+            time.sleep(0.2 * (attempt + 1))
+    return False
+
+
 class McpClient:
     def __init__(self, command: list[str], environment: dict[str, str]) -> None:
         self.process = subprocess.Popen(
@@ -833,7 +848,11 @@ def main() -> int:
                 }),
             })
             print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-            shutil.rmtree(root)
+            if not remove_tree_with_retries(root):
+                print(
+                    f"warning: passed diagnostics could not be removed: {root}",
+                    file=sys.stderr,
+                )
         elif exit_code == 1 and "error" in ledger:
             print(json.dumps(ledger, ensure_ascii=False, sort_keys=True), file=sys.stderr)
             print(f"diagnostics retained at {root}", file=sys.stderr)
