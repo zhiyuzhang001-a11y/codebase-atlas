@@ -168,7 +168,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(response.truncation["reasons"], ("provider_busy",))
         self.assertEqual(repeated.truncation["reasons"], ("provider_busy",))
         self.assertEqual(lifecycle.starts, 1)
-        self.assertEqual(lifecycle.last_timeout, 2.0)
+        self.assertEqual(lifecycle.last_timeout, 60.0)
 
     def test_locate_files_separates_lock_initialize_and_remaining_tool_budget(self) -> None:
         class SeparatedLifecycle(FakeLifecycle):
@@ -190,7 +190,7 @@ class ServiceTests(unittest.TestCase):
         with service:
             result = service.locate_files("synthetic", timeout_ms=30_000)
         self.assertEqual(result["status"], "no_matches")
-        self.assertEqual(lifecycle.lock_timeout, 2.0)
+        self.assertEqual(lifecycle.lock_timeout, 30.0)
         self.assertEqual(lifecycle.initialize_timeout, 30.0)
         self.assertGreater(provider.budget["timeout_ms"], 0)
         self.assertLessEqual(provider.budget["timeout_ms"], 30_000)

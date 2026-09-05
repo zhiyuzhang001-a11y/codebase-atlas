@@ -244,22 +244,30 @@ class CodebaseMemoryImpactProvider:
         target_owner: str = "",
         timeout_seconds: float | None = None,
     ) -> tuple[Node, ...]:
-        selector = (
-            ("--qn-pattern", rf"(^|\.){re.escape(target_owner)}\.{re.escape(symbol)}$")
-            if target_owner
-            else ("--name-pattern", f"^{re.escape(symbol)}$")
+        selector_name = "qn_pattern" if target_owner else "name_pattern"
+        selector_value = (
+            rf"(^|\.){re.escape(target_owner)}\.{re.escape(symbol)}$"
+            if target_owner else f"^{re.escape(symbol)}$"
         )
-        payload = self._run(
-            "search_graph",
-            "--project",
-            self.project,
-            *selector,
-            "--format",
-            "json",
-            "--limit",
-            "100",
-            timeout_seconds=timeout_seconds,
-        )
+        if self.transport is not None:
+            payload = self.transport.call(
+                "search_graph",
+                {
+                    "project": self.project,
+                    selector_name: selector_value,
+                    "format": "json",
+                    "limit": 100,
+                },
+                timeout_ms=max(1, int((timeout_seconds or 30.0) * 1000)),
+            )
+        else:
+            payload = self._run(
+                "search_graph",
+                "--project", self.project,
+                "--" + selector_name.replace("_", "-"), selector_value,
+                "--format", "json", "--limit", "100",
+                timeout_seconds=timeout_seconds,
+            )
         return tuple(
             node for node in self._nodes_from_search(payload)
             if node.name == symbol
@@ -372,18 +380,26 @@ class CodebaseMemoryImpactProvider:
         missing = tuple(node_id for node_id in requested if node_id not in matches)
         if not missing:
             return matches
-        payload = self._run(
-            "search_graph",
-            "--project",
-            self.project,
-            "--qn-pattern",
-            "^(" + "|".join(re.escape(node_id).replace(r"\-", "-") for node_id in missing) + ")$",
-            "--format",
-            "json",
-            "--limit",
-            str(len(missing)),
-            timeout_seconds=timeout_seconds,
-        )
+        pattern = "^(" + "|".join(
+            re.escape(node_id).replace(r"\-", "-") for node_id in missing
+        ) + ")$"
+        if self.transport is not None:
+            payload = self.transport.call(
+                "search_graph",
+                {
+                    "project": self.project,
+                    "qn_pattern": pattern,
+                    "format": "json",
+                    "limit": len(missing),
+                },
+                timeout_ms=max(1, int((timeout_seconds or 30.0) * 1000)),
+            )
+        else:
+            payload = self._run(
+                "search_graph", "--project", self.project,
+                "--qn-pattern", pattern, "--format", "json",
+                "--limit", str(len(missing)), timeout_seconds=timeout_seconds,
+            )
         requested_set = set(missing)
         for node in self._nodes_from_search(payload):
             if node.id not in requested_set:
@@ -478,26 +494,31 @@ class CodebaseMemoryImpactProvider:
                 cbm_direction = "inbound" if direction == "upstream" else "outbound"
                 section = "callers" if direction == "upstream" else "callees"
                 try:
-                    payload = self._run(
-                        "trace_path",
-                        "--project",
-                        self.project,
-                        "--function-name",
-                        current_id,
-                        "--direction",
-                        cbm_direction,
-                        "--depth",
-                        "1",
-                        "--limit",
-                        "100",
-                        "--include-tests",
-                        "true",
-                        "--include-evidence",
-                        "true",
-                        "--format",
-                        "json",
-                        timeout_seconds=remaining(),
-                    )
+                    remaining_seconds = remaining()
+                    if self.transport is not None:
+                        payload = self.transport.call(
+                            "trace_path",
+                            {
+                                "project": self.project,
+                                "function_name": current_id,
+                                "direction": cbm_direction,
+                                "depth": 1,
+                                "limit": 100,
+                                "include_tests": True,
+                                "include_evidence": True,
+                                "format": "json",
+                            },
+                            timeout_ms=max(1, int(remaining_seconds * 1000)),
+                        )
+                    else:
+                        payload = self._run(
+                            "trace_path", "--project", self.project,
+                            "--function-name", current_id,
+                            "--direction", cbm_direction, "--depth", "1",
+                            "--limit", "100", "--include-tests", "true",
+                            "--include-evidence", "true", "--format", "json",
+                            timeout_seconds=remaining_seconds,
+                        )
                 except TimeoutError:
                     reasons.append("time_budget_exceeded")
                     stop = True

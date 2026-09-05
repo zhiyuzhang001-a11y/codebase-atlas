@@ -11,7 +11,7 @@ import stat
 import tempfile
 import threading
 from time import monotonic
-from typing import Any
+from typing import Any, Callable
 
 from .config import AtlasConfig
 from .index_state import record_index_state, repository_snapshot, state_path
@@ -34,7 +34,11 @@ from .refresh_planner import (
     plan_refresh,
     stage_generation_manifest_candidate,
 )
-from .refresh_recovery import RefreshRecoveryJournal, recover_refresh_transaction
+from .refresh_recovery import (
+    RefreshRecoveryJournal,
+    journal_path,
+    recover_refresh_transaction,
+)
 from .service import AtlasService
 
 
@@ -129,6 +133,32 @@ class ProviderDatabaseBackup:
             return False
 
 
+class SnapshotWaitTimeout(TimeoutError):
+    """A query could not bind to a published generation within its deadline."""
+
+    def __init__(
+        self, *, timeout_ms: int, waited_ms: float, owner: dict[str, Any]
+    ) -> None:
+        super().__init__("timed out waiting for the active project refresh")
+        self.timeout_ms = timeout_ms
+        self.waited_ms = waited_ms
+        self.owner = owner
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "status": "refresh_wait_timeout",
+            "ok": False,
+            "reason": "active_project_refresh_did_not_publish_before_deadline",
+            "coordination": {
+                "waited_ms": self.waited_ms,
+                "timeout_ms": self.timeout_ms,
+                "owner": self.owner,
+            },
+            "next_action": "retry after the active refresh completes",
+        }
+
+
 class RefreshCoordinator:
     """Serialize one active MCP's explicit refresh transactions."""
 
@@ -138,18 +168,42 @@ class RefreshCoordinator:
         transport: CodebaseMemoryMcpTransport,
         service: AtlasService,
         index_status: dict[str, Any],
+        *,
+        phase_observer: Callable[[str], None] | None = None,
     ) -> None:
         self.config = config
         self.transport = transport
         self.service = service
         self.index_status = index_status
-        self.recovery_status = recover_refresh_transaction(config)
+        self._phase_observer = phase_observer
         self._lock = threading.Lock()
         self._lease = ProjectRefreshLease(
             config.data_dir, config.repository, config.project
         )
+        # Recovery deletes recognized orphan staging. It must never run while a
+        # different process owns a live transaction using those same prefixes.
+        if self._lease.acquire():
+            try:
+                self.recovery_status = recover_refresh_transaction(config)
+            finally:
+                self._lease.release()
+        else:
+            self.recovery_status = {
+                "status": "deferred",
+                "action": "wait_for_active_refresh",
+            }
         self._observed_manifest_identity: tuple[int, int, int] | None = None
         self._observed_generation_id: str | None = None
+
+    def _observe_phase(self, phase: str) -> None:
+        if self._phase_observer is not None:
+            self._phase_observer(phase)
+
+    def _advance_recovery(
+        self, recovery: RefreshRecoveryJournal, phase: str
+    ) -> None:
+        recovery.advance(phase)
+        self._observe_phase(phase)
 
     def plan(self) -> dict[str, Any]:
         return plan_refresh(
@@ -162,12 +216,19 @@ class RefreshCoordinator:
     @contextmanager
     def query_snapshot(self, *, timeout_ms: int = 30_000):
         """Bind a query to one fully published cross-process generation."""
+        started = monotonic()
         lease = ProjectRefreshLease(
             self.config.data_dir, self.config.repository, self.config.project
         )
         if not lease.acquire_shared(timeout_seconds=timeout_ms / 1000.0):
-            raise TimeoutError("timed out waiting for the active project refresh")
+            raise SnapshotWaitTimeout(
+                timeout_ms=timeout_ms,
+                waited_ms=(monotonic() - started) * 1000.0,
+                owner=lease.owner_status(),
+            )
         try:
+            if journal_path(self.config.data_dir).exists():
+                raise RefreshPlanError("refresh_recovery_required")
             path = manifest_path(self.config.data_dir)
             try:
                 metadata = path.stat()
@@ -189,21 +250,20 @@ class RefreshCoordinator:
                     manifest = load_generation_manifest(
                         self.config.data_dir, self.config.repository, self.config.project
                     )
-                if self.config.language == "python":
-                    registration_index, registration_health = load_registration_index_state(
-                        self.config.data_dir,
-                        self.config.repository,
-                        self.config.project,
-                        manifest["source_fingerprint"],
-                    )
-                    self.service.activate_generation(registration_index)
-                    self.index_status["python_registrations"] = registration_health
-                self.index_status["generation_id"] = generation_id
-            yield dict(self.index_status)
+                self._replace_status(generation_id, reset_structural=True)
+            snapshot = dict(self.index_status)
+            snapshot["coordination"] = {
+                "status": "generation_bound",
+                "snapshot_wait_ms": (monotonic() - started) * 1000.0,
+                "timeout_ms": timeout_ms,
+            }
+            yield snapshot
         finally:
             lease.release()
 
-    def _replace_status(self, generation_id: str) -> None:
+    def _replace_status(
+        self, generation_id: str, *, reset_structural: bool = False
+    ) -> None:
         preserved = {
             key: self.index_status[key]
             for key in ("identity", "auto_update", "software_update")
@@ -225,10 +285,12 @@ class RefreshCoordinator:
                 self.config.project,
                 source_fingerprint,
             )
-            self.service.activate_generation(registration_index)
+            self.service.activate_generation(
+                registration_index, reset_structural=reset_structural
+            )
             refreshed["python_registrations"] = registration_health
         else:
-            self.service.activate_generation(None)
+            self.service.activate_generation(None, reset_structural=reset_structural)
         self.index_status.clear()
         self.index_status.update(refreshed)
 
@@ -291,6 +353,12 @@ class RefreshCoordinator:
                     "next_action": "wait for the project owner and retry project_status",
                 }, started, timings_ms)
             lease_acquired = True
+            if (
+                self.recovery_status.get("status") == "deferred"
+                or journal_path(self.config.data_dir).exists()
+            ):
+                with _measure_phase(timings_ms, "recovery"):
+                    self.recovery_status = recover_refresh_transaction(self.config)
             with _measure_phase(timings_ms, "plan"):
                 plan = self.plan()
             generation_before = plan.get("base_generation")
@@ -309,7 +377,9 @@ class RefreshCoordinator:
                     or self.index_status.get("status") != "fresh"
                     or not self.index_status.get("ok")
                 ):
-                    self._replace_status(str(generation_before))
+                    self._replace_status(
+                        str(generation_before), reset_structural=True
+                    )
                 return _with_timings({
                     "schema_version": 1,
                     "status": "current",
@@ -357,6 +427,7 @@ class RefreshCoordinator:
             recovery = RefreshRecoveryJournal.begin(
                 self.config, generation_before
             )
+            self._observe_phase("prepared")
             provider_backup = ProviderDatabaseBackup.create(database)
 
             provider_called = True
@@ -370,6 +441,7 @@ class RefreshCoordinator:
                     },
                     timeout_ms=timeout_ms,
                 )
+            self._advance_recovery(recovery, "provider_indexed")
             self.service.mark_structural_started()
             if provider.get("status") != "indexed" or provider.get("project") != self.config.project:
                 raise RefreshPlanError("Provider returned an invalid project generation")
@@ -382,6 +454,7 @@ class RefreshCoordinator:
                 )
             if not health.get("ok") or health.get("quick_check") != ["ok"]:
                 raise RefreshPlanError(f"Provider generation validation failed: {health.get('reason')}")
+            self._advance_recovery(recovery, "provider_validated")
             with _measure_phase(timings_ms, "snapshot"):
                 source_after = repository_snapshot(self.config.repository)
             if (
@@ -393,6 +466,7 @@ class RefreshCoordinator:
 
             generation_after = secrets.token_hex(16)
             recovery.set_candidate(generation_after)
+            self._observe_phase("candidate_ready")
             provider_identity = generation_artifact_identity(database)
             sidecar_identity = (
                 generation_artifact_identity(staged_registration.temporary)
@@ -426,7 +500,9 @@ class RefreshCoordinator:
                         self.config.project,
                         source_before.fingerprint,
                     )
+                    self._advance_recovery(recovery, "sidecar_published")
                 staged_manifest.publish(manifest_path(self.config.data_dir))
+                self._advance_recovery(recovery, "manifest_published")
                 record_index_state(
                     self.config.data_dir,
                     self.config.repository,
@@ -435,8 +511,11 @@ class RefreshCoordinator:
                     snapshot=source_after,
                 )
                 recovery.mark_state_published()
+                self._observe_phase("state_published")
                 self._replace_status(generation_after)
+                self._advance_recovery(recovery, "generation_activated")
 
+                self._advance_recovery(recovery, "committing")
                 if staged_registration is not None:
                     staged_registration.commit()
                 staged_manifest.commit()
@@ -524,13 +603,27 @@ def refresh_with_retry(
     mode: str = "fast",
     timeout_ms: int = 300_000,
     force_provider: bool = False,
-    max_attempts: int = 2,
+    max_attempts: int | None = None,
 ) -> dict[str, Any]:
-    """Retry only repository-snapshot races within one bounded time budget."""
-    if not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1:
-        raise ValueError("max_attempts must be a positive integer")
-    deadline = monotonic() + timeout_ms / 1000.0
-    for attempt in range(1, max_attempts + 1):
+    """Coalesce behind an owner and retry snapshot races within one deadline."""
+    if max_attempts is not None and (
+        not isinstance(max_attempts, int)
+        or isinstance(max_attempts, bool)
+        or max_attempts < 1
+    ):
+        raise ValueError("max_attempts must be a positive integer or None")
+    started = monotonic()
+    deadline = started + timeout_ms / 1000.0
+    aggregate_timings: dict[str, float] = {}
+    attempt = 0
+    last_result: dict[str, Any] = {}
+    while monotonic() < deadline and (max_attempts is None or attempt < max_attempts):
+        attempt += 1
+        coordinator_status = getattr(coordinator, "index_status", {})
+        generation_before_attempt = (
+            coordinator_status.get("generation_id")
+            if isinstance(coordinator_status, dict) else None
+        )
         remaining_ms = (
             timeout_ms
             if attempt == 1
@@ -543,12 +636,87 @@ def refresh_with_retry(
         if force_provider:
             refresh_arguments["force_provider"] = True
         result = coordinator.refresh(**refresh_arguments)
+        last_result = result
         result["attempts"] = attempt
-        if result.get("error") not in {
+        for name, value in result.get("timings_ms", {}).items():
+            if name != "total" and isinstance(value, (int, float)):
+                aggregate_timings[name] = aggregate_timings.get(name, 0.0) + float(value)
+        if result.get("status") in {"refresh_in_progress", "refresh_owned_elsewhere"}:
+            remaining_ms = max(1, int((deadline - monotonic()) * 1000.0))
+            wait_started = monotonic()
+            try:
+                with coordinator.query_snapshot(timeout_ms=remaining_ms) as published:
+                    published = dict(published or {})
+            except SnapshotWaitTimeout as exc:
+                aggregate_timings["wait_for_owner"] = (
+                    aggregate_timings.get("wait_for_owner", 0.0) + exc.waited_ms
+                )
+                total = (monotonic() - started) * 1000.0
+                return {
+                    **exc.status(),
+                    "route": "same_project_lease",
+                    "attempts": attempt,
+                    "previous_generation_preserved": True,
+                    "duration_ms": total,
+                    "timings_ms": {**aggregate_timings, "total": total},
+                }
+            aggregate_timings["wait_for_owner"] = (
+                aggregate_timings.get("wait_for_owner", 0.0)
+                + (monotonic() - wait_started) * 1000.0
+            )
+            published_generation = published.get("generation_id")
+            if (
+                published.get("ok")
+                and published_generation
+                and published_generation != generation_before_attempt
+            ):
+                total = (monotonic() - started) * 1000.0
+                return {
+                    "schema_version": 1,
+                    "status": "current",
+                    "route": "coalesced_after_owner",
+                    "generation_before": published_generation,
+                    "generation_after": published_generation,
+                    "dirty_paths": [],
+                    "provider_inputs_changed": False,
+                    "provider_called": False,
+                    "previous_generation_preserved": True,
+                    "attempts": attempt,
+                    "duration_ms": total,
+                    "timings_ms": {**aggregate_timings, "total": total},
+                    "next_action": "continue querying the published generation",
+                }
+            if (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
+                continue
+        elif result.get("error") in {
             "snapshot_changed_before_refresh",
             "snapshot_changed_during_refresh",
+        } and (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
+            continue
+        total = (monotonic() - started) * 1000.0
+        result["duration_ms"] = total
+        result["timings_ms"] = {**aggregate_timings, "total": total}
+        if aggregate_timings.get("wait_for_owner") and result.get("status") in {
+            "current", "refreshed"
         }:
-            return result
-        if attempt == max_attempts or monotonic() >= deadline:
-            return result
-    raise AssertionError("bounded refresh loop did not return")
+            result["route"] = "coalesced_after_owner"
+        return result
+    total = (monotonic() - started) * 1000.0
+    exhausted = max_attempts is not None and attempt >= max_attempts
+    return {
+        "schema_version": 1,
+        "status": "refresh_wait_timeout" if not exhausted else "refresh_retry_exhausted",
+        "ok": False,
+        "reason": (
+            "refresh_retry_limit_reached"
+            if exhausted else "refresh_deadline_exhausted"
+        ),
+        "route": "same_project_lease",
+        "attempts": attempt,
+        "generation_before": last_result.get("generation_before"),
+        "generation_after": None,
+        "previous_generation_preserved": True,
+        "duration_ms": total,
+        "timings_ms": {**aggregate_timings, "total": total},
+        "next_action": "retry after the active refresh completes",
+    }

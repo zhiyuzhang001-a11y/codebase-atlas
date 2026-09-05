@@ -37,11 +37,12 @@ class FakeService:
 
 
 class FakeRefreshCoordinator:
-    def __init__(self, plan=None, refreshed=None):
+    def __init__(self, plan=None, refreshed=None, snapshot_error=None):
         self.calls = []
         self.plan_result = plan or {"status": "planned", "dirty_paths": ["sample.py"]}
         self.refresh_result = refreshed or {"status": "refreshed", "generation_after": "g2"}
         self.status = {"status": "fresh", "ok": True, "generation_id": "g1"}
+        self.snapshot_error = snapshot_error
 
     def plan(self):
         self.calls.append(("plan", {}))
@@ -58,6 +59,8 @@ class FakeRefreshCoordinator:
 
     def query_snapshot(self, *, timeout_ms):
         self.calls.append(("query_snapshot", {"timeout_ms": timeout_ms}))
+        if self.snapshot_error is not None:
+            raise self.snapshot_error
         return nullcontext(dict(self.status))
 
 
@@ -187,6 +190,71 @@ class McpTests(unittest.TestCase):
             "/repo",
         )
 
+    def test_project_status_timeout_is_structured_and_server_stays_alive(self) -> None:
+        from codebase_atlas.refresh_coordinator import SnapshotWaitTimeout
+
+        coordinator = FakeRefreshCoordinator(snapshot_error=SnapshotWaitTimeout(
+            timeout_ms=2000,
+            waited_ms=2000.5,
+            owner={"status": "observed", "pid": 42},
+        ))
+        server = McpServer(
+            self.service,
+            {"status": "fresh", "ok": True, "identity": {"repository": "/repo"}},
+            refresh_coordinator=coordinator,
+            auto_update="on-query",
+        )
+        response = server.handle({
+            "jsonrpc": "2.0", "id": 40, "method": "tools/call",
+            "params": {"name": "project_status", "arguments": {}},
+        })
+        result = response["result"]["structuredContent"]
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(result["status"], "refresh_wait_timeout")
+        self.assertEqual(result["coordination"]["owner"]["pid"], 42)
+        self.assertEqual(result["auto_update"]["policy"], "on-query")
+        self.assertEqual(
+            server.handle({"jsonrpc": "2.0", "id": 41, "method": "ping"})["result"],
+            {},
+        )
+
+    def test_on_query_policy_is_reported_before_first_attempt(self) -> None:
+        server = McpServer(
+            self.service,
+            {"status": "fresh", "ok": True},
+            refresh_coordinator=FakeRefreshCoordinator(),
+            auto_update="on-query",
+        )
+        response = server.handle({
+            "jsonrpc": "2.0", "id": 42, "method": "tools/call",
+            "params": {"name": "project_status", "arguments": {}},
+        })
+        automatic = response["result"]["structuredContent"]["auto_update"]
+        self.assertEqual(automatic["policy"], "on-query")
+        self.assertEqual(automatic["status"], "ready")
+        self.assertFalse(automatic["attempted"])
+
+    def test_unexpected_tool_exception_is_structured_and_next_request_survives(self) -> None:
+        class ExplodingService(FakeService):
+            def query(self, request):
+                raise OSError("injected provider boundary failure")
+
+        server = McpServer(ExplodingService())
+        source = StringIO("\n".join((
+            json.dumps({
+                "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+                "params": {"name": "definition", "arguments": {"symbol": "target"}},
+            }),
+            json.dumps({"jsonrpc": "2.0", "id": 51, "method": "ping"}),
+        )) + "\n")
+        output = StringIO()
+        run_stdio(server, source, output)
+        responses = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(responses[0]["result"]["isError"])
+        self.assertIn("injected provider boundary", responses[0]["result"]["structuredContent"]["error"])
+        self.assertEqual(responses[1]["id"], 51)
+        self.assertEqual(responses[1]["result"], {})
+
     def test_query_response_binds_snapshot_generation_id(self) -> None:
         server = McpServer(
             self.service,
@@ -255,7 +323,7 @@ class McpTests(unittest.TestCase):
             ],
         )
 
-    def test_on_query_refresh_failure_is_visible_while_old_generation_is_usable(self) -> None:
+    def test_on_query_refresh_failure_refuses_stale_generation(self) -> None:
         coordinator = FakeRefreshCoordinator(
             refreshed={
                 "status": "failed",
@@ -277,11 +345,13 @@ class McpTests(unittest.TestCase):
             "params": {"name": "definition", "arguments": {"symbol": "target"}},
         })
         result = response["result"]["structuredContent"]
-        self.assertFalse(response["result"]["isError"])
-        self.assertEqual(result["generation_id"], "g1")
-        self.assertEqual(result["index"]["auto_update"]["status"], "failed")
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(result["code"], "automatic_refresh_failed")
+        self.assertEqual(result["auto_update"]["status"], "failed")
+        self.assertEqual(result["nodes"], [])
+        self.assertIsNone(self.service.last_request)
         self.assertTrue(
-            result["index"]["auto_update"]["previous_generation_preserved"]
+            result["auto_update"]["previous_generation_preserved"]
         )
 
     def test_unavailable_project_keeps_status_and_refuses_queries(self) -> None:

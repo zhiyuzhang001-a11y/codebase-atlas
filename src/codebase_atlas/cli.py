@@ -1133,6 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.binary, args.repo, args.cache_dir,
                 exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
                 client_version=__version__,
+                managed_cache=provider_layout == SHARED_PROVIDER_LAYOUT,
             )
             if args.command == "mcp"
             else None
@@ -1419,6 +1420,7 @@ def _transactional_refresh(
         config.cache_dir,
         exclusive=False,
         client_version=__version__,
+        managed_cache=True,
     )
     service = AtlasService(repository=config.repository, lifecycle=transport)
     coordinator = RefreshCoordinator(config, transport, service, status)

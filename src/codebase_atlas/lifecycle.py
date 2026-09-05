@@ -190,6 +190,26 @@ class ProjectRefreshLease:
             handle.close()
             raise
 
+    def owner_status(self) -> dict[str, Any]:
+        """Best-effort diagnostics for the process currently holding the lease."""
+        try:
+            metadata = os.lstat(self.path)
+            if not stat.S_ISREG(metadata.st_mode):
+                return {"status": "unsafe", "path": str(self.path)}
+            value = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+            if not isinstance(value, dict):
+                raise ValueError("lease payload is not an object")
+            return {
+                "status": "observed",
+                "pid": value.get("pid"),
+                "repository": value.get("repository"),
+                "project": value.get("project"),
+            }
+        except FileNotFoundError:
+            return {"status": "absent"}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "unreadable", "detail": str(exc)}
+
     def release(self) -> None:
         handle = self._handle
         if handle is None:

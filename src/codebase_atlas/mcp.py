@@ -14,7 +14,7 @@ from .operations import (
     attach_operational_status,
     stale_policy_error,
 )
-from .refresh_coordinator import refresh_with_retry
+from .refresh_coordinator import SnapshotWaitTimeout, refresh_with_retry
 from .service import AtlasService, QueryRequest, QueryResponse
 from .version_check import VersionNotifier
 
@@ -318,6 +318,23 @@ class McpServer:
             raise ValueError(f"unsupported automatic update policy: {auto_update}")
         self.auto_update = auto_update
         self.auto_update_timeout_ms = auto_update_timeout_ms
+        if self.index_status is not None:
+            if auto_update == "on-query":
+                current = self.index_status.get("auto_update")
+                if not isinstance(current, dict) or current.get("policy") != "on-query":
+                    self.index_status["auto_update"] = {
+                        "policy": "on-query",
+                        "status": "ready",
+                        "ok": True,
+                        "attempted": False,
+                    }
+            elif auto_update == "off":
+                self.index_status["auto_update"] = {
+                    "policy": "off",
+                    "status": "disabled",
+                    "ok": True,
+                    "attempted": False,
+                }
 
     def _refresh_before_query(self) -> dict[str, Any] | None:
         """Coalesce one explicit Provider refresh immediately before a query."""
@@ -329,7 +346,7 @@ class McpServer:
             timeout_ms=self.auto_update_timeout_ms,
         )
         status = str(refreshed.get("status", "failed"))
-        return {
+        automatic = {
             "policy": "on-query",
             "status": status,
             "ok": status in {"current", "refreshed"},
@@ -354,6 +371,9 @@ class McpServer:
             ),
             **({"error": refreshed.get("error")} if refreshed.get("error") else {}),
         }
+        if self.index_status is not None:
+            self.index_status["auto_update"] = automatic
+        return automatic
 
     @staticmethod
     def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
@@ -399,15 +419,21 @@ class McpServer:
             if self.version_notifier is not None and self.index_status is not None:
                 self.index_status["software_update"] = self.version_notifier.current()
             if name == "project_status":
-                status_context = (
-                    self.refresh_coordinator.query_snapshot(timeout_ms=2000)
-                    if self.refresh_coordinator is not None
-                    else nullcontext(dict(
-                        self.index_status or {"status": "unknown", "ok": True}
-                    ))
-                )
-                with status_context as status:
-                    status = dict(status)
+                try:
+                    status_context = (
+                        self.refresh_coordinator.query_snapshot(timeout_ms=2000)
+                        if self.refresh_coordinator is not None
+                        else nullcontext(dict(
+                            self.index_status or {"status": "unknown", "ok": True}
+                        ))
+                    )
+                    with status_context as status:
+                        status = dict(status)
+                except SnapshotWaitTimeout as exc:
+                    preserved = dict(self.index_status or {})
+                    status = {**preserved, **exc.status()}
+                if self.index_status is not None and "auto_update" in self.index_status:
+                    status["auto_update"] = self.index_status["auto_update"]
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -432,7 +458,8 @@ class McpServer:
                     )
                 )
                 failed = payload.get("status") in {
-                    "failed", "refresh_in_progress", "refresh_owned_elsewhere"
+                    "failed", "refresh_in_progress", "refresh_owned_elsewhere",
+                    "refresh_wait_timeout", "refresh_retry_exhausted",
                 }
                 return {
                     "jsonrpc": "2.0",
@@ -503,6 +530,33 @@ class McpServer:
                 }
                 else None
             )
+            if automatic_update is not None and not automatic_update.get("ok"):
+                failure = attach_operational_status(
+                    {
+                        "schema_version": 1,
+                        "status": "error",
+                        "code": "automatic_refresh_failed",
+                        "error": automatic_update.get("error")
+                        or automatic_update.get("status"),
+                        "auto_update": automatic_update,
+                        "nodes": [],
+                        "edges": [],
+                    },
+                    self.index_status,
+                    self.stale_policy,
+                )
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": [{
+                            "type": "text",
+                            "text": json.dumps(failure, ensure_ascii=False),
+                        }],
+                        "structuredContent": failure,
+                        "isError": True,
+                    },
+                }
             if name == "locate_files":
                 snapshot_context = (
                     self.refresh_coordinator.query_snapshot(
@@ -676,7 +730,7 @@ class McpServer:
                         self.stale_policy,
                     ),
                 }
-        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+        except Exception as exc:
             if name == "locate_files":
                 status = self.index_status or {"status": "unknown", "ok": True, "reason": ""}
                 identity = status.get("identity", {})
@@ -711,6 +765,7 @@ def run_stdio(server: McpServer, input_stream: TextIO = sys.stdin, output_stream
     for line in input_stream:
         if not line.strip():
             continue
+        message: Any = None
         try:
             message = json.loads(line)
             if not isinstance(message, dict):
@@ -718,6 +773,12 @@ def run_stdio(server: McpServer, input_stream: TextIO = sys.stdin, output_stream
             response = server.handle(message)
         except (json.JSONDecodeError, ValueError) as exc:
             response = McpServer._error(None, -32700, str(exc))
+        except Exception as exc:
+            response = McpServer._error(
+                message.get("id") if isinstance(message, dict) else None,
+                -32603,
+                f"Internal request failure: {type(exc).__name__}: {exc}",
+            )
         if response is not None:
             output_stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
             output_stream.flush()

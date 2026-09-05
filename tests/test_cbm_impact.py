@@ -123,6 +123,32 @@ class LocateProvider(CodebaseMemoryImpactProvider):
 
 
 class CodebaseMemoryBudgetTests(unittest.TestCase):
+    def test_definition_uses_generation_bound_transport_when_available(self) -> None:
+        class Transport:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def call(self, tool, arguments, *, timeout_ms):
+                self.calls.append((tool, arguments, timeout_ms))
+                return {
+                    "cols": ["name", "label", "lines"],
+                    "groups": [{
+                        "file": "src/target.py",
+                        "qn_prefix": "p.src.target",
+                        "rows": [["target", "Function", "1-2"]],
+                    }],
+                }
+
+        transport = Transport()
+        provider = CodebaseMemoryImpactProvider(
+            Path("/tmp/cbm"), Path("/tmp/repo"), Path("/tmp/cache"), "p",
+            transport=transport,
+        )
+        result = provider.definitions("target")
+        self.assertEqual([item.name for item in result], ["target"])
+        self.assertEqual(transport.calls[0][0], "search_graph")
+        self.assertEqual(transport.calls[0][1]["name_pattern"], "^target$")
+
     def test_locate_files_uses_bounded_provider_tool(self) -> None:
         provider = LocateProvider()
         result = provider.locate_files("target behavior")

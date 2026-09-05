@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from codebase_atlas.config import AtlasConfig, default_data_dir
 from codebase_atlas.provider_layout import (
+    configure_managed_provider_cache,
     inspect_provider_root,
     provider_environment,
     provider_project_identity,
@@ -16,6 +17,35 @@ from codebase_atlas.provider_layout import (
 
 
 class ProviderLayoutTests(unittest.TestCase):
+    def test_managed_cache_disables_provider_watchers_without_global_config(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            cache = root / "managed-cache"
+            binary = root / "provider"
+            repository.mkdir()
+            binary.touch()
+            calls = []
+
+            def runner(command, **kwargs):
+                calls.append((command, kwargs))
+                return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+            configure_managed_provider_cache(
+                binary, cache, repository, runner=runner
+            )
+            self.assertEqual(
+                [call[0][-3:] for call in calls],
+                [
+                    ["set", "auto_watch", "false"],
+                    ["set", "watcher_enabled", "false"],
+                ],
+            )
+            self.assertTrue(all(
+                call[1]["env"]["CBM_CACHE_DIR"] == str(cache.resolve())
+                and call[1]["env"]["CBM_ALLOWED_ROOT"] == str(repository.resolve())
+                for call in calls
+            ))
     def test_default_projects_share_provider_root_but_not_atlas_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(
             os.environ, {"XDG_DATA_HOME": str(Path(raw) / "data")}, clear=False

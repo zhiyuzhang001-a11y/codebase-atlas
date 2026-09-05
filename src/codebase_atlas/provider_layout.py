@@ -8,7 +8,8 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Mapping
+import subprocess
+from typing import Any, Callable, Mapping
 
 
 PROVIDER_LAYOUT = "v1"
@@ -44,6 +45,36 @@ def provider_environment(
     environment["CBM_CACHE_DIR"] = str(cache_dir.resolve())
     environment["CBM_ALLOWED_ROOT"] = str(repository.resolve())
     return environment
+
+
+def configure_managed_provider_cache(
+    binary: Path,
+    cache_dir: Path,
+    repository: Path,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> None:
+    """Disable autonomous indexing in Atlas-owned Provider state."""
+    cache = cache_dir.resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        cache.chmod(0o700)
+    environment = provider_environment(cache, repository)
+    for key in ("auto_watch", "watcher_enabled"):
+        completed = runner(
+            [str(binary.resolve()), "config", "set", key, "false"],
+            cwd=repository.resolve(),
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(
+                f"failed to configure Atlas-managed Provider cache: {key}: {detail}"
+            )
 
 
 @dataclass(frozen=True)

@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 DEFAULT_MAX_NODES = 100
 DEFAULT_MAX_EDGES = 200
 DEFAULT_TIMEOUT_MS = 30_000
-MAX_PROVIDER_LOCK_WAIT_MS = 2_000
 MAX_SESSION_CACHE_ENTRIES = 128
 MAX_CONTINUATION_LENGTH = 512
 MAX_CONTINUATION_ENTRY_BYTES = 16 * 1024 * 1024
@@ -172,7 +171,11 @@ class AtlasService:
             return False
         if self.lifecycle is not None:
             try:
-                lock_timeout = min(timeout_ms, MAX_PROVIDER_LOCK_WAIT_MS) / 1000.0
+                # Startup admission is ordinary backpressure. Give it the
+                # caller's remaining query budget instead of converting a
+                # healthy concurrent startup into a false empty answer after
+                # an arbitrary two-second cap.
+                lock_timeout = timeout_ms / 1000.0
                 separated_start = getattr(self.lifecycle, "start_for_request", None)
                 if callable(separated_start):
                     separated_start(
@@ -226,8 +229,19 @@ class AtlasService:
             self._continuation_secret = None
             self.started = False
 
-    def activate_generation(self, registration_index: RegistrationIndex | None) -> None:
+    def activate_generation(
+        self,
+        registration_index: RegistrationIndex | None,
+        *,
+        reset_structural: bool = False,
+    ) -> None:
         """Switch generation-bound in-memory state after durable publication."""
+        # A different MCP process can publish through another Provider frontend.
+        # Reconnect this frontend before querying that external generation; some
+        # Provider versions retain a per-session view of the graph database.
+        if reset_structural and self._structural_started and self.lifecycle is not None:
+            self.lifecycle.close()
+            self._structural_started = False
         self.registration_index = registration_index
         self._python_reference_cache.clear()
         self._python_complete_reference_cache.clear()

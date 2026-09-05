@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import stat
 import tempfile
 from typing import Any
@@ -210,6 +211,8 @@ class StagedRegistrationIndex:
     document: dict[str, Any]
     published: bool = False
     backup: Path | None = None
+    transaction_id: str = ""
+    published_identity: tuple[int, int] | None = None
 
     def publish(self) -> None:
         if os.path.lexists(self.destination):
@@ -230,6 +233,8 @@ class StagedRegistrationIndex:
         try:
             os.replace(self.temporary, self.destination)
             self.published = True
+            metadata = os.lstat(self.destination)
+            self.published_identity = (metadata.st_dev, metadata.st_ino)
             self._sync_directory()
         except BaseException:
             if self.published:
@@ -267,6 +272,12 @@ class StagedRegistrationIndex:
         if not self.published:
             self.close()
             return
+        metadata = os.lstat(self.destination)
+        current_identity = (metadata.st_dev, metadata.st_ino)
+        if self.published_identity is None or current_identity != self.published_identity:
+            raise RegistrationIndexError(
+                "registration index ownership changed before rollback"
+            )
         if self.backup is None:
             self.destination.unlink(missing_ok=True)
         else:
@@ -274,6 +285,7 @@ class StagedRegistrationIndex:
             self.backup = None
         self._sync_directory()
         self.published = False
+        self.published_identity = None
 
     def close(self) -> None:
         if self.published:
@@ -321,8 +333,11 @@ def stage_registration_index(
     payload = _json_bytes(document)
     if len(payload) > MAX_INDEX_BYTES:
         raise RegistrationIndexError("registration index exceeds the 100 MiB limit")
+    transaction_id = f"{os.getpid()}-{secrets.token_hex(12)}"
     descriptor, raw_temporary = tempfile.mkstemp(
-        prefix=".python-registrations-", suffix=".json", dir=destination.parent
+        prefix=f".python-registrations-{transaction_id}-",
+        suffix=".json",
+        dir=destination.parent,
     )
     temporary = Path(raw_temporary)
     try:
@@ -338,7 +353,9 @@ def stage_registration_index(
         except FileNotFoundError:
             pass
         raise
-    return StagedRegistrationIndex(destination, temporary, document)
+    return StagedRegistrationIndex(
+        destination, temporary, document, transaction_id=transaction_id
+    )
 
 
 def _source_range(value: Any) -> SourceRange:
