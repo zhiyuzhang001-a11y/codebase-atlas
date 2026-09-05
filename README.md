@@ -2,18 +2,11 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.24.0**, adding automatic on-query transactional
-refresh, Provider-aligned `.cbmignore` handling and phase timing diagnostics while
-retaining shared-Provider CLI and MCP generation publication, bounded snapshot-race
-retries, explicit same-MCP refresh, Git-aware Python source inventories, bounded heuristic file
-narrowing and a persistent managed Provider transport
-while retaining fail-closed automatic
-Codex project discovery, safe migration from a fixed global Atlas registration,
-bounded index freshness, notify-only software update awareness, a
-shared multi-project Provider layout, bounded large-repository indexing,
-memory-aware global scheduling, the task-oriented Change Brief, lightweight local UI,
-resumable exact TypeScript references, exact Python registration relationships,
-and transactional onboarding.
+Release candidate: **0.25.0**. Current published stable release: **0.24.0**.
+The candidate adds a four-command project lifecycle, verified side-by-side
+updates, recoverable removal, and a stable MCP bootstrap that can stop, resume,
+or switch a versioned backend on the next request without replacing an already
+loaded outer connection.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -103,34 +96,27 @@ automatically discovered by unrelated repositories.
 ## Daily workflow
 
 ```bash
-codebase-atlas onboard              # read-only first-project plan
-codebase-atlas onboard --apply      # explicit config/index/doctor workflow
-codebase-atlas setup
-codebase-atlas init
-codebase-atlas index
-codebase-atlas doctor
-codebase-atlas ui                    # local read-only graph UI; Ctrl-C stops it
-codebase-atlas analyze-change LocalUiServer.close \
-  --target-path src/codebase_atlas/web_ui.py --intent change_behavior
-codebase-atlas codex plan            # no configuration write
-codebase-atlas codex plan --scope global-auto
-codebase-atlas codex plan --scope project
-
-# After source changes:
-codebase-atlas update
-codebase-atlas doctor
-
-# Ask only for complete exact Python registration relationships:
-codebase-atlas query callers my_view --relation registers \
-  --target-path package/views.py --target-owner my_view
-
-# Diagnose or maintain Atlas-owned data:
-codebase-atlas inspect --deep
-codebase-atlas repair                 # plan only
-codebase-atlas repair --apply         # explicit mutation
-codebase-atlas clean                  # dry run
-codebase-atlas clean --apply          # exact planned targets only
+atlas enable                 # install/reuse, configure, index, verify, and enable
+atlas stop                   # stop queries; preserve configuration and index
+atlas update                 # verify and switch this project to latest stable
+atlas remove                 # recoverably remove only this project's Atlas data
 ```
+
+Commands target the exact Git repository containing the current directory; use
+`--repo /absolute/path` to select one explicitly. `enable` is idempotent and also
+resumes a stopped or recoverably removed project. `stop`, `update`, and `remove`
+never silently enable an unconfigured project. All four commands support
+`--json` for stable schema-versioned output.
+
+The first `enable` writes an Atlas-owned project MCP block. Start one new Codex
+task to load it. A task that has loaded the 0.25 stable bootstrap observes later
+stop, enable, removal, and version switches on its next Atlas request; a task
+that never loaded Atlas, or still runs an older fixed backend, cannot be injected
+or upgraded in place by changing files on disk.
+
+Advanced diagnosis and compatibility commands remain available under
+`codebase-atlas`, including `doctor`, `inspect --deep`, `repair`, `clean`, `ui`,
+`query`, `analyze-change`, and the dry-run-first `codex` integration commands.
 
 `setup` is a read-only preflight: it executes version/import probes and returns
 machine-readable remediation without installing software or changing project,
@@ -145,7 +131,8 @@ serialized; daily indexes adapt to observed memory, and large indexes use one
 bounded exclusive slot while queries remain available. Legacy-layout projects
 still return explicit `provider_busy` instead of waiting indefinitely.
 
-When source and Provider storage are already current, `update` takes an
+When source and Provider storage are already current, the advanced
+`codebase-atlas update` index-refresh command takes an
 Atlas-owned fast path without starting the Provider. Configured queries expose
 index status and default to a warning when evidence may be stale; use
 `--stale-policy error` for strict automation.
@@ -173,8 +160,10 @@ projects. When no safe project is available, `project_status` stays available
 and every code query returns a structured unavailable status instead of using
 another repository.
 
-Start a new Codex task after applying because existing tasks do not hot-reload
-MCP configuration. Index each repository once with `codebase-atlas onboard
+Start a new Codex task once after adding or replacing the MCP registration,
+because a task that never loaded Atlas cannot hot-load a new tool. Once the
+0.25 bootstrap is loaded, later lifecycle state and backend version changes are
+observed at request boundaries without replacing that task. Index each repository once with `codebase-atlas onboard
 --apply` or `codebase-atlas index`; later source changes are refreshed
 automatically before the next Atlas query. Use `project_status` to confirm the
 exact repository. Put generated benchmark, report or export trees in the

@@ -90,14 +90,19 @@ class ReleaseInstallationTests(unittest.TestCase):
                 load_versioned_installation("1.2.3")
 
     def test_platform_aliases_are_exact(self) -> None:
-        self.assertEqual(
-            current_platform_target(system="Darwin", machine="aarch64"),
-            "macos-arm64",
-        )
-        self.assertEqual(
-            current_platform_target(system="Windows", machine="AMD64"),
-            "windows-x86_64",
-        )
+        cases = {
+            ("Linux", "x86_64"): "linux-x86_64",
+            ("Linux", "aarch64"): "linux-arm64",
+            ("Darwin", "AMD64"): "macos-x86_64",
+            ("Darwin", "arm64"): "macos-arm64",
+            ("Windows", "x86_64"): "windows-x86_64",
+            ("Windows", "ARM64"): "windows-arm64",
+        }
+        for (system, machine), expected in cases.items():
+            with self.subTest(system=system, machine=machine):
+                self.assertEqual(
+                    current_platform_target(system=system, machine=machine), expected
+                )
         with self.assertRaisesRegex(RuntimeError, "unsupported"):
             current_platform_target(system="Plan9", machine="mips")
 

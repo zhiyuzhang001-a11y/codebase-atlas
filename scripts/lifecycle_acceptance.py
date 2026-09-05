@@ -49,6 +49,7 @@ def main() -> int:
         venv.EnvBuilder(with_pip=True).create(environment)
         python = executable(environment, "python")
         atlas = executable(environment, "codebase-atlas")
+        simple_atlas = executable(environment, "atlas")
 
         def pip_install(wheel: Path) -> None:
             subprocess.run(
@@ -67,6 +68,17 @@ def main() -> int:
         assert_version(package_version(previous))
         pip_install(current)
         assert_version(package_version(current))
+
+        simple_version = subprocess.run(
+            [str(simple_atlas), "--version"], check=True, env=command_env,
+            capture_output=True, text=True,
+        )
+        assert simple_version.stdout.strip() == package_version(current)
+        simple_help = subprocess.run(
+            [str(simple_atlas), "--help"], check=True, env=command_env,
+            capture_output=True, text=True,
+        ).stdout
+        assert all(command in simple_help for command in ("enable", "stop", "update", "remove"))
         pip_install(previous)
         assert_version(package_version(previous))
         pip_install(current)

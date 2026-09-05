@@ -4,6 +4,24 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.25.0 — 2026-09-06
+
+- Add the four-command `atlas enable`, `atlas stop`, `atlas update`, and
+  recoverable `atlas remove` project lifecycle interface with exact repository
+  identity, durable state, per-project operation serialization and rollback.
+- Add verified, side-by-side stable Release installation with exact platform
+  asset selection, three checksum proofs, safe extraction and installation
+  receipts; updates preserve the previous version and stopped state on failure.
+- Add a stable project-bound `mcp-auto` bootstrap that rechecks configuration
+  and lifecycle state at every request boundary and replaces versioned backend
+  subprocesses without replacing the outer MCP connection.
+- Preserve source, unrelated Codex configuration, other projects and shared
+  installations during removal; move owned project data to a verified recovery
+  receipt that a later enable can restore.
+- Keep the host limitation explicit: a task that never loaded Atlas, or still
+  runs the pre-0.25 fixed backend, needs one new task; after the stable bootstrap
+  is loaded, stop, enable and update take effect on the next request.
+
 ## 0.24.0 — 2026-09-04
 
 - Add automatic on-query refresh for Codex integrations: unchanged generations

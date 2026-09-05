@@ -33,6 +33,21 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.25.0 four-command lifecycle candidate
+
+- [x] Implement idempotent enable/stop/update/remove with exact identity,
+  project operation locking, durable transitions and rollback.
+- [x] Verify stable Release assets before side-by-side installation and preserve
+  old project state when update validation fails.
+- [x] Preserve source and unrelated configuration during recoverable removal,
+  and verify the restoration receipt before enable restores it.
+- [x] Exercise one MCP connection through unconfigured, ready, stopped, resumed,
+  and updated states, including replacement of a real backend subprocess.
+- [ ] Pass the final wheel, install/upgrade/downgrade/uninstall, publication
+  hygiene, full local suite, and GitHub three-system Python matrix on the exact
+  candidate commit.
+- [ ] Create and publish stable `v0.25.0` only after separate release approval.
+
 ## 0.24.0 automatic on-query refresh
 
 - [x] Refresh a dirty generation automatically before the next Atlas query and

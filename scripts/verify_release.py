@@ -29,6 +29,10 @@ def verify_wheel(path: Path, version: str) -> str:
     expected = {
         "codebase_atlas/runtime.py",
         "codebase_atlas/cli.py",
+        "codebase_atlas/simple_cli.py",
+        "codebase_atlas/project_lifecycle.py",
+        "codebase_atlas/release_installation.py",
+        "codebase_atlas/reloadable_mcp.py",
         "codebase_atlas/service.py",
         "codebase_atlas/web_ui.py",
         "codebase_atlas/ui_assets/index.html",
@@ -52,6 +56,16 @@ def verify_wheel(path: Path, version: str) -> str:
             raise SystemExit("wheel metadata version does not match source")
         if "Requires-Python: <3.15,>=3.11" not in metadata and "Requires-Python: >=3.11,<3.15" not in metadata:
             raise SystemExit("wheel does not declare the supported Python range")
+        entry_points_name = next(
+            name for name in names if name.endswith(".dist-info/entry_points.txt")
+        )
+        entry_points = archive.read(entry_points_name).decode("utf-8")
+        for entry in (
+            "atlas = codebase_atlas.simple_cli:main",
+            "codebase-atlas = codebase_atlas.cli:main",
+        ):
+            if entry not in entry_points:
+                raise SystemExit(f"wheel is missing console entry point: {entry}")
         for name in (
             "codebase_atlas/ui_assets/index.html",
             "codebase_atlas/ui_assets/app.css",
