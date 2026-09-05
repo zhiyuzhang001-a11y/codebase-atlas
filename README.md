@@ -2,8 +2,8 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Release candidate: **0.25.0**. Current published stable release: **0.24.0**.
-The candidate adds a four-command project lifecycle, verified side-by-side
+Current stable release: **0.25.0**. This release adds a four-command project
+lifecycle, verified side-by-side
 updates, recoverable removal, and a stable MCP bootstrap that can stop, resume,
 or switch a versioned backend on the next request without replacing an already
 loaded outer connection.
