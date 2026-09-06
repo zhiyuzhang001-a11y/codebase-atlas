@@ -280,10 +280,11 @@ class ReleaseInstallationTests(unittest.TestCase):
             self.assertEqual(installed, reused)
             self.assertEqual(installed.provider_version, provider_version)
             self.assertTrue(installed.provider_binary.is_file())
-            self.assertEqual(
-                installed.atlas_executable.read_bytes().splitlines()[0],
-                b"#!" + os.fsencode(installed.python),
-            )
+            if os.name != "nt":
+                self.assertEqual(
+                    installed.atlas_executable.read_bytes().splitlines()[0],
+                    b"#!" + os.fsencode(installed.python),
+                )
             self.assertFalse((installed.root / "downloads").exists())
 
 
