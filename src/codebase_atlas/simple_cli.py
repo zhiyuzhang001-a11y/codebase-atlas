@@ -54,6 +54,7 @@ from .release_installation import (
 )
 from .version_check import _version_tuple
 from .verification_state import protected_snapshot
+from .routing_assets import plan_routing
 from .provider_transport import CodebaseMemoryMcpTransport
 from .providers.cbm_impact import CodebaseMemoryImpactProvider
 
@@ -476,6 +477,19 @@ def enable_project(
     mode: str = "fast",
 ) -> tuple[dict[str, Any], int]:
     root, resolution = _repository_root(repository)
+    try:
+        routes = plan_routing(root)
+        conflicts = [str(asset.path) for asset in routes if asset.status == "conflict"]
+        if conflicts:
+            raise RuntimeError("foreign or modified Atlas routing assets: " + ", ".join(conflicts))
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _result(
+            "enable", "blocked", root, mutates=False,
+            project_state=resolution.status, index_status="unknown",
+            connection_status="unchanged", reason_code="routing_preflight_failed",
+            error=str(exc),
+            next_action="review the existing routing assets; preserve user content before migration",
+        ), 2
     removal = load_removal_marker(root)
     if removal is not None:
         if removal["status"] != "removed":

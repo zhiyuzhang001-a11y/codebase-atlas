@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+import os
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,25 @@ from codebase_atlas.routing_transaction import RoutingTransaction
 
 
 class RoutingTransactionTests(unittest.TestCase):
+    def test_failure_after_atomic_publish_restores_original_state(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            transaction = RoutingTransaction(root)
+            replace = os.replace
+            calls = 0
+
+            def publish_then_fail(source, destination):
+                nonlocal calls
+                replace(source, destination)
+                calls += 1
+                if calls == 1:
+                    raise OSError("failure after publication")
+
+            with patch("codebase_atlas.routing_transaction.os.replace", side_effect=publish_then_fail):
+                with self.assertRaisesRegex(OSError, "after publication"):
+                    transaction.apply()
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_apply_and_rollback_restore_absence(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

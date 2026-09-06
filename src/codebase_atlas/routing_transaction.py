@@ -69,8 +69,8 @@ class RoutingTransaction:
             for plan in self.plans:
                 if plan.before == plan.after:
                     continue
-                self._publish(plan, plan.before, plan.mode, plan.after, plan.mode)
                 self._applied.append(plan)
+                self._publish(plan, plan.before, plan.mode, plan.after, plan.mode)
         except BaseException as exc:
             errors = self.rollback()
             if errors:
@@ -82,6 +82,13 @@ class RoutingTransaction:
         for plan in reversed(self._applied):
             after_mode = (plan.mode if plan.mode is not None else 0o644) if plan.after is not None else None
             try:
+                # Publication may raise either before or after the rename.
+                # A target still at its original state needs no restoration.
+                _, current, current_mode = _read(
+                    self.repository, str(plan.path.relative_to(self.repository))
+                )
+                if current == plan.before and current_mode == plan.mode:
+                    continue
                 self._publish(plan, plan.after, after_mode, plan.before, plan.mode)
             except (OSError, RuntimeError) as exc:
                 errors.append(str(exc))

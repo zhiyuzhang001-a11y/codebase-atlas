@@ -55,6 +55,24 @@ def configured_project(root: Path) -> tuple[Path, AtlasConfig, Path]:
 
 
 class SimpleCliTests(unittest.TestCase):
+    def test_enable_rejects_foreign_skill_before_restoration_or_onboarding(self):
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b"manually installed skill")
+            with (
+                patch("codebase_atlas.simple_cli.build_plan") as onboarding,
+                patch("codebase_atlas.simple_cli._restore_removed_project") as restore,
+            ):
+                result, code = enable_project(repository)
+            self.assertEqual(code, 2)
+            self.assertEqual(result["reason_code"], "routing_preflight_failed")
+            self.assertFalse(result["mutates"])
+            onboarding.assert_not_called()
+            restore.assert_not_called()
+            self.assertEqual(skill.read_bytes(), b"manually installed skill")
+
     def test_status_reports_unconfigured_repository_without_mutating(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository = git_repository(Path(raw))
