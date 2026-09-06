@@ -4,6 +4,21 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.25.1 — 2026-09-06
+
+- Make `atlas enable` install or reuse its verified versioned runtime before
+  dependency discovery, then delegate to that runtime and its managed Provider.
+- Rewrite generated POSIX launchers to their published version path before the
+  staged installation is atomically renamed.
+- Verify public query `location.path` evidence, skip hidden support sources as
+  acceptance candidates, and temporarily enter ready state so a real query can
+  run while retaining rollback on failure.
+- Add `response_mode=compact` for Change Briefs, preserving exact target,
+  provenance, generation and completeness while reducing the fixed dogfood
+  sample by 51.8%; prioritize relation queries by change intent.
+- Add a repository Codex skill and a fixed Python/TypeScript, lifecycle,
+  worktree-isolation and MCP stdio dogfood record.
+
 ## 0.25.0 — 2026-09-06
 
 - Add the four-command `atlas enable`, `atlas stop`, `atlas update`, and

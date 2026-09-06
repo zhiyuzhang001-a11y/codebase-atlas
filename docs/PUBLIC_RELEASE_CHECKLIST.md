@@ -46,7 +46,18 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 - [x] Pass the final wheel, install/upgrade/downgrade/uninstall, publication
   hygiene, full local suite, and GitHub three-system Python matrix on the exact
   candidate commit.
-- [ ] Create and publish stable `v0.25.0` only after separate release approval.
+- [x] Create and publish stable `v0.25.0` after separate release approval.
+
+## 0.25.1 Codex integration correction
+
+- [x] Reproduce clean-launcher bootstrap, relocated-shebang and real-query
+  acceptance failures against the published 0.25.0 assets.
+- [x] Add focused regressions and pass the complete local product suite.
+- [x] Pass Python/TypeScript, compact/full response, project isolation,
+  stop/resume and real MCP stdio dogfood gates.
+- [ ] Pass final publication readiness, remote matrix, package lifecycle and
+  managed Provider asset gates on the exact release commit.
+- [ ] Publish stable `v0.25.1` from the exact accepted commit.
 
 ## 0.24.0 automatic on-query refresh
 

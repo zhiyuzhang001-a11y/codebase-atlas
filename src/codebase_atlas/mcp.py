@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from typing import Any, Callable, TextIO
 
 from . import __version__
-from .change_analysis import CHANGE_INTENTS, analyze_change
+from .change_analysis import CHANGE_INTENTS, RESPONSE_MODES, analyze_change
 from .operations import (
     attach_operational_status,
     stale_policy_error,
@@ -272,6 +272,7 @@ TOOLS = [
                 "max_nodes": {"type": "integer", "minimum": 1, "maximum": 10000},
                 "max_edges": {"type": "integer", "minimum": 1, "maximum": 20000},
                 "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000},
+                "response_mode": {"type": "string", "enum": list(RESPONSE_MODES)},
             },
             "required": ["symbol"],
             "additionalProperties": False,
@@ -710,6 +711,7 @@ class McpServer:
                         timeout_ms=arguments.get("timeout_ms", 60_000),
                         index_status=analysis_status,
                         stale_policy=self.stale_policy,
+                        response_mode=arguments.get("response_mode", "full"),
                     )
                 return {
                     "jsonrpc": "2.0",

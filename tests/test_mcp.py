@@ -98,6 +98,10 @@ class McpTests(unittest.TestCase):
         self.assertEqual(schemas["references"]["continuation"]["maxLength"], 512)
         self.assertNotIn("continuation", schemas["definition"])
         self.assertIn("fix_bug", schemas["analyze_change"]["intent"]["enum"])
+        self.assertEqual(
+            schemas["analyze_change"]["response_mode"]["enum"],
+            ["full", "compact"],
+        )
         self.assertEqual(schemas["locate_files"]["max_files"]["maximum"], 2)
         self.assertEqual(schemas["locate_files"]["max_internal_rows"]["maximum"], 60)
         refresh = next(tool for tool in listed["result"]["tools"] if tool["name"] == "refresh_index")
@@ -419,6 +423,7 @@ class McpTests(unittest.TestCase):
                 "arguments": {
                     "symbol": "target", "intent": "fix_bug",
                     "target_path": "src/x.py", "timeout_ms": 5000,
+                    "response_mode": "compact",
                 },
             },
         })
@@ -426,6 +431,7 @@ class McpTests(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(brief["analysis_type"], "change_brief")
         self.assertEqual(brief["intent"], "fix_bug")
+        self.assertEqual(brief["response_mode"], "compact")
         self.assertEqual(brief["target"]["name"], "target")
 
     def test_calls_tool_with_structured_and_text_content(self) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -253,7 +254,9 @@ class ReleaseInstallationTests(unittest.TestCase):
                 python = scripts / "python"
                 executable = scripts / "codebase-atlas"
                 python.write_bytes(b"python")
-                executable.write_bytes(b"atlas")
+                executable.write_bytes(
+                    b"#!" + os.fsencode(python) + b"\nprint('atlas')\n"
+                )
                 return python, executable
 
             def runner(command, **_kwargs):
@@ -277,6 +280,10 @@ class ReleaseInstallationTests(unittest.TestCase):
             self.assertEqual(installed, reused)
             self.assertEqual(installed.provider_version, provider_version)
             self.assertTrue(installed.provider_binary.is_file())
+            self.assertEqual(
+                installed.atlas_executable.read_bytes().splitlines()[0],
+                b"#!" + os.fsencode(installed.python),
+            )
             self.assertFalse((installed.root / "downloads").exists())
 
 

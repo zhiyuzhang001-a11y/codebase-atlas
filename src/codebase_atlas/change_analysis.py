@@ -16,6 +16,7 @@ CHANGE_INTENTS = (
     "refactor_internal",
     "fix_bug",
 )
+RESPONSE_MODES = ("full", "compact")
 SUBQUERIES = (
     "definition",
     "references",
@@ -105,6 +106,76 @@ def _path_suggestions(
     return reads, tests
 
 
+def _query_order(intent: str) -> tuple[str, ...]:
+    if intent == "fix_bug":
+        return ("related_tests", "callers", "callees", "references", "impact")
+    if intent == "change_contract":
+        return ("callers", "references", "impact", "related_tests", "callees")
+    if intent == "refactor_internal":
+        return ("callers", "callees", "references", "related_tests")
+    return ("callers", "callees", "related_tests", "impact", "references")
+
+
+def _compact_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    depths = result.get("depths") or {}
+    nodes = []
+    for node in result.get("nodes", []):
+        compact = {
+            key: node[key]
+            for key in (
+                "id", "kind", "name", "location", "provider", "confidence",
+                "evidence_hash",
+            )
+            if key in node
+        }
+        if node.get("id") in depths:
+            compact["depth"] = depths[node["id"]]
+        owner = (node.get("attributes") or {}).get("owner")
+        if owner:
+            compact["owner"] = owner
+        nodes.append(compact)
+    edges = [
+        {
+            key: edge[key]
+            for key in (
+                "source_id", "target_id", "relation",
+                "source", "target", "kind",
+                "provider", "confidence", "evidence_hash",
+            )
+            if key in edge
+        }
+        for edge in result.get("edges", [])
+    ]
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "counts": {"nodes": len(nodes), "edges": len(edges)},
+        "truncated": bool(result.get("truncated")),
+    }
+
+
+def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: brief[key]
+        for key in (
+            "schema_version", "analysis_type", "status", "intent", "request",
+            "target", "implementation", "recommended_reads",
+            "recommended_test_targets", "completeness", "budget", "timing",
+            "index", "generation_id", "warnings",
+        )
+        if key in brief
+    }
+    compact["response_mode"] = "compact"
+    compact["candidates"] = brief.get("candidates", []) if brief.get("status") == "needs_disambiguation" else []
+    compact["evidence"] = {
+        name: _compact_result(brief.get(name))
+        for name in ("references", "callers", "callees", "impact", "tests")
+    }
+    return compact
+
+
 def analyze_change(
     service: AtlasService,
     symbol: str,
@@ -119,6 +190,7 @@ def analyze_change(
     timeout_ms: int = 60_000,
     index_status: dict[str, Any] | None = None,
     stale_policy: str = "ignore",
+    response_mode: str = "full",
 ) -> dict[str, Any]:
     """Resolve one exact target and return a single evidence-preserving brief."""
     requested_symbol = symbol
@@ -129,6 +201,8 @@ def analyze_change(
             symbol = explicit_member
     if intent not in CHANGE_INTENTS:
         raise ValueError(f"unsupported change intent: {intent}")
+    if response_mode not in RESPONSE_MODES:
+        raise ValueError(f"unsupported response mode: {response_mode}")
     if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
         raise ValueError("timeout_ms must be an integer between 1 and 300000")
 
@@ -181,12 +255,11 @@ def analyze_change(
         exact_owner = str((target.get("attributes") or {}).get("owner", "")) or target_owner
         target_path, target_owner = exact_path, exact_owner
 
-        run("callers")
-        run("callees")
-        run("related_tests")
-        run("references")
-        if intent != "refactor_internal":
-            run("impact", direction=direction, depth=depth)
+        for name in _query_order(intent):
+            if name == "impact":
+                run(name, direction=direction, depth=depth)
+            else:
+                run(name)
         material = (
             "definition", "callers", "callees", "related_tests", "references"
         ) + (() if intent == "refactor_internal" else ("impact",))
@@ -227,4 +300,5 @@ def analyze_change(
         },
         "timing": {"elapsed_ms": (monotonic() - started) * 1000.0},
     }
-    return attach_operational_status(brief, index_status, stale_policy)
+    attached = attach_operational_status(brief, index_status, stale_policy)
+    return _compact_brief(attached) if response_mode == "compact" else attached
