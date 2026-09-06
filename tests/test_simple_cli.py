@@ -143,7 +143,7 @@ class SimpleCliTests(unittest.TestCase):
                     "codebase_atlas.simple_cli.operational_lifecycle_status",
                     return_value={"status": "stopped", "ok": False, "reason": "project_stopped"},
                 ),
-                patch("codebase_atlas.simple_cli._verification_query") as query,
+                patch("codebase_atlas.simple_cli._owned_verification_query") as query,
             ):
                 result, code = verify_project(repository)
             self.assertEqual(code, 4)
@@ -157,7 +157,8 @@ class SimpleCliTests(unittest.TestCase):
             ready_checks = [{"name": "runtime", "ok": True, "required": True}]
             verification = {
                 "symbol": "target", "target_path": "target.py",
-                "matched_nodes": 1, "cross_project_negative": "pass",
+                "matched_nodes": 1, "nonexistent_symbol": "pass",
+                "owned_process_cleanup": "pass",
             }
             with (
                 patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
@@ -179,20 +180,27 @@ class SimpleCliTests(unittest.TestCase):
                     return_value={"existing": "matching", "target": str(repository / ".codex/config.toml")},
                 ),
                 patch(
-                    "codebase_atlas.simple_cli._verification_query",
+                    "codebase_atlas.simple_cli._owned_verification_query",
                     return_value=verification,
                 ) as query,
             ):
                 result, code = verify_project(repository)
-            self.assertEqual(code, 2)
-            self.assertEqual(result["status"], "INCOMPLETE")
+                query.assert_called_once_with(config)
+                with patch("codebase_atlas.simple_cli.protected_snapshot",
+                           side_effect=[{"source": "before"}, {"source": "after"}]):
+                    changed, changed_code = verify_project(repository)
+                self.assertEqual(changed_code, 2)
+                self.assertEqual(changed["status"], "INCOMPLETE")
+                self.assertIn("protected state changed", changed["checks"][-1]["reason"])
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "PASS")
             pending = {check["name"] for check in result["checks"]
                        if check.get("status") == "not_run"}
-            self.assertIn("protected_state_unchanged", pending)
-            self.assertIn("owned_process_cleanup", pending)
+            self.assertNotIn("protected_state_unchanged", pending)
+            self.assertNotIn("owned_process_cleanup", pending)
+            self.assertIn("cross_repository_isolation", pending)
             self.assertEqual(result["project"], config.project)
             self.assertEqual(result["verification"], verification)
-            query.assert_called_once_with(config, path)
 
     def test_enable_runtime_prefers_latest_verified_stable_release(self) -> None:
         installation = VersionedInstallation(

@@ -53,6 +53,9 @@ from .release_installation import (
     load_versioned_installation,
 )
 from .version_check import _version_tuple
+from .verification_state import protected_snapshot
+from .provider_transport import CodebaseMemoryMcpTransport
+from .providers.cbm_impact import CodebaseMemoryImpactProvider
 
 STATUS_MAX_DIRECTORIES = 4096
 STATUS_MAX_DEPTH = 6
@@ -775,6 +778,58 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
     ), 0
 
 
+class _VerificationTransport:
+    """Reject incomplete raw search evidence before node normalization."""
+
+    def __init__(self, transport: CodebaseMemoryMcpTransport):
+        self.transport = transport
+
+    def call(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        payload = self.transport.call(*args, **kwargs)
+        if (not isinstance(payload, dict)
+                or not isinstance(payload.get("groups"), list)
+                or not isinstance(payload.get("cols"), list)
+                or payload.get("truncated") or payload.get("error")
+                or payload.get("status") in {"partial", "failed", "error", "timeout", "not_run"}):
+            raise RuntimeError("verification search returned incomplete evidence")
+        if any(not isinstance(group, dict) or not isinstance(group.get("rows"), list)
+               for group in payload["groups"]):
+            raise RuntimeError("verification search returned malformed groups")
+        return payload
+
+
+def _owned_verification_query(config: AtlasConfig) -> dict[str, Any]:
+    symbol, path, _before = _verification_candidate(config)
+    transport = CodebaseMemoryMcpTransport(
+        config.cbm_binary, config.repository, config.cache_dir,
+        exclusive=config.provider_layout != "shared-v1",
+        client_version=__version__, managed_cache=config.provider_layout == "shared-v1",
+    )
+    process = None
+    try:
+        transport.start(timeout_seconds=20)
+        process = transport.process
+        provider = CodebaseMemoryImpactProvider(
+            config.cbm_binary, config.repository, config.cache_dir, config.project,
+            transport=_VerificationTransport(transport),
+        )
+        nodes = provider.definitions(symbol, target_path=path)
+        if not nodes or any(node.location.path != path for node in nodes):
+            raise RuntimeError("verification target did not resolve to its exact file")
+        if provider.definitions("__atlas_absent_" + secrets.token_hex(12)):
+            raise RuntimeError("verification nonexistent symbol returned facts")
+    finally:
+        transport.close()
+    if process is None or process.poll() is None:
+        raise RuntimeError("verification Provider child cleanup not confirmed")
+    return {
+        "symbol": symbol, "target_path": path, "matched_nodes": len(nodes),
+        "nonexistent_symbol": "pass", "owned_process_cleanup": "pass",
+        "process_id": process.pid,
+        "process_scope": "owned_stdio_child; shared daemon preserved",
+    }
+
+
 def verify_project(repository: Path) -> tuple[dict[str, Any], int]:
     """Run the existing acceptance checks without refreshing project state."""
     root, resolution = _repository_root(repository)
@@ -834,7 +889,13 @@ def verify_project(repository: Path) -> tuple[dict[str, Any], int]:
             next_action=f"atlas enable --repo {root}", checks=results,
         ), 2
     try:
-        query = _verification_query(config, resolution.config)
+        before = protected_snapshot(config, resolution.config)
+        query = _owned_verification_query(config)
+        if query.get("owned_process_cleanup") != "pass":
+            raise RuntimeError("verification process cleanup not confirmed")
+        after = protected_snapshot(config, resolution.config)
+        if before != after:
+            raise RuntimeError("protected state changed during verification")
     except (OSError, RuntimeError, ValueError) as exc:
         results.append({
             "name": "verification_query", "ok": False,
@@ -848,21 +909,20 @@ def verify_project(repository: Path) -> tuple[dict[str, Any], int]:
             next_action="inspect the failed verification query", checks=results,
         ), 2
     results.append({"name": "verification_query", "ok": True, **query})
-    # Query success alone cannot prove the required non-mutation and cleanup
-    # gates. Keep this candidate fail-closed until those checks are implemented.
     results.extend([
-        {"name": "protected_state_unchanged", "status": "not_run", "ok": False},
-        {"name": "owned_process_cleanup", "status": "not_run", "ok": False},
+        {"name": "protected_state_unchanged", "status": "pass", "ok": True},
+        {"name": "owned_process_cleanup", "status": query.get("owned_process_cleanup"),
+         "ok": query.get("owned_process_cleanup") == "pass"},
         {"name": "cross_repository_isolation", "status": "not_run", "required": False},
         {"name": "current_codex_task_connection", "status": "not_run", "required": False},
     ])
     return _result(
-        "verify", "INCOMPLETE", root, mutates=False,
+        "verify", "PASS", root, mutates=False,
         project=config.project, project_state="ready", index_status="fresh",
-        connection_status="configured", reason_code="verification_safety_gates_not_run",
-        next_action="complete protected-state and process-cleanup verification",
+        connection_status="configured", reason_code="target_checks_passed",
+        next_action="none",
         checks=results, verification=query,
-    ), 2
+    ), 0
 
 
 def stop_project(

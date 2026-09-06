@@ -25,7 +25,7 @@ atlas remove --repo /absolute/path/to/repository
 Omit `--repo` inside the intended Git repository. `enable` prepares or reuses a
 verified runtime, creates or restores the exact project state, indexes it,
 installs only Atlas's project-scoped Codex block, and passes doctor, deep health,
-positive-query and cross-project-negative gates before reporting ready. `stop`
+positive-query and nonexistent-symbol gates before reporting ready. `stop`
 preserves configuration and data. `update` means a verified software upgrade;
 routine source edits refresh automatically before the next query. `remove`
 moves Atlas-owned project assets to a verified recovery receipt rather than
@@ -35,8 +35,12 @@ permanently deleting them. Add `--json` for the stable structured result.
 task connection as unknown unless a task has actually proved it. `verify` runs
 runtime, freshness, deep database, Codex configuration and target-query checks;
 it refuses a stale or stopped project rather than refreshing or enabling it.
-This development candidate reports `INCOMPLETE` after successful queries until
-protected-state and process-cleanup checks are implemented. Random absent-symbol
+`PASS` additionally requires equal before/after content and permission snapshots
+of Git-visible files, project configuration, routing assets, lifecycle/index
+records and the project database/WAL, plus confirmed exit of its owned stdio
+Provider child. It preserves any pre-existing shared daemon. Snapshot limits or
+unconfirmed cleanup return `INCOMPLETE`; ignored files outside these explicit
+protected paths are not covered. Random absent-symbol
 checks do not establish cross-repository isolation; that requires the separate
 two-repository acceptance suite.
 
