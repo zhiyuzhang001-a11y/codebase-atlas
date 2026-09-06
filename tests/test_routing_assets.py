@@ -1,11 +1,44 @@
 from pathlib import Path
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from codebase_atlas.routing_assets import RULE, SKILL, plan_routing
 
 
 class RoutingAssetTests(unittest.TestCase):
+    def test_replacement_between_stat_and_open_is_rejected(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "AGENTS.md"
+            path.write_bytes(b"original")
+            replacement = root / "replacement"
+            replacement.write_bytes(b"replacement")
+            original_open = os.open
+
+            def raced_open(target, flags):
+                replacement.replace(path)
+                return original_open(target, flags)
+
+            with patch("codebase_atlas.routing_assets.os.open", side_effect=raced_open):
+                with self.assertRaisesRegex(RuntimeError, "changed during inspection"):
+                    plan_routing(root)
+            self.assertEqual(path.read_bytes(), b"replacement")
+
+    def test_symlink_asset_is_rejected_without_reading_target(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            outside = root / "private"
+            outside.write_bytes(b"private content")
+            try:
+                (root / "AGENTS.md").symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(RuntimeError, "regular file"):
+                plan_routing(root)
+            self.assertEqual(outside.read_bytes(), b"private content")
+
     def test_planning_is_read_only(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

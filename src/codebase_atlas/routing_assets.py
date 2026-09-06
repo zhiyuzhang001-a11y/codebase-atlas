@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 import stat
 
@@ -74,7 +75,22 @@ def _read(repository: Path, relative: str) -> tuple[Path, bytes | None, int | No
         raise RuntimeError("routing asset must be a regular file")
     if metadata.st_size > 1024 * 1024:
         raise RuntimeError("routing asset exceeds the 1 MiB inspection budget")
-    return path, path.read_bytes(), stat.S_IMODE(metadata.st_mode)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (metadata.st_dev, metadata.st_ino, metadata.st_mode) != (
+            opened.st_dev, opened.st_ino, opened.st_mode
+        ):
+            raise RuntimeError("routing asset changed during inspection")
+        content = stream.read(1024 * 1024 + 1)
+        final = os.fstat(stream.fileno())
+    current = path.lstat()
+    signature = lambda value: (value.st_dev, value.st_ino, value.st_mode,
+                               value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if len(content) > 1024 * 1024 or signature(metadata) != signature(final) or signature(final) != signature(current):
+        raise RuntimeError("routing asset changed or exceeded budget during inspection")
+    return path, content, stat.S_IMODE(metadata.st_mode)
 
 
 def plan_routing(repository: Path, *, remove: bool = False) -> tuple[AssetPlan, ...]:

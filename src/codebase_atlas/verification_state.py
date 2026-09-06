@@ -75,7 +75,8 @@ def protected_snapshot(config: AtlasConfig, config_path: Path) -> dict[str, str]
         if consumed + before.st_size > MAX_BYTES:
             raise RuntimeError("verification snapshot byte budget exceeded")
         digest = hashlib.sha256()
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(descriptor, "rb") as stream:
             opened = os.fstat(stream.fileno())
             if (before.st_dev, before.st_ino, before.st_mode) != (
