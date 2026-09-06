@@ -81,6 +81,31 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(result["nested_repositories"]["status"], "complete")
             self.assertEqual(result["nested_repositories"]["repositories"], ["nested"])
 
+    def test_status_does_not_treat_bogus_git_marker_as_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            nested = repository / "not-a-repository"
+            nested.mkdir()
+            (nested / ".git").write_text("invalid git marker", encoding="utf-8")
+            result, _code = status_project(repository)
+            self.assertEqual(result["nested_repositories"]["repositories"], [])
+            self.assertEqual(result["nested_repositories"]["status"], "partial")
+
+    def test_verification_refuses_missing_or_truncated_negative_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            source = repository / "target.py"
+            source.write_text("def target():\n    return 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "target.py"], check=True)
+            for negative in ({}, {"nodes": [], "truncated": True},
+                             {"nodes": [], "status": "partial"}):
+                with self.subTest(negative=negative), patch(
+                    "codebase_atlas.simple_cli._query_payload",
+                    side_effect=[{"nodes": [{"source": {"path": "target.py"}}]}, negative],
+                ):
+                    with self.assertRaises(RuntimeError):
+                        _verification_query(config, path)
+
     def test_status_combines_lifecycle_index_and_codex_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
@@ -159,8 +184,12 @@ class SimpleCliTests(unittest.TestCase):
                 ) as query,
             ):
                 result, code = verify_project(repository)
-            self.assertEqual(code, 0)
-            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "INCOMPLETE")
+            pending = {check["name"] for check in result["checks"]
+                       if check.get("status") == "not_run"}
+            self.assertIn("protected_state_unchanged", pending)
+            self.assertIn("owned_process_cleanup", pending)
             self.assertEqual(result["project"], config.project)
             self.assertEqual(result["verification"], verification)
             query.assert_called_once_with(config, path)

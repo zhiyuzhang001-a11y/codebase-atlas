@@ -63,7 +63,13 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
     roots: list[str] = []
     visited = 0
     partial_reason = ""
-    for current, directories, _files in os.walk(repository, followlinks=False):
+    def scan_error(_error: OSError) -> None:
+        nonlocal partial_reason
+        partial_reason = "nested_repository_scan_unavailable"
+
+    for current, directories, _files in os.walk(
+        repository, followlinks=False, onerror=scan_error
+    ):
         current_path = Path(current)
         depth = len(current_path.relative_to(repository).parts)
         directories[:] = sorted(
@@ -85,7 +91,20 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
             candidate = current_path / name
             marker = candidate / ".git"
             if os.path.lexists(marker):
-                roots.append(candidate.relative_to(repository).as_posix())
+                if marker.is_symlink():
+                    partial_reason = "nested_repository_marker_unsafe"
+                    continue
+                try:
+                    probe = subprocess.run(
+                        ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+                        capture_output=True, text=True, check=False, timeout=2,
+                    )
+                    if probe.returncode == 0 and Path(probe.stdout.strip()).resolve() == candidate.resolve():
+                        roots.append(candidate.relative_to(repository).as_posix())
+                    else:
+                        partial_reason = "nested_repository_identity_unverified"
+                except (OSError, subprocess.TimeoutExpired):
+                    partial_reason = "nested_repository_identity_unavailable"
             else:
                 retained.append(name)
         else:
@@ -399,6 +418,7 @@ def _verification_query(
         config, config_path, symbol, target_path,
         executable=executable, runner=runner,
     )
+    _require_complete_verification_response(positive)
     nodes = positive.get("nodes")
     if not isinstance(nodes, list) or not any(
         isinstance(node, dict)
@@ -415,6 +435,7 @@ def _verification_query(
         config, config_path, negative_symbol, "",
         executable=executable, runner=runner,
     )
+    _require_complete_verification_response(negative)
     if negative.get("nodes"):
         raise RuntimeError("cross-project negative verification returned unexpected facts")
     if (config.repository / target_path).read_bytes() != before:
@@ -424,7 +445,18 @@ def _verification_query(
         "target_path": target_path,
         "matched_nodes": len(nodes),
         "cross_project_negative": "pass",
+        "negative_check_scope": "nonexistent_symbol_only",
     }
+
+
+def _require_complete_verification_response(payload: dict[str, Any]) -> None:
+    """An absent or incomplete result is not evidence of an empty answer."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list):
+        raise RuntimeError("verification query returned an invalid nodes result")
+    if payload.get("truncated") or payload.get("error"):
+        raise RuntimeError("verification query returned incomplete evidence")
+    if payload.get("status") in {"partial", "failed", "error", "timeout", "not_run"}:
+        raise RuntimeError("verification query did not complete")
 
 
 def enable_project(
@@ -816,12 +848,21 @@ def verify_project(repository: Path) -> tuple[dict[str, Any], int]:
             next_action="inspect the failed verification query", checks=results,
         ), 2
     results.append({"name": "verification_query", "ok": True, **query})
+    # Query success alone cannot prove the required non-mutation and cleanup
+    # gates. Keep this candidate fail-closed until those checks are implemented.
+    results.extend([
+        {"name": "protected_state_unchanged", "status": "not_run", "ok": False},
+        {"name": "owned_process_cleanup", "status": "not_run", "ok": False},
+        {"name": "cross_repository_isolation", "status": "not_run", "required": False},
+        {"name": "current_codex_task_connection", "status": "not_run", "required": False},
+    ])
     return _result(
-        "verify", "PASS", root, mutates=False,
+        "verify", "INCOMPLETE", root, mutates=False,
         project=config.project, project_state="ready", index_status="fresh",
-        connection_status="configured", reason_code="all_checks_passed",
-        next_action="none", checks=results, verification=query,
-    ), 0
+        connection_status="configured", reason_code="verification_safety_gates_not_run",
+        next_action="complete protected-state and process-cleanup verification",
+        checks=results, verification=query,
+    ), 2
 
 
 def stop_project(

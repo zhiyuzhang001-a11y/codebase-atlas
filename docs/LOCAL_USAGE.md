@@ -35,6 +35,10 @@ permanently deleting them. Add `--json` for the stable structured result.
 task connection as unknown unless a task has actually proved it. `verify` runs
 runtime, freshness, deep database, Codex configuration and target-query checks;
 it refuses a stale or stopped project rather than refreshing or enabling it.
+This development candidate reports `INCOMPLETE` after successful queries until
+protected-state and process-cleanup checks are implemented. Random absent-symbol
+checks do not establish cross-repository isolation; that requires the separate
+two-repository acceptance suite.
 
 The first MCP registration requires one new Codex task. The 0.25 `mcp-auto`
 bootstrap then rechecks exact project identity, lifecycle state and selected
