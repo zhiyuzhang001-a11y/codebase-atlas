@@ -2,10 +2,10 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.25.1**. This patch makes the four-command lifecycle
-self-bootstrap from the verified versioned runtime, preserves executable
-launchers after atomic publication, corrects real-query enable verification,
-and adds intent-aware compact Change Brief output.
+Current stable release: **0.25.2**. This patch makes lifecycle acceptance prefer
+product source over fixtures and tests. It retains the 0.25.1 self-bootstrap,
+relocated-launcher, real-query verification and intent-aware compact Change
+Brief improvements.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

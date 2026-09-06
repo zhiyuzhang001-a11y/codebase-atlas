@@ -4,6 +4,13 @@ All notable release changes are recorded here. The package uses semantic version
 0.x minor versions may still refine interfaces within the documented support
 boundary.
 
+## 0.25.2 — 2026-09-06
+
+- Prefer conventional product source roots over fixtures, tests, examples and
+  vendored trees when selecting the real-query lifecycle acceptance symbol.
+- Keep non-product trees as a fallback for repositories that contain no
+  conventional product source, while retaining hidden-source rejection.
+
 ## 0.25.1 — 2026-09-06
 
 - Make `atlas enable` install or reuse its verified versioned runtime before

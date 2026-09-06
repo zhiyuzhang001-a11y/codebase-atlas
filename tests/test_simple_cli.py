@@ -98,6 +98,24 @@ class SimpleCliTests(unittest.TestCase):
                 result = _verification_query(config, path)
             self.assertEqual(result["target_path"], "visible.py")
 
+    def test_verification_prefers_product_source_over_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, _path = configured_project(Path(raw))
+            fixture = repository / "fixtures" / "first.py"
+            fixture.parent.mkdir()
+            fixture.write_text("class FixtureTarget:\n    pass\n", encoding="utf-8")
+            product = repository / "src" / "package" / "service.py"
+            product.parent.mkdir(parents=True)
+            product.write_text("def product_target():\n    pass\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "add", "fixtures/first.py", "src/package/service.py"],
+                check=True,
+            )
+            self.assertEqual(
+                _verification_candidate(config)[:2],
+                ("product_target", "src/package/service.py"),
+            )
+
     def test_stop_is_stateful_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
