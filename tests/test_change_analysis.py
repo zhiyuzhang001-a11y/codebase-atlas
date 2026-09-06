@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import unittest
 
-from codebase_atlas.change_analysis import analyze_change
+from codebase_atlas.change_analysis import _compact_result, analyze_change
 from codebase_atlas.contracts import Node, SourceRange
 from codebase_atlas.service import QueryResponse
 
@@ -43,6 +44,21 @@ class FakeService:
 
 
 class ChangeAnalysisTests(unittest.TestCase):
+    def test_compact_relationship_keeps_edge_identity_and_provenance(self) -> None:
+        compact = _compact_result({
+            "nodes": [],
+            "edges": [{
+                "source_id": "caller", "target_id": "target", "relation": "calls",
+                "provider": "provider", "evidence_hash": HASH,
+                "attributes": {"repeated": "omitted"},
+            }],
+            "truncated": False,
+        })
+        self.assertEqual(compact["edges"][0], {
+            "source_id": "caller", "target_id": "target", "relation": "calls",
+            "provider": "provider", "evidence_hash": HASH,
+        })
+
     def test_exact_brief_uses_one_shared_service_and_preserves_evidence(self) -> None:
         service = FakeService()
         brief = analyze_change(
@@ -57,6 +73,32 @@ class ChangeAnalysisTests(unittest.TestCase):
         self.assertEqual(brief["index"]["status"], "fresh")
         timeouts = [request.parameters["timeout_ms"] for request in service.requests]
         self.assertTrue(all(left >= right for left, right in zip(timeouts, timeouts[1:])))
+
+    def test_compact_brief_preserves_decision_evidence_and_reduces_bytes(self) -> None:
+        status = {"status": "fresh", "ok": True, "generation_id": "generation-1"}
+        full = analyze_change(FakeService(), "target", index_status=status)
+        compact = analyze_change(
+            FakeService(), "target", index_status=status, response_mode="compact"
+        )
+        self.assertEqual(compact["response_mode"], "compact")
+        self.assertEqual(compact["target"], full["target"])
+        self.assertEqual(compact["completeness"], full["completeness"])
+        self.assertEqual(compact["index"], full["index"])
+        self.assertEqual(
+            compact["evidence"]["callers"]["nodes"][0]["evidence_hash"], HASH
+        )
+        self.assertLess(
+            len(json.dumps(compact, separators=(",", ":"))),
+            len(json.dumps(full, separators=(",", ":"))),
+        )
+
+    def test_fix_bug_prioritizes_test_evidence_after_definition(self) -> None:
+        service = FakeService()
+        analyze_change(service, "target", intent="fix_bug")
+        self.assertEqual(
+            [request.query_type for request in service.requests[:3]],
+            ["definition", "related_tests", "callers"],
+        )
 
     def test_ambiguous_definition_stops_without_relationship_guessing(self) -> None:
         service = FakeService(definitions=2)

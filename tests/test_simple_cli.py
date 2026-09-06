@@ -19,7 +19,15 @@ from codebase_atlas.project_lifecycle import (
     load_removal_marker,
     publish_lifecycle_state,
 )
-from codebase_atlas.simple_cli import enable_project, main, remove_project, stop_project
+from codebase_atlas.simple_cli import (
+    _enable_runtime_installation,
+    _verification_candidate,
+    _verification_query,
+    enable_project,
+    main,
+    remove_project,
+    stop_project,
+)
 from codebase_atlas.simple_cli import update_project
 from codebase_atlas.release_installation import VersionedInstallation
 
@@ -45,6 +53,51 @@ def configured_project(root: Path) -> tuple[Path, AtlasConfig, Path]:
 
 
 class SimpleCliTests(unittest.TestCase):
+    def test_enable_runtime_prefers_latest_verified_stable_release(self) -> None:
+        installation = VersionedInstallation(
+            "0.25.1", "test", Path("/installation"), Path("/python"),
+            Path("/atlas"), Path("/provider"), "provider-test", "a" * 64, "b" * 64,
+        )
+        release = SimpleNamespace(version="0.25.1")
+        with (
+            patch("codebase_atlas.simple_cli.fetch_stable_release", return_value=release),
+            patch(
+                "codebase_atlas.simple_cli.install_stable_release",
+                return_value=(installation, True),
+            ) as installer,
+            patch("codebase_atlas.simple_cli.load_versioned_installation") as fallback,
+        ):
+            self.assertEqual(_enable_runtime_installation(), installation)
+        installer.assert_called_once_with(release)
+        fallback.assert_not_called()
+
+    def test_verification_skips_hidden_sources_and_accepts_location_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            hidden = repository / ".support" / "first.py"
+            hidden.parent.mkdir()
+            hidden.write_text("def hidden_target():\n    pass\n", encoding="utf-8")
+            visible = repository / "visible.py"
+            visible.write_text("def visible_target():\n    pass\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "add", ".support/first.py", "visible.py"],
+                check=True,
+            )
+            self.assertEqual(
+                _verification_candidate(config)[:2],
+                ("visible_target", "visible.py"),
+            )
+            responses = iter((
+                {"nodes": [{"location": {"path": "visible.py"}}]},
+                {"nodes": []},
+            ))
+            with patch(
+                "codebase_atlas.simple_cli._query_payload",
+                side_effect=lambda *_args, **_kwargs: next(responses),
+            ):
+                result = _verification_query(config, path)
+            self.assertEqual(result["target_path"], "visible.py")
+
     def test_stop_is_stateful_and_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
@@ -101,7 +154,15 @@ class SimpleCliTests(unittest.TestCase):
                 ),
                 patch(
                     "codebase_atlas.simple_cli._verification_query",
-                    return_value={"symbol": "target", "cross_project_negative": "pass"},
+                    side_effect=lambda *_args, **_kwargs: (
+                        self.assertEqual(
+                            load_lifecycle_state(
+                                config.data_dir, config.repository, config.project
+                            ).status,
+                            "ready",
+                        )
+                        or {"symbol": "target", "cross_project_negative": "pass"}
+                    ),
                 ),
             ):
                 result, code = enable_project(repository)
@@ -162,6 +223,42 @@ class SimpleCliTests(unittest.TestCase):
             ), redirect_stdout(output):
                 self.assertEqual(main(["stop", "--repo", str(repository), "--json"]), 0)
             self.assertEqual(json.loads(output.getvalue())["schema_version"], 1)
+
+    def test_main_enable_uses_the_versioned_provider_without_path_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = git_repository(root)
+            installation = VersionedInstallation(
+                "0.25.1", "test", root,
+                root / "python",
+                root / "codebase-atlas", root / "provider",
+                "provider-test", "a" * 64, "b" * 64,
+            )
+            captured = {}
+
+            def enabled(_repository, **kwargs):
+                captured.update(kwargs)
+                return ({
+                    "schema_version": 1,
+                    "operation": "enable",
+                    "status": "ready",
+                    "repository": str(repository),
+                    "atlas_version": "test",
+                    "mutates": False,
+                }, 0)
+
+            with (
+                patch(
+                    "codebase_atlas.simple_cli._enable_runtime_installation",
+                    return_value=installation,
+                ),
+                patch("codebase_atlas.simple_cli._same_executable", return_value=True),
+                patch("codebase_atlas.simple_cli.enable_project", side_effect=enabled),
+                redirect_stdout(StringIO()),
+            ):
+                code = main(["enable", "--repo", str(repository), "--json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(captured["cbm_binary"], installation.provider_binary)
 
     def test_update_is_noop_when_latest_stable_is_current(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

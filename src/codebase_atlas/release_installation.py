@@ -442,6 +442,29 @@ def _install_wheel(
     return python, executable
 
 
+def _relocate_environment_scripts(
+    environment: Path, staged_python: Path, published_python: Path
+) -> None:
+    """Rewrite POSIX venv launchers before the staged environment is renamed."""
+    if os.name == "nt":
+        return
+    scripts = environment / "bin"
+    expected = b"#!" + os.fsencode(staged_python) + b"\n"
+    replacement = b"#!" + os.fsencode(published_python) + b"\n"
+    for script in scripts.iterdir():
+        try:
+            metadata = os.lstat(script)
+        except OSError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            continue
+        payload = script.read_bytes()
+        if not payload.startswith(expected):
+            continue
+        script.write_bytes(replacement + payload[len(expected):])
+        script.chmod(stat.S_IMODE(metadata.st_mode))
+
+
 def _installation_from_receipt(root: Path) -> VersionedInstallation:
     receipt_path = root / "installation.json"
     try:
@@ -548,6 +571,11 @@ def install_stable_release(
                 or (name != "python" and literal.is_symlink())
             ):
                 raise RuntimeError("Atlas wheel installer returned an unsafe executable")
+        _relocate_environment_scripts(
+            environment,
+            python,
+            destination / python.relative_to(stage),
+        )
         checked = runner(
             [str(python), "-m", "codebase_atlas.cli", "--version"],
             check=False, capture_output=True, text=True,

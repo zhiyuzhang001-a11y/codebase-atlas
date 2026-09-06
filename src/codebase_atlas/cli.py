@@ -18,7 +18,7 @@ import subprocess
 import webbrowser
 
 from . import __version__
-from .change_analysis import CHANGE_INTENTS, analyze_change
+from .change_analysis import CHANGE_INTENTS, RESPONSE_MODES, analyze_change
 from .codex_integration import PROJECT_RULE, codex_apply, codex_plan, codex_remove
 from .config import (
     AtlasConfig,
@@ -318,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     analyze.add_argument("symbol")
     analyze.add_argument("--intent", choices=CHANGE_INTENTS, default="change_behavior")
+    analyze.add_argument("--response-mode", choices=RESPONSE_MODES, default="full")
     for action in query._actions:
         if action.dest in {"help", "query_type", "symbol", "relation"}:
             continue
@@ -1271,6 +1272,7 @@ def main(argv: list[str] | None = None) -> int:
                         timeout_ms=args.timeout_ms,
                         index_status=args.index_status,
                         stale_policy=args.stale_policy,
+                        response_mode=args.response_mode,
                     ),
                     ensure_ascii=False,
                     indent=2,

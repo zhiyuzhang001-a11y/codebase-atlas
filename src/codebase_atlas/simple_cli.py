@@ -15,6 +15,7 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 import time
 from typing import Any
 
@@ -47,6 +48,7 @@ from .release_installation import (
     VersionedInstallation,
     fetch_stable_release,
     install_stable_release,
+    load_versioned_installation,
 )
 from .version_check import _version_tuple
 
@@ -229,6 +231,8 @@ def _tracked_sources(repository: Path, language: str) -> list[Path]:
         if not raw:
             continue
         relative = Path(os.fsdecode(raw))
+        if any(part.startswith(".") for part in relative.parts):
+            continue
         candidate = repository / relative
         try:
             metadata = os.lstat(candidate)
@@ -333,8 +337,11 @@ def _verification_query(
     nodes = positive.get("nodes")
     if not isinstance(nodes, list) or not any(
         isinstance(node, dict)
-        and isinstance(node.get("source"), dict)
-        and node["source"].get("path") == target_path
+        and any(
+            isinstance(node.get(field), dict)
+            and node[field].get("path") == target_path
+            for field in ("location", "source")
+        )
         for node in nodes
     ):
         raise RuntimeError("verification symbol did not resolve to the target source file")
@@ -462,6 +469,16 @@ def enable_project(
             configured.data_dir, configured.repository, configured.project
         )
         inspection = inspect_installation(configured, deep=True)
+        acceptance_state = load_lifecycle_state(
+            configured.data_dir, configured.repository, configured.project,
+            missing_status="ready",
+        )
+        if acceptance_state.status != "ready":
+            publish_lifecycle_state(
+                configured.data_dir,
+                acceptance_state.transition("ready", atlas_version=__version__),
+            )
+            state_mutated = True
         verification = _verification_query(configured, selected_config)
         if (
             not required_checks_ok(checks)
@@ -1042,6 +1059,44 @@ def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
         print("Codex connection configured; start a new task once to load the MCP entry.")
 
 
+def _enable_runtime_installation() -> VersionedInstallation:
+    try:
+        release = fetch_stable_release()
+    except OSError:
+        return load_versioned_installation(__version__)
+    installation, _created = install_stable_release(release)
+    return installation
+
+
+def _same_executable(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except OSError:
+        return left.resolve() == right.resolve()
+
+
+def _delegated_enable_arguments(args: argparse.Namespace) -> list[str]:
+    command = [
+        "-m", "codebase_atlas.simple_cli", "enable",
+        "--repo", str(args.repo), "--mode", args.mode,
+    ]
+    for option, value in (
+        ("--config", args.config),
+        ("--language", args.language),
+        ("--node", args.node),
+        ("--cbm-binary", args.cbm_binary),
+        ("--serena-python", args.serena_python),
+        ("--node-bin-dir", args.node_bin_dir),
+        ("--tsconfig", args.tsconfig),
+        ("--data-dir", args.data_dir),
+    ):
+        if value is not None:
+            command.extend((option, str(value)))
+    if args.json:
+        command.append("--json")
+    return command
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="atlas")
     parser.add_argument("--version", action="version", version=__version__)
@@ -1073,6 +1128,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "enable":
+            installation = _enable_runtime_installation()
+            if not _same_executable(Path(sys.executable), installation.python):
+                completed = subprocess.run(
+                    [str(installation.python), *_delegated_enable_arguments(args)],
+                    check=False,
+                )
+                return completed.returncode
+            if args.cbm_binary is None:
+                args.cbm_binary = installation.provider_binary
             payload, code = enable_project(
                 args.repo, config_path=args.config, language=args.language,
                 node=args.node, cbm_binary=args.cbm_binary,
