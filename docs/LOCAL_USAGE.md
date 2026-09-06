@@ -8,13 +8,15 @@ version-controlled `docs/CODEX_DEPLOYMENT_RULES.md`. It requires stable GitHub
 Release assets, checksum verification, project isolation and an end-to-end
 identity/health/query acceptance gate.
 
-## Four-command project lifecycle
+## Simple project lifecycle and diagnostics
 
 After the one-time machine installation of Codebase Atlas, ordinary project
 management uses only:
 
 ```bash
 atlas enable --repo /absolute/path/to/repository
+atlas status --repo /absolute/path/to/repository
+atlas verify --repo /absolute/path/to/repository
 atlas stop --repo /absolute/path/to/repository
 atlas update --repo /absolute/path/to/repository
 atlas remove --repo /absolute/path/to/repository
@@ -28,6 +30,11 @@ preserves configuration and data. `update` means a verified software upgrade;
 routine source edits refresh automatically before the next query. `remove`
 moves Atlas-owned project assets to a verified recovery receipt rather than
 permanently deleting them. Add `--json` for the stable structured result.
+
+`status` is a lightweight read-only observation and reports the current Codex
+task connection as unknown unless a task has actually proved it. `verify` runs
+runtime, freshness, deep database, Codex configuration and target-query checks;
+it refuses a stale or stopped project rather than refreshing or enabling it.
 
 The first MCP registration requires one new Codex task. The 0.25 `mcp-auto`
 bootstrap then rechecks exact project identity, lifecycle state and selected

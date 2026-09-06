@@ -1,4 +1,4 @@
-"""Four-command project lifecycle interface for Codebase Atlas."""
+"""Simple project lifecycle and diagnostics for Codebase Atlas."""
 
 from __future__ import annotations
 
@@ -31,12 +31,14 @@ from .lifecycle import (
 )
 from .maintenance import inspect_installation
 from .onboarding import OnboardingInputs, apply_plan, build_plan
+from .operations import operational_index_status
 from .project_discovery import ProjectResolution, resolve_project
 from .project_lifecycle import (
     ProjectLifecycleState,
     lifecycle_state_path,
     load_lifecycle_state,
     load_removal_marker,
+    operational_lifecycle_status,
     project_recovery_root,
     publish_lifecycle_state,
     publish_removal_marker,
@@ -51,6 +53,53 @@ from .release_installation import (
     load_versioned_installation,
 )
 from .version_check import _version_tuple
+
+STATUS_MAX_DIRECTORIES = 4096
+STATUS_MAX_DEPTH = 6
+
+
+def _nested_git_repositories(repository: Path) -> dict[str, Any]:
+    """Find bounded, real nested Git roots without following symlinks."""
+    roots: list[str] = []
+    visited = 0
+    partial_reason = ""
+    for current, directories, _files in os.walk(repository, followlinks=False):
+        current_path = Path(current)
+        depth = len(current_path.relative_to(repository).parts)
+        directories[:] = sorted(
+            name for name in directories
+            if name != ".git" and not (current_path / name).is_symlink()
+        )
+        if depth >= STATUS_MAX_DEPTH:
+            if directories:
+                partial_reason = "nested_repository_depth_budget_exceeded"
+            directories[:] = []
+            continue
+        retained: list[str] = []
+        for name in directories:
+            visited += 1
+            if visited > STATUS_MAX_DIRECTORIES:
+                partial_reason = "nested_repository_directory_budget_exceeded"
+                directories[:] = []
+                break
+            candidate = current_path / name
+            marker = candidate / ".git"
+            if os.path.lexists(marker):
+                roots.append(candidate.relative_to(repository).as_posix())
+            else:
+                retained.append(name)
+        else:
+            directories[:] = retained
+            continue
+        break
+    return {
+        "status": "partial" if partial_reason else "complete",
+        "repositories": roots,
+        "visited_directories": min(visited, STATUS_MAX_DIRECTORIES),
+        "max_directories": STATUS_MAX_DIRECTORIES,
+        "max_depth": STATUS_MAX_DEPTH,
+        "reason": partial_reason or "bounded_scan_complete",
+    }
 
 
 def _result(
@@ -585,6 +634,196 @@ def enable_project(
         operation_lock.release()
 
 
+def _codex_project_status(config_path: Path, repository: Path) -> dict[str, Any]:
+    try:
+        plan = codex_plan(
+            config_path, scope="project", codex_project_root=repository
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {
+            "status": "invalid",
+            "ok": False,
+            "reason": "codex_project_config_unreadable",
+            "detail": str(exc),
+        }
+    existing = str(plan.get("existing", "unknown"))
+    states = {
+        "matching": ("configured", True, "codex_project_mcp_matches"),
+        "absent": ("not_configured", False, "codex_project_mcp_missing"),
+        "managed_different": ("outdated", False, "codex_project_mcp_outdated"),
+        "conflict": ("conflict", False, "codex_project_mcp_conflict"),
+    }
+    status, ok, reason = states.get(
+        existing, ("unknown", False, "codex_project_mcp_state_unknown")
+    )
+    return {
+        "status": status,
+        "ok": ok,
+        "reason": reason,
+        "existing": existing,
+        "target": plan.get("target"),
+    }
+
+
+def status_project(repository: Path) -> tuple[dict[str, Any], int]:
+    """Read the lightweight state of one exact project without starting providers."""
+    root, resolution = _repository_root(repository)
+    nested = _nested_git_repositories(root)
+    removal = load_removal_marker(root)
+    if removal is not None:
+        state = str(removal["status"])
+        return _result(
+            "status", state, root, mutates=False,
+            project=str(removal["project"]), project_state=state,
+            index_status="recovery_area", codex_config_status="unknown",
+            current_task_connection="unknown", task_reload_required=None,
+            nested_repositories=nested,
+            checks=[{
+                "name": "project_lifecycle", "ok": False,
+                "status": state,
+                "reason": "project_removed" if state == "removed" else "project_removal_in_progress",
+            }],
+            next_action=(
+                f"atlas enable --repo {root}"
+                if state == "removed"
+                else "finish or recover the active removal operation"
+            ),
+        ), 0
+    if resolution.config is None:
+        return _result(
+            "status", "not_enabled", root, mutates=False,
+            project_state="not_enabled", index_status="unavailable",
+            codex_config_status="not_configured",
+            current_task_connection="unknown", task_reload_required=None,
+            nested_repositories=nested,
+            checks=[{
+                "name": "project_discovery", "ok": True,
+                "status": resolution.status, "reason": resolution.reason,
+            }],
+            next_action=f"atlas enable --repo {root}",
+        ), 0
+    config = AtlasConfig.load(resolution.config)
+    lifecycle = operational_lifecycle_status(
+        config.data_dir, config.repository, config.project
+    )
+    index = operational_index_status(
+        config.data_dir, config.repository, config.cache_dir, config.project
+    )
+    codex = _codex_project_status(resolution.config, root)
+    project_state = str(lifecycle.get("status", "unknown"))
+    index_status = str(index.get("status", "unknown"))
+    if project_state != "ready":
+        observed = project_state
+        next_action = (
+            f"atlas enable --repo {root}"
+            if project_state in {"stopped", "failed"}
+            else "wait for the active Atlas lifecycle operation to finish"
+        )
+    elif not bool(index.get("ok")):
+        observed = index_status
+        next_action = f"atlas enable --repo {root}"
+    elif not bool(codex.get("ok")):
+        observed = "incomplete"
+        next_action = f"atlas enable --repo {root}"
+    else:
+        observed = "ready"
+        next_action = "none"
+    return _result(
+        "status", observed, root, mutates=False,
+        project=config.project, project_state=project_state,
+        index_status=index_status, codex_config_status=codex["status"],
+        current_task_connection="unknown", task_reload_required=None,
+        nested_repositories=nested,
+        checks=[
+            {"name": "project_lifecycle", **lifecycle},
+            {"name": "index", **index},
+            {"name": "codex_project_mcp", **codex},
+        ],
+        next_action=next_action,
+    ), 0
+
+
+def verify_project(repository: Path) -> tuple[dict[str, Any], int]:
+    """Run the existing acceptance checks without refreshing project state."""
+    root, resolution = _repository_root(repository)
+    if resolution.config is None:
+        return _result(
+            "verify", "INCOMPLETE", root, mutates=False,
+            project_state="not_enabled", index_status="unavailable",
+            connection_status="not_configured",
+            reason_code="atlas_not_enabled",
+            next_action=f"atlas enable --repo {root}", checks=[],
+        ), 2
+    config = AtlasConfig.load(resolution.config)
+    lifecycle = operational_lifecycle_status(
+        config.data_dir, config.repository, config.project
+    )
+    if lifecycle.get("status") == "stopped":
+        return _result(
+            "verify", "BLOCKED", root, mutates=False,
+            project=config.project, project_state="stopped",
+            index_status="preserved", connection_status="stopped",
+            reason_code="project_stopped",
+            next_action=f"atlas enable --repo {root}",
+            checks=[{"name": "project_lifecycle", **lifecycle}],
+        ), 4
+    checks = diagnose(config)
+    freshness = index_freshness(
+        config.data_dir, config.repository, config.project
+    )
+    inspection = inspect_installation(config, deep=True)
+    codex = _codex_project_status(resolution.config, root)
+    results: list[dict[str, Any]] = [
+        {"name": "project_lifecycle", **lifecycle},
+        {"name": "runtime", "ok": required_checks_ok(checks), "checks": checks},
+        {"name": "index_freshness", **freshness},
+        {
+            "name": "provider_database", "ok": bool(inspection.get("ok")),
+            "status": inspection.get("status"),
+            "findings": inspection.get("findings", []),
+        },
+        {"name": "codex_project_mcp", **codex},
+    ]
+    prerequisites_ok = (
+        bool(lifecycle.get("ok"))
+        and required_checks_ok(checks)
+        and freshness.get("status") == "fresh"
+        and bool(inspection.get("ok"))
+        and bool(codex.get("ok"))
+    )
+    if not prerequisites_ok:
+        return _result(
+            "verify", "INCOMPLETE", root, mutates=False,
+            project=config.project,
+            project_state=str(lifecycle.get("status", "unknown")),
+            index_status=str(freshness.get("status", "unknown")),
+            connection_status=str(codex.get("status", "unknown")),
+            reason_code="acceptance_prerequisite_failed",
+            next_action=f"atlas enable --repo {root}", checks=results,
+        ), 2
+    try:
+        query = _verification_query(config, resolution.config)
+    except (OSError, RuntimeError, ValueError) as exc:
+        results.append({
+            "name": "verification_query", "ok": False,
+            "status": "failed", "reason": str(exc),
+        })
+        return _result(
+            "verify", "INCOMPLETE", root, mutates=False,
+            project=config.project, project_state="ready", index_status="fresh",
+            connection_status="configured",
+            reason_code="verification_query_failed",
+            next_action="inspect the failed verification query", checks=results,
+        ), 2
+    results.append({"name": "verification_query", "ok": True, **query})
+    return _result(
+        "verify", "PASS", root, mutates=False,
+        project=config.project, project_state="ready", index_status="fresh",
+        connection_status="configured", reason_code="all_checks_passed",
+        next_action="none", checks=results, verification=query,
+    ), 0
+
+
 def stop_project(
     repository: Path, *, timeout_seconds: float = 30.0
 ) -> tuple[dict[str, Any], int]:
@@ -1069,6 +1308,12 @@ def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
     status = payload["status"]
     repository = payload["repository"]
     print(f"Atlas {operation}: {status} — {repository}")
+    if operation == "status":
+        print(f"Project: {payload.get('project_state', 'unknown')}")
+        print(f"Index: {payload.get('index_status', 'unknown')}")
+        print(f"Codex: {payload.get('codex_config_status', 'unknown')}; current task unknown")
+    if payload.get("next_action") and payload["next_action"] != "none":
+        print(f"Next action: {payload['next_action']}")
     if payload.get("error"):
         print(f"Error: {payload['error']}")
     if payload.get("current_session_refresh_required"):
@@ -1133,6 +1378,12 @@ def main(argv: list[str] | None = None) -> int:
     stop.add_argument("--repo", type=Path, default=Path.cwd())
     stop.add_argument("--timeout", type=float, default=30.0)
     stop.add_argument("--json", action="store_true")
+    status = commands.add_parser("status", help="show read-only Atlas project status")
+    status.add_argument("--repo", type=Path, default=Path.cwd())
+    status.add_argument("--json", action="store_true")
+    verify = commands.add_parser("verify", help="run read-only Atlas acceptance checks")
+    verify.add_argument("--repo", type=Path, default=Path.cwd())
+    verify.add_argument("--json", action="store_true")
     update = commands.add_parser("update", help="update this project to the latest stable Atlas Release")
     update.add_argument("--repo", type=Path, default=Path.cwd())
     update.add_argument("--timeout", type=float, default=30.0)
@@ -1159,6 +1410,10 @@ def main(argv: list[str] | None = None) -> int:
                 serena_python=args.serena_python, node_bin_dir=args.node_bin_dir,
                 tsconfig=args.tsconfig, data_dir=args.data_dir, mode=args.mode,
             )
+        elif args.command == "status":
+            payload, code = status_project(args.repo)
+        elif args.command == "verify":
+            payload, code = verify_project(args.repo)
         elif args.command == "stop":
             if args.timeout < 0 or args.timeout > 300:
                 raise ValueError("--timeout must be between 0 and 300 seconds")

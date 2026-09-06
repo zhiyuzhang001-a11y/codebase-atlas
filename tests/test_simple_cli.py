@@ -26,7 +26,9 @@ from codebase_atlas.simple_cli import (
     enable_project,
     main,
     remove_project,
+    status_project,
     stop_project,
+    verify_project,
 )
 from codebase_atlas.simple_cli import update_project
 from codebase_atlas.release_installation import VersionedInstallation
@@ -53,6 +55,116 @@ def configured_project(root: Path) -> tuple[Path, AtlasConfig, Path]:
 
 
 class SimpleCliTests(unittest.TestCase):
+    def test_status_reports_unconfigured_repository_without_mutating(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            before = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            result, code = status_project(repository)
+            after = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "not_enabled")
+            self.assertEqual(result["project_state"], "not_enabled")
+            self.assertFalse(result["mutates"])
+            self.assertEqual(before, after)
+
+    def test_status_reports_nested_git_repository_without_descending(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            nested = repository / "nested"
+            nested.mkdir()
+            subprocess.run(["git", "-C", str(nested), "init", "-q"], check=True)
+            deeper = nested / "not-scanned"
+            deeper.mkdir()
+            subprocess.run(["git", "-C", str(deeper), "init", "-q"], check=True)
+            result, code = status_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["nested_repositories"]["status"], "complete")
+            self.assertEqual(result["nested_repositories"]["repositories"], ["nested"])
+
+    def test_status_combines_lifecycle_index_and_codex_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={"status": "ready", "ok": True, "reason": "project_ready"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.operational_index_status",
+                    return_value={"status": "fresh", "ok": True, "reason": "current"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"existing": "matching", "target": str(repository / ".codex/config.toml")},
+                ),
+            ):
+                result, code = status_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["project"], config.project)
+            self.assertEqual(result["codex_config_status"], "configured")
+            self.assertEqual(result["current_task_connection"], "unknown")
+            self.assertIsNone(result["task_reload_required"])
+
+    def test_verify_stopped_project_does_not_query(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, _config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={"status": "stopped", "ok": False, "reason": "project_stopped"},
+                ),
+                patch("codebase_atlas.simple_cli._verification_query") as query,
+            ):
+                result, code = verify_project(repository)
+            self.assertEqual(code, 4)
+            self.assertEqual(result["status"], "BLOCKED")
+            query.assert_not_called()
+
+    def test_verify_reuses_acceptance_checks_and_query(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            ready_checks = [{"name": "runtime", "ok": True, "required": True}]
+            verification = {
+                "symbol": "target", "target_path": "target.py",
+                "matched_nodes": 1, "cross_project_negative": "pass",
+            }
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={"status": "ready", "ok": True, "reason": "project_ready"},
+                ),
+                patch("codebase_atlas.simple_cli.diagnose", return_value=ready_checks),
+                patch(
+                    "codebase_atlas.simple_cli.index_freshness",
+                    return_value={"status": "fresh", "ok": True, "reason": "current"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.inspect_installation",
+                    return_value={"status": "healthy", "ok": True, "findings": []},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"existing": "matching", "target": str(repository / ".codex/config.toml")},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli._verification_query",
+                    return_value=verification,
+                ) as query,
+            ):
+                result, code = verify_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["project"], config.project)
+            self.assertEqual(result["verification"], verification)
+            query.assert_called_once_with(config, path)
+
     def test_enable_runtime_prefers_latest_verified_stable_release(self) -> None:
         installation = VersionedInstallation(
             "0.25.1", "test", Path("/installation"), Path("/python"),
