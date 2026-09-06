@@ -244,6 +244,22 @@ def _tracked_sources(repository: Path, language: str) -> list[Path]:
             and not stat.S_ISLNK(metadata.st_mode)
         ):
             paths.append(relative)
+    deprioritized = {
+        "example", "examples", "fixture", "fixtures", "node_modules",
+        "test", "tests", "third_party", "vendor",
+    }
+
+    def acceptance_rank(relative: Path) -> tuple[int, str]:
+        parts = tuple(part.lower() for part in relative.parts)
+        if parts and parts[0] in {"app", "lib", "src"}:
+            group = 0
+        elif any(part in deprioritized for part in parts):
+            group = 2
+        else:
+            group = 1
+        return group, relative.as_posix()
+
+    paths.sort(key=acceptance_rank)
     return paths
 
 

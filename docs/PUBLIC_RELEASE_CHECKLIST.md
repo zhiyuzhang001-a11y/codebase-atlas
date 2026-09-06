@@ -55,9 +55,18 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 - [x] Add focused regressions and pass the complete local product suite.
 - [x] Pass Python/TypeScript, compact/full response, project isolation,
   stop/resume and real MCP stdio dogfood gates.
-- [ ] Pass final publication readiness, remote matrix, package lifecycle and
+- [x] Pass final publication readiness, remote matrix, package lifecycle and
   managed Provider asset gates on the exact release commit.
-- [ ] Publish stable `v0.25.1` from the exact accepted commit.
+- [x] Publish stable `v0.25.1` from the exact accepted commit.
+
+## 0.25.2 lifecycle acceptance candidate correction
+
+- [x] Reproduce a tracked fixture being selected ahead of indexed product
+  source during `atlas enable` verification.
+- [ ] Pass focused regression, complete local suite, publication readiness,
+  remote matrix and managed Provider asset gates on the exact candidate.
+- [ ] Publish stable `v0.25.2`, upgrade the saved project and pass a real MCP
+  query from a newly started Codex task.
 
 ## 0.24.0 automatic on-query refresh
 
