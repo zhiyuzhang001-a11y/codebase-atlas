@@ -7,6 +7,10 @@ address the observed behavior.
 
 ## Open
 
+No open self-use findings at this checkpoint.
+
+## Resolved
+
 ### SELF-010: cross-project refreshes raced in the shared Provider daemon
 
 - Observed task: run two real repository refreshes concurrently in the
@@ -19,10 +23,11 @@ address the observed behavior.
   directory creation. Both Windows architectures also retained daemon
   log/lifetime-lock handles long enough for immediate fixture cleanup to fail.
 - Safe fallback: reject the architecture gate and do not merge or release.
-- Planned resolution: validate project names lexically without racing two path
-  resolutions, serialize only Provider mutation calls across projects, retain
-  concurrent read queries, wait for the private non-permanent daemon to retire
-  in real Windows fixtures, then rerun local and six-architecture gates.
+- Resolution: project names are validated lexically without racing two path
+  resolutions; a machine-scoped lock serializes only Provider mutations while
+  read queries remain concurrent; real Windows fixtures wait for their private
+  non-permanent daemon to retire. Local dual-repository isolation passed, and
+  all six architectures passed qualification run 34137764725.
 
 ### SELF-011: Serena child-exit diagnostics omitted stderr
 
@@ -33,10 +38,10 @@ address the observed behavior.
   (exit=1)`; concurrent clients also wrote to one shared `runner.stderr.log`, so
   the failed process's diagnostic could not be attributed reliably.
 - Safe fallback: reject the architecture gate and avoid guessing at the cause.
-- Planned resolution: give each runner a private stderr log, include a bounded
-  tail in child-exit errors, clean successful-run logs, and rerun the failing
-  architecture before deciding whether a deeper Serena coordination fix is
-  required.
+- Resolution: each runner has a private stderr log, child-exit errors include a
+  bounded stderr tail, and successful-run logs are cleaned. The diagnostics
+  exposed the missing runtime dependency without cross-process ambiguity; the
+  resulting runtime fix passed all six architectures in run 34137764725.
 
 ### SELF-012: cleanup probed a retiring Unix daemon unnecessarily
 
@@ -49,8 +54,9 @@ address the observed behavior.
   the private fixture tree.
 - Safe fallback: reject the platform job even though its isolation assertions
   passed.
-- Planned resolution: poll daemon retirement only on Windows, where open file
-  handles block fixture removal, then rerun the cross-platform gate.
+- Resolution: daemon retirement is polled only on Windows, where open handles
+  block fixture removal. Linux ARM and every other target passed qualification
+  run 34137764725.
 
 ### SELF-013: project Codex routing still translated newlines on Windows
 
@@ -63,8 +69,9 @@ address the observed behavior.
   acceptance correctly failed closed and preserved the unexpected file.
 - Safe fallback: reject the installed-candidate lifecycle gate and do not
   weaken transaction comparison.
-- Planned resolution: disable newline translation at every project Codex
-  config write/update/remove path and cover the file-open contract directly.
+- Resolution: newline translation is disabled at every project Codex config
+  write, update, and remove path, with direct regression coverage. Both Windows
+  architectures passed installed lifecycle qualification in run 34137764725.
 
 ### SELF-014: warm-query performance gate ignored Windows timer granularity
 
@@ -75,9 +82,9 @@ address the observed behavior.
   scheduling quantum moved p95 above the POSIX-derived `2.022 ms` threshold.
 - Safe fallback: treat the job as failed and inspect the sample distribution;
   do not attribute the failure to a product regression.
-- Planned resolution: retain the strict POSIX threshold and use a bounded
-  `20 ms` Windows threshold that covers timer/scheduler granularity while still
-  catching meaningful regressions.
+- Resolution: POSIX keeps the strict threshold; Windows uses a bounded `20 ms`
+  threshold that covers its timer/scheduler quantum while still catching
+  meaningful regressions. The full base CI matrix passed on the final code.
 
 ### SELF-015: Serena stdout waiting used Unix-only pipe selection
 
@@ -87,8 +94,9 @@ address the observed behavior.
 - Actual evidence: `select.select()` was called on a Windows pipe and raised
   `WinError 10038` because Windows `select` accepts sockets only.
 - Safe fallback: return an explicit tool error and reject the qualification.
-- Planned resolution: drain stdout on a dedicated thread into a bounded-wait
-  queue, matching the cross-platform Provider transport pattern.
+- Resolution: stdout is drained on a dedicated reader thread into a
+  bounded-wait queue, matching the cross-platform Provider transport pattern.
+  Local real multi-MCP Serena stress and both Windows architecture jobs passed.
 
 ### SELF-016: TypeScript scope membership compared Windows path spellings
 
@@ -99,8 +107,10 @@ address the observed behavior.
   compiler file list used the long spelling, so string-set membership falsely
   reported the file outside the project.
 - Safe fallback: reject the query rather than analyze the wrong project.
-- Planned resolution: canonicalize both the requested target and configured
-  compiler roots through the filesystem before membership comparison.
+- Resolution: the requested target, compiler file list, and configured roots
+  are canonicalized through the filesystem before comparison and duplicate
+  roots are removed. Both Windows architecture jobs passed TypeScript
+  qualification in run 34137764725.
 
 ### SELF-017: Serena preflight accepted Python without its LS installer
 
@@ -112,14 +122,13 @@ address the observed behavior.
   first semantic query failed because neither `uvx` nor `uv` was on PATH.
 - Safe fallback: reject the qualification and retain the fresh structural
   generation without claiming semantic completeness.
-- Planned resolution: expose the configured interpreter's script directory,
-  require uv/uvx in Python runtime checks, and install/verify a pinned uv in the
-  six-architecture qualification environment.
+- Resolution: Provider startup exposes both portable interpreter script
+  layouts, Python runtime checks require uv/uvx, and the qualification workflow
+  installs and verifies pinned uv from Python's reported scripts directory.
+  All six architectures passed Python qualification in run 34137764725.
 - Follow-up evidence: Windows system Python installs console scripts in a
   `Scripts` child rather than beside `python.exe`; both layouts must be searched
   and workflow verification must use Python's reported scripts directory.
-
-## Resolved
 
 ### SELF-001: mixed-language repository selects an unrelated fixture project
 
