@@ -90,6 +90,20 @@ def _restore_file(path: Path, payload: bytes | None) -> None:
             os.unlink(raw_temporary)
 
 
+def _provider_database_path(cache_dir: Path, project: str) -> Path:
+    """Build a contained Provider database path without resolving a live race."""
+    if (
+        not project
+        or project in {".", ".."}
+        or any(separator in project for separator in ("/", "\\", ":", "\0"))
+    ):
+        raise RefreshPlanError("Provider project identity is not path-safe")
+    database = cache_dir / f"{project}.db"
+    if database.parent != cache_dir:
+        raise RefreshPlanError("Provider project identity is not path-safe")
+    return database
+
+
 @dataclass
 class ProviderDatabaseBackup:
     destination: Path
@@ -424,9 +438,11 @@ class RefreshCoordinator:
                         previous_source_fingerprint=str(previous_fingerprint) if previous_fingerprint else None,
                     )
 
-            database = self.config.cache_dir / f"{self.config.project}.db"
-            if database.resolve().parent != self.config.cache_dir.resolve():
-                raise RefreshPlanError("Provider project identity is not path-safe")
+            # Cache the root once. On Windows, concurrent directory creation
+            # can switch resolve() between an 8.3 prefix and its long spelling
+            # even though the underlying directory identity is unchanged.
+            cache_dir = self.config.cache_dir
+            database = _provider_database_path(cache_dir, self.config.project)
             database.parent.mkdir(parents=True, exist_ok=True)
             state_before = _snapshot_file(state_path(self.config.data_dir))
             manifest_before = _snapshot_file(manifest_path(self.config.data_dir))

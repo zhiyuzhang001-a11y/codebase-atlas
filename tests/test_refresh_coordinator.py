@@ -25,7 +25,9 @@ from codebase_atlas.python_registration_store import (
 )
 from codebase_atlas.refresh_coordinator import (
     RefreshCoordinator,
+    RefreshPlanError,
     SnapshotWaitTimeout,
+    _provider_database_path,
     refresh_with_retry,
 )
 from codebase_atlas.lifecycle import ProjectRefreshLease
@@ -161,6 +163,20 @@ def external_refresh_until_phase(
 
 
 class RefreshCoordinatorTests(unittest.TestCase):
+    def test_provider_database_path_is_lexically_contained_without_resolve(self) -> None:
+        cache = Path("cache-root")
+        with patch.object(Path, "resolve", side_effect=AssertionError("must not resolve")):
+            self.assertEqual(
+                _provider_database_path(cache, "atlas-project-123"),
+                cache / "atlas-project-123.db",
+            )
+        for project in (
+            "", ".", "..", "../foreign", "sub/project", "sub\\project", "C:ads"
+        ):
+            with self.subTest(project=project):
+                with self.assertRaises(RefreshPlanError):
+                    _provider_database_path(cache, project)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

@@ -14,13 +14,15 @@ address the observed behavior.
 - Expected: both distinct projects publish fresh, isolated generations and the
   final frontend disconnect releases all private-fixture files.
 - Actual evidence: Windows x86_64 intermittently returned one `refreshed` and
-  one `failed`; both Windows architectures retained daemon log/lifetime-lock
-  handles long enough for immediate fixture cleanup to fail.
+  one `failed`; improved diagnostics then identified a false path-safety
+  rejection caused by 8.3/long-path spelling changes during concurrent
+  directory creation. Both Windows architectures also retained daemon
+  log/lifetime-lock handles long enough for immediate fixture cleanup to fail.
 - Safe fallback: reject the architecture gate and do not merge or release.
-- Planned resolution: serialize only Provider mutation calls across projects,
-  retain concurrent read queries, wait for the private non-permanent daemon to
-  retire in real integration fixtures, then rerun local and six-architecture
-  regression gates.
+- Planned resolution: validate project names lexically without racing two path
+  resolutions, serialize only Provider mutation calls across projects, retain
+  concurrent read queries, wait for the private non-permanent daemon to retire
+  in real Windows fixtures, then rerun local and six-architecture gates.
 
 ### SELF-011: Serena child-exit diagnostics omitted stderr
 
