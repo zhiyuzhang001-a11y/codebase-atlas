@@ -29,7 +29,7 @@ class LifecycleRecoveryTests(unittest.TestCase):
             routing.apply()
             candidate = config.with_project("changed")
             journal.allow(config_path, candidate.render().encode())
-            config_path.write_text(candidate.render(), encoding="utf-8")
+            candidate.write(config_path)
             recovered = recover_lifecycle_transaction(repository)
             self.assertEqual(recovered["action"], "restored_previous_state")
             self.assertEqual(config_path.read_bytes(), original)

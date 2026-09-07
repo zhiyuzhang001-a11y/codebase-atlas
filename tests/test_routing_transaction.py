@@ -96,6 +96,7 @@ class RoutingTransactionTests(unittest.TestCase):
             original = root / "AGENTS.md"
             original.write_bytes(b"custom rules")
             original.chmod(0o600)
+            original_mode = original.stat().st_mode & 0o777
             transaction = RoutingTransaction(root)
             publish = transaction._publish
 
@@ -108,7 +109,7 @@ class RoutingTransactionTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "injected"):
                     transaction.apply()
             self.assertEqual(original.read_bytes(), b"custom rules")
-            self.assertEqual(original.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(original.stat().st_mode & 0o777, original_mode)
 
     def test_rollback_preserves_concurrent_user_edit(self):
         with tempfile.TemporaryDirectory() as raw:

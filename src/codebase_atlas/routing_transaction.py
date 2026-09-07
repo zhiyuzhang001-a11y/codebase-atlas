@@ -13,7 +13,10 @@ import hashlib
 from pathlib import Path
 import tempfile
 
-from .routing_assets import AssetPlan, BEGIN, END, KNOWN_RULES, KNOWN_SKILLS, _read, plan_routing
+from .routing_assets import (
+    AssetPlan, BEGIN, END, KNOWN_RULES, KNOWN_SKILLS, _read, plan_routing,
+    portable_mode,
+)
 
 
 class RoutingTransaction:
@@ -37,7 +40,7 @@ class RoutingTransaction:
     def recovery_record(self) -> list[dict]:
         """Serialize changed assets into the private project removal receipt."""
         return [{
-            "path": str(plan.path.relative_to(self.repository)),
+            "path": plan.path.relative_to(self.repository).as_posix(),
             "original": base64.b64encode(plan.before).decode("ascii") if plan.before is not None else None,
             "removed": base64.b64encode(plan.after).decode("ascii") if plan.after is not None else None,
             "mode": plan.mode,
@@ -112,7 +115,10 @@ class RoutingTransaction:
     def _after_mode(self, plan: AssetPlan) -> int | None:
         if plan.after is None:
             return None
-        return self._target_modes.get(plan.path, plan.mode if plan.mode is not None else 0o644)
+        requested = self._target_modes.get(
+            plan.path, plan.mode if plan.mode is not None else 0o644
+        )
+        return portable_mode(requested)
 
     def _check(self, plan: AssetPlan, expected: bytes | None, mode: int | None):
         _, actual, actual_mode = _read(self.repository, str(plan.path.relative_to(self.repository)))

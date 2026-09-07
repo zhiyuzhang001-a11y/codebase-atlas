@@ -442,7 +442,7 @@ class SimpleCliTests(unittest.TestCase):
                 temporary = config.cache_dir / "new-generation.db"
                 temporary.write_bytes(b"new generation")
                 temporary.replace(database)
-                path.write_text(config.render())
+                config.write(path)
                 return {"status": "failed", "error": "injected"}, 2
             with (
                 patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),

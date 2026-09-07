@@ -94,6 +94,14 @@ class AssetPlan:
     mode: int | None
 
 
+def portable_mode(mode: int) -> int:
+    """Return the permission representation the current OS can round-trip."""
+    value = stat.S_IMODE(mode)
+    if os.name == "nt":
+        return 0o666 if value & stat.S_IWRITE else 0o444
+    return value
+
+
 def _read(repository: Path, relative: str) -> tuple[Path, bytes | None, int | None]:
     path = repository / relative
     for parent in path.parents:
@@ -127,7 +135,7 @@ def _read(repository: Path, relative: str) -> tuple[Path, bytes | None, int | No
                                value.st_size, value.st_mtime_ns)
     if len(content) > 1024 * 1024 or signature(metadata) != signature(final) or signature(final) != signature(current):
         raise RuntimeError("routing asset changed or exceeded budget during inspection")
-    return path, content, stat.S_IMODE(metadata.st_mode)
+    return path, content, portable_mode(metadata.st_mode)
 
 
 def plan_routing(
