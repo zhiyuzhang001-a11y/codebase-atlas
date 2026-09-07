@@ -52,6 +52,20 @@ address the observed behavior.
 - Planned resolution: poll daemon retirement only on Windows, where open file
   handles block fixture removal, then rerun the cross-platform gate.
 
+### SELF-013: project Codex routing still translated newlines on Windows
+
+- Observed task: run `enable` from the installed 0.26 candidate wheel on
+  Windows x86_64.
+- Expected: the bytes authorized by lifecycle recovery exactly match the bytes
+  published to `.codex/config.toml`.
+- Actual evidence: project configuration writes used text mode's platform
+  newline translation, producing CRLF while the transaction authorized LF;
+  acceptance correctly failed closed and preserved the unexpected file.
+- Safe fallback: reject the installed-candidate lifecycle gate and do not
+  weaken transaction comparison.
+- Planned resolution: disable newline translation at every project Codex
+  config write/update/remove path and cover the file-open contract directly.
+
 ## Resolved
 
 ### SELF-001: mixed-language repository selects an unrelated fixture project
