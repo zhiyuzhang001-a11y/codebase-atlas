@@ -33,6 +33,22 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+## 0.26.0 simplicity and stability candidate
+
+- [x] Add compact read-only status/verify diagnostics and the four-command
+  lifecycle's complete Codex routing, rollback, and crash-recovery boundary.
+- [x] Pass full local, installed-candidate, upgrade/downgrade/uninstall, real
+  Codex, dual-repository, worktree, multi-MCP, and process-cleanup acceptance.
+- [x] Pass the final 12-combination OS/Python matrix and package lifecycle on
+  the exact candidate commit.
+- [x] Pass real Provider qualification on Linux, macOS, and Windows across
+  x86_64 and ARM64, including Python/TypeScript 10-round and 8-client/100-file
+  contention gates (Actions run 34137764725).
+- [x] Record and close reproducible Atlas self-use findings SELF-001–SELF-017.
+- [ ] Merge the accepted candidate, create the draft `v0.26.0` Release, verify
+  public assets in isolation, publish it, then deploy and verify the saved
+  project while retaining the prior verified installation.
+
 ## 0.25.0 four-command lifecycle candidate
 
 - [x] Implement idempotent enable/stop/update/remove with exact identity,

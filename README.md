@@ -2,10 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.25.2**. This patch makes lifecycle acceptance prefer
-product source over fixtures and tests. It retains the 0.25.1 self-bootstrap,
-relocated-launcher, real-query verification and intent-aware compact Change
-Brief improvements.
+Current stable release: **0.26.0**. This release adds compact status and verify
+diagnostics, transactionally managed Codex routing, durable lifecycle recovery,
+nested-repository discovery, and cross-platform multi-client qualification.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

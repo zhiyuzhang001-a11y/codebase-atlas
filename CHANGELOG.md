@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.26.0 — Unreleased
+## 0.26.0 — 2026-09-08
 
 - Add the compact `atlas status` and non-refreshing `atlas verify` diagnostics
   with explicit completeness, repository identity, and process-cleanup evidence.
@@ -12,6 +12,9 @@
   cross-project, worktree, and effective multi-MCP relationship gates.
 - Reject target paths outside the configured index language with structured
   incomplete evidence before starting the Provider.
+- Serialize shared Provider mutations without blocking concurrent reads, and
+  make Serena and TypeScript runtime handling portable across all six supported
+  OS/architecture targets.
 
 All notable release changes are recorded here. The package uses semantic versions;
 0.x minor versions may still refine interfaces within the documented support
