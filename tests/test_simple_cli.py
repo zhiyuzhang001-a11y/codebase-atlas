@@ -107,9 +107,27 @@ class SimpleCliTests(unittest.TestCase):
             nested = repository / "not-a-repository"
             nested.mkdir()
             (nested / ".git").write_text("invalid git marker", encoding="utf-8")
-            result, _code = status_project(repository)
+            result, code = status_project(repository)
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "incomplete")
             self.assertEqual(result["nested_repositories"]["repositories"], [])
             self.assertEqual(result["nested_repositories"]["status"], "partial")
+
+    def test_status_time_budget_is_explicit_and_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            before = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            with patch(
+                "codebase_atlas.simple_cli.STATUS_DISCOVERY_TIMEOUT_SECONDS", 0.0
+            ):
+                result, code = status_project(repository)
+            after = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(
+                result["reason_code"], "nested_repository_time_budget_exceeded"
+            )
+            self.assertEqual(before, after)
 
     def test_verification_refuses_missing_or_truncated_negative_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

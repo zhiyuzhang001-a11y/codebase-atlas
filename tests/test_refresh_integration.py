@@ -62,7 +62,8 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                 git(repository, "config", "user.email", "atlas@example.invalid")
                 git(repository, "config", "user.name", "Atlas Test")
                 (repository / "sample.py").write_text(
-                    f"def {symbol}():\n    return {index}\n"
+                    f"def {symbol}():\n    return {index}\n\n"
+                    f"def shared_symbol():\n    return 'repository-{index}'\n"
                 )
                 git(repository, "add", "sample.py")
                 git(repository, "commit", "-qm", "initial")
@@ -115,6 +116,18 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                     ))
                     self.assertEqual([node.name for node in own.nodes], [owner])
                     self.assertEqual(absent.nodes, ())
+                shared = [
+                    service.query(QueryRequest(
+                        "definition", "shared_symbol", {"timeout_ms": 30_000}
+                    ))
+                    for service in services
+                ]
+                self.assertEqual(
+                    [[node.name for node in result.nodes] for result in shared],
+                    [["shared_symbol"], ["shared_symbol"]],
+                )
+                shared_digests = [result.nodes[0].evidence_hash for result in shared]
+                self.assertNotEqual(shared_digests[0], shared_digests[1])
                 first_pid = transports[0].process.pid
                 second_pid = transports[1].process.pid
                 services[0].close()
@@ -130,8 +143,115 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                     "project_b_pid": second_pid,
                     "refresh_durations_ms": [item["duration_ms"] for item in results],
                     "foreign_fact_counts": [0, 0],
+                    "shared_source_digests": shared_digests,
                     "second_alive_after_first_close": True,
                 }, sort_keys=True))
+            finally:
+                for service in services:
+                    service.close()
+
+    def test_checkout_and_worktree_keep_distinct_projects_and_same_name_facts(self) -> None:
+        binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            primary = root / "primary"
+            worktree = root / "worktree"
+            primary.mkdir()
+            git(primary, "init", "-q")
+            git(primary, "config", "user.email", "atlas@example.invalid")
+            git(primary, "config", "user.name", "Atlas Test")
+            (primary / "sample.py").write_text(
+                "def shared_worktree_symbol():\n    return 'primary'\n\n"
+                "def primary_only_symbol():\n    return 1\n",
+                encoding="utf-8",
+            )
+            git(primary, "add", "sample.py")
+            git(primary, "commit", "-qm", "primary")
+            git(primary, "worktree", "add", "-qb", "alternate", str(worktree))
+            (worktree / "sample.py").write_text(
+                "def shared_worktree_symbol():\n    return 'worktree'\n\n"
+                "def worktree_only_symbol():\n    return 2\n",
+                encoding="utf-8",
+            )
+            git(worktree, "add", "sample.py")
+            git(worktree, "commit", "-qm", "worktree")
+            runtime_temporary = tempfile.TemporaryDirectory(
+                prefix="atlas-worktree-isolation.", dir="/private/tmp"
+            )
+            self.addCleanup(runtime_temporary.cleanup)
+            runtime = Path(runtime_temporary.name)
+            subprocess.run(["chmod", "-N", str(runtime)], check=True)
+            runtime.chmod(0o700)
+            environment = patch.dict(os.environ, {
+                "CBM_RUNTIME_DIR": str(runtime.resolve()),
+                "XDG_DATA_HOME": str((root / "xdg-data").resolve()),
+            })
+            environment.start()
+            self.addCleanup(environment.stop)
+            services = []
+            coordinators = []
+            configs = []
+            for index, repository in enumerate((primary, worktree)):
+                for name in (f"node-worktree-{index}", f"serena-worktree-{index}"):
+                    (root / name).touch()
+                project = provider_project_identity(repository)
+                config = AtlasConfig(
+                    repository, "python", root / f"node-worktree-{index}", binary,
+                    root / f"serena-worktree-{index}", root / f"data-worktree-{index}",
+                    project, provider_layout=SHARED_PROVIDER_LAYOUT,
+                )
+                status = operational_index_status(
+                    config.data_dir, repository, config.cache_dir, project
+                )
+                status["identity"] = {
+                    "repository": str(repository.resolve()), "project": project,
+                }
+                transport = CodebaseMemoryMcpTransport(
+                    binary, repository, config.cache_dir, exclusive=False,
+                    client_version=__version__,
+                )
+                provider = CodebaseMemoryImpactProvider(
+                    binary, repository, config.cache_dir, project, transport=transport
+                )
+                service = AtlasService(
+                    repository=repository, structural_provider=provider,
+                    impact_provider=provider, lifecycle=transport,
+                )
+                service.start()
+                configs.append(config)
+                services.append(service)
+                coordinators.append(RefreshCoordinator(config, transport, service, status))
+            try:
+                self.assertNotEqual(configs[0].project, configs[1].project)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    refreshed = list(executor.map(
+                        lambda coordinator: coordinator.refresh(timeout_ms=300_000),
+                        coordinators,
+                    ))
+                self.assertEqual(
+                    [result["status"] for result in refreshed],
+                    ["refreshed", "refreshed"],
+                    refreshed,
+                )
+                shared = [
+                    service.query(QueryRequest(
+                        "definition", "shared_worktree_symbol", {"timeout_ms": 30_000}
+                    )).nodes[0]
+                    for service in services
+                ]
+                self.assertNotEqual(shared[0].evidence_hash, shared[1].evidence_hash)
+                self.assertEqual(
+                    services[0].query(QueryRequest(
+                        "definition", "worktree_only_symbol", {"timeout_ms": 30_000}
+                    )).nodes,
+                    (),
+                )
+                self.assertEqual(
+                    services[1].query(QueryRequest(
+                        "definition", "primary_only_symbol", {"timeout_ms": 30_000}
+                    )).nodes,
+                    (),
+                )
             finally:
                 for service in services:
                     service.close()

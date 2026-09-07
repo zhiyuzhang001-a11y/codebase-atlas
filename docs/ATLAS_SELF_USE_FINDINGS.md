@@ -7,6 +7,10 @@ address the observed behavior.
 
 ## Open
 
+No open self-use findings at this checkpoint.
+
+## Resolved
+
 ### SELF-001: mixed-language repository selects an unrelated fixture project
 
 - Observed task: query the impact of `update_project` in
@@ -22,10 +26,11 @@ address the observed behavior.
   because the Python target was outside that TypeScript project.
 - Safe fallback: reject the Atlas evidence and inspect the relevant source and
   tests directly.
-- Follow-up: define mixed-language target routing, add a regression test, and
-  replace the raw provider exception with a stable diagnostic and remediation.
-
-## Resolved
+- Resolution: target language scope is checked before Provider startup. CLI
+  queries now return structured
+  `target_outside_indexed_language_scope`/exit 2 with one remediation; MCP
+  queries return the same reason as explicit incomplete evidence. Mixed-language
+  multi-index routing remains a separate future capability, not an implied fact.
 
 ### SELF-002: lifecycle rollback existed only in process memory
 
@@ -52,3 +57,14 @@ address the observed behavior.
 - Resolution: schema 3 provisional receipts are written before the marker and
   before source mutation. Recovery now handles interruption after routing
   removal or data movement and preserves conflicting user edits.
+
+### SELF-004: concurrency qualification accepted invalid runtime paths too late
+
+- Observed task: run the real four-client Python MCP qualification locally.
+- Expected: missing Node.js or Serena runtimes fail before indexing and stress.
+- Actual evidence: an empty Node lookup became the current directory and was
+  rejected only by the final doctor after the concurrency rounds had run.
+- Safe fallback: reject that run as a gate failure and rerun with the verified
+  bundled Node and installed Serena interpreter.
+- Resolution: the stress entrypoint now requires Provider, Node.js, and Serena
+  Python to be executable files before creating the test repository.

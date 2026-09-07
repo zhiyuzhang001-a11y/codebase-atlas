@@ -116,6 +116,19 @@ class QueryResponse:
     truncation: dict[str, Any] = field(default_factory=dict)
 
 
+def target_language_scope_reason(
+    indexed_language: str | None, target_path: str
+) -> str:
+    suffix = Path(target_path).suffix.lower() if target_path else ""
+    if indexed_language == "typescript" and suffix == ".py":
+        return "target_outside_indexed_language_scope"
+    if indexed_language == "python" and suffix in {
+        ".js", ".jsx", ".ts", ".tsx", ".mts", ".cts"
+    }:
+        return "target_outside_indexed_language_scope"
+    return ""
+
+
 class AtlasService:
     def __init__(
         self,
@@ -128,6 +141,7 @@ class AtlasService:
         lifecycle: CodebaseMemoryDaemon | None = None,
         registration_index: RegistrationIndex | None = None,
         session_continuations: bool = False,
+        indexed_language: str | None = None,
     ) -> None:
         self.repository = repository.resolve() if repository is not None else None
         self.structural_provider = structural_provider or impact_provider
@@ -137,6 +151,7 @@ class AtlasService:
         self.lifecycle = lifecycle
         self.registration_index = registration_index
         self.session_continuations = session_continuations
+        self.indexed_language = indexed_language
         self.started = False
         self._structural_started = False
         self._semantic_started = False
@@ -285,6 +300,12 @@ class AtlasService:
             raise RuntimeError("AtlasService.start() must be called before query()")
         started = monotonic()
         limits = self._limits(request)
+        target_path = str(request.parameters.get("target_path", ""))
+        if target_language_scope_reason(self.indexed_language, target_path):
+            return self._time_budget_response(
+                request.query_type, limits, started,
+                reason="target_outside_indexed_language_scope",
+            )
         if request.parameters.get("relation") == "registers":
             if self.registration_index is None:
                 return self._impact_response(

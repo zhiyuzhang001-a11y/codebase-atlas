@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -11,11 +12,17 @@ from scripts import run_multi_mcp_stress as stress_module
 from scripts.run_multi_mcp_stress import (
     parse_windows_process_table,
     remove_tree_with_retries,
+    require_executable,
     run_json,
 )
 
 
 class MultiMcpStressUnitTests(unittest.TestCase):
+    def test_runtime_preflight_rejects_a_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(Exception, "must be an executable file"):
+                require_executable(Path(raw), "Node.js")
+
     def test_parses_windows_process_inventory_for_cleanup_checks(self) -> None:
         table = parse_windows_process_table(
             '[{"ProcessId":12,"ParentProcessId":4,"CommandLine":"atlas mcp"},'

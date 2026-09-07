@@ -72,7 +72,7 @@ from .refresh_planner import (
     stage_generation_manifest_candidate,
 )
 from .runtime import required_checks_ok, runtime_checks
-from .service import AtlasService, QueryRequest
+from .service import AtlasService, QueryRequest, target_language_scope_reason
 from .session_update import disabled_session_update, session_start_update
 from .version_check import VersionNotifier
 from .web_ui import LocalUiServer
@@ -1102,6 +1102,28 @@ def main(argv: list[str] | None = None) -> int:
             if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
                 raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
         _apply_project_config(args)
+        if args.command in {"query", "analyze-change"}:
+            scope_reason = target_language_scope_reason(
+                args.language, str(args.target_path)
+            )
+            if scope_reason:
+                print(json.dumps({
+                    "schema_version": 1,
+                    "status": "error",
+                    "code": scope_reason,
+                    "message": (
+                        f"Target {args.target_path} is outside the configured "
+                        f"{args.language} index scope."
+                    ),
+                    "repository": str(args.repo.resolve()),
+                    "target_path": str(args.target_path),
+                    "indexed_language": args.language,
+                    "next_action": (
+                        "select a target covered by this index or explicitly "
+                        "re-enable the repository for the required language"
+                    ),
+                }, ensure_ascii=False, indent=2))
+                return 2
         lifecycle_status = operational_lifecycle_status(
             args.data_dir, args.repo, args.project
         )
@@ -1202,6 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
             lifecycle=lifecycle,
             registration_index=registration_index,
             session_continuations=args.command in {"mcp", "query-batch", "ui"},
+            indexed_language=args.language,
         )
         refresh_coordinator = (
             RefreshCoordinator(

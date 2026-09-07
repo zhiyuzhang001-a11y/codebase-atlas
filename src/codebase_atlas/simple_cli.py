@@ -74,6 +74,8 @@ from .providers.cbm_impact import CodebaseMemoryImpactProvider
 
 STATUS_MAX_DIRECTORIES = 4096
 STATUS_MAX_DEPTH = 6
+STATUS_DISCOVERY_TIMEOUT_SECONDS = 2.0
+STATUS_GIT_PROBE_TIMEOUT_SECONDS = 0.25
 
 
 def _nested_git_repositories(repository: Path) -> dict[str, Any]:
@@ -81,6 +83,8 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
     roots: list[str] = []
     visited = 0
     partial_reason = ""
+    started = time.monotonic()
+    deadline = started + STATUS_DISCOVERY_TIMEOUT_SECONDS
     def scan_error(_error: OSError) -> None:
         nonlocal partial_reason
         partial_reason = "nested_repository_scan_unavailable"
@@ -88,6 +92,9 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
     for current, directories, _files in os.walk(
         repository, followlinks=False, onerror=scan_error
     ):
+        if time.monotonic() >= deadline:
+            partial_reason = "nested_repository_time_budget_exceeded"
+            break
         current_path = Path(current)
         depth = len(current_path.relative_to(repository).parts)
         directories[:] = sorted(
@@ -101,6 +108,11 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
             continue
         retained: list[str] = []
         for name in directories:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                partial_reason = "nested_repository_time_budget_exceeded"
+                directories[:] = []
+                break
             visited += 1
             if visited > STATUS_MAX_DIRECTORIES:
                 partial_reason = "nested_repository_directory_budget_exceeded"
@@ -115,7 +127,8 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
                 try:
                     probe = subprocess.run(
                         ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
-                        capture_output=True, text=True, check=False, timeout=2,
+                        capture_output=True, text=True, check=False,
+                        timeout=min(STATUS_GIT_PROBE_TIMEOUT_SECONDS, remaining),
                     )
                     if probe.returncode == 0 and Path(probe.stdout.strip()).resolve() == candidate.resolve():
                         roots.append(candidate.relative_to(repository).as_posix())
@@ -135,6 +148,8 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
         "visited_directories": min(visited, STATUS_MAX_DIRECTORIES),
         "max_directories": STATUS_MAX_DIRECTORIES,
         "max_depth": STATUS_MAX_DEPTH,
+        "timeout_seconds": STATUS_DISCOVERY_TIMEOUT_SECONDS,
+        "elapsed_ms": round((time.monotonic() - started) * 1000.0, 3),
         "reason": partial_reason or "bounded_scan_complete",
     }
 
@@ -1034,8 +1049,9 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
     removal = load_removal_marker(root)
     if removal is not None:
         state = str(removal["status"])
+        discovery_complete = nested["status"] == "complete"
         return _result(
-            "status", state, root, mutates=False,
+            "status", state if discovery_complete else "incomplete", root, mutates=False,
             project=str(removal["project"]), project_state=state,
             index_status="recovery_area", codex_config_status="unknown",
             current_task_connection="unknown", task_reload_required=None,
@@ -1050,10 +1066,17 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
                 if state == "removed"
                 else "finish or recover the active removal operation"
             ),
-        ), 0
+            reason_code=(
+                "project_removed" if discovery_complete and state == "removed"
+                else "project_removal_in_progress" if discovery_complete
+                else nested["reason"]
+            ),
+        ), 0 if discovery_complete else 2
     if resolution.config is None:
+        discovery_complete = nested["status"] == "complete"
         return _result(
-            "status", "not_enabled", root, mutates=False,
+            "status", "not_enabled" if discovery_complete else "incomplete", root,
+            mutates=False,
             project_state="not_enabled", index_status="unavailable",
             codex_config_status="not_configured",
             current_task_connection="unknown", task_reload_required=None,
@@ -1063,7 +1086,10 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
                 "status": resolution.status, "reason": resolution.reason,
             }],
             next_action=f"atlas enable --repo {root}",
-        ), 0
+            reason_code=(
+                "atlas_not_enabled" if discovery_complete else nested["reason"]
+            ),
+        ), 0 if discovery_complete else 2
     config = AtlasConfig.load(resolution.config)
     lifecycle = operational_lifecycle_status(
         config.data_dir, config.repository, config.project
@@ -1090,6 +1116,15 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
     else:
         observed = "ready"
         next_action = "none"
+    if nested["status"] != "complete":
+        observed = "incomplete"
+        next_action = "inspect the partial nested repository discovery result"
+    reason_code = (
+        str(nested["reason"])
+        if nested["status"] != "complete"
+        else "project_ready" if observed == "ready"
+        else "project_state_observed"
+    )
     return _result(
         "status", observed, root, mutates=False,
         project=config.project, project_state=project_state,
@@ -1101,8 +1136,8 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
             {"name": "index", **index},
             {"name": "codex_project_mcp", **codex},
         ],
-        next_action=next_action,
-    ), 0
+        next_action=next_action, reason_code=reason_code,
+    ), 0 if nested["status"] == "complete" else 2
 
 
 class _VerificationTransport:
