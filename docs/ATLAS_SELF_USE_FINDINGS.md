@@ -66,6 +66,19 @@ address the observed behavior.
 - Planned resolution: disable newline translation at every project Codex
   config write/update/remove path and cover the file-open contract directly.
 
+### SELF-014: warm-query performance gate ignored Windows timer granularity
+
+- Observed task: run the full unit matrix on Windows/Python 3.11.
+- Expected: a no-scan, near-zero-median warm snapshot path passes a stable
+  performance gate.
+- Actual evidence: the median was `0.0 ms`, but one approximately `15 ms`
+  scheduling quantum moved p95 above the POSIX-derived `2.022 ms` threshold.
+- Safe fallback: treat the job as failed and inspect the sample distribution;
+  do not attribute the failure to a product regression.
+- Planned resolution: retain the strict POSIX threshold and use a bounded
+  `20 ms` Windows threshold that covers timer/scheduler granularity while still
+  catching meaningful regressions.
+
 ## Resolved
 
 ### SELF-001: mixed-language repository selects an unrelated fixture project
