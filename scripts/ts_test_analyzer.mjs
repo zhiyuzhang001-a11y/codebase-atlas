@@ -289,7 +289,12 @@ function loadProgram(repository, selectedConfig = '', targetPath = '') {
     // unrelated monorepo package from consuming the entire compiler heap.
     productionRoots = [canonicalTargetFile];
   }
-  const rootNames = [...new Set([...productionRoots, ...testFiles])];
+  // Windows can enumerate the same file once through an 8.3 root and once
+  // through its long spelling. Canonicalize before de-duplicating so the
+  // compiler cannot create duplicate declarations for one physical source.
+  const rootNames = [...new Set(
+    [...productionRoots, ...testFiles].map(filename => fs.realpathSync.native(filename)),
+  )];
   return ts.createProgram({ rootNames, options: config.options });
 }
 

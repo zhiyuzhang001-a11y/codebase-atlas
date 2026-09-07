@@ -158,6 +158,32 @@ def runtime_checks(
         ),
     ))
 
+    if language == "python":
+        serena_search_path = os.pathsep.join(
+            part for part in (
+                str(serena_path.parent) if serena_path else "",
+                os.environ.get("PATH", ""),
+            ) if part
+        )
+        uv_found = (
+            shutil.which("uvx", path=serena_search_path)
+            or shutil.which("uv", path=serena_search_path)
+        )
+        uv_path = Path(uv_found).absolute() if uv_found else None
+        checks.append(_check(
+            "serena_language_server_installer",
+            uv_path is not None,
+            path=uv_path,
+            detail=(
+                "uv/uvx is available for Serena language-server startup"
+                if uv_path else "neither uvx nor uv is available to Serena"
+            ),
+            remediation=(
+                "install uv beside the configured Serena Python interpreter "
+                "or make uv/uvx available on PATH"
+            ),
+        ))
+
     analyzer = _asset("ts_test_analyzer.mjs")
     runner_asset = _asset("serena_runner.py")
     checks.append(_check(

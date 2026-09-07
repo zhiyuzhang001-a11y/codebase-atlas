@@ -177,6 +177,11 @@ class SerenaSemanticProvider:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        environment["PATH"] = (
+            str(self.python.parent)
+            + os.pathsep
+            + environment.get("PATH", "")
+        )
         if self.node_bin_dir is not None:
             environment["PATH"] = str(self.node_bin_dir) + os.pathsep + environment.get("PATH", "")
         self._process = subprocess.Popen(

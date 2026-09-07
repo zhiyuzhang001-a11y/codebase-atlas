@@ -28,18 +28,51 @@ class RuntimeCheckTests(unittest.TestCase):
                     output = "1.7.1"
                 return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-            checks = runtime_checks(
-                repo,
-                language="python",
-                node=node,
-                cbm_binary=cbm,
-                serena_python=serena,
-                runner=runner,
-            )
+            with patch(
+                "codebase_atlas.runtime.shutil.which",
+                side_effect=lambda command, **_kwargs: (
+                    str(root / "uv") if command == "uv" else None
+                ),
+            ):
+                checks = runtime_checks(
+                    repo,
+                    language="python",
+                    node=node,
+                    cbm_binary=cbm,
+                    serena_python=serena,
+                    runner=runner,
+                )
             self.assertTrue(required_checks_ok(checks))
             by_name = {item["name"]: item for item in checks}
             self.assertEqual(by_name["node"]["version"], "20.18.0")
             self.assertEqual(by_name["serena_python"]["version"], "1.7.1")
+            self.assertTrue(by_name["serena_language_server_installer"]["ok"])
+
+    def test_python_runtime_requires_uv_for_serena_language_server(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+
+            def runner(_command, **_kwargs):
+                return SimpleNamespace(returncode=0, stdout="1.7.1", stderr="")
+
+            with patch("codebase_atlas.runtime.shutil.which", return_value=None):
+                checks = runtime_checks(
+                    repo,
+                    language="python",
+                    node=root / "node",
+                    cbm_binary=root / "cbm",
+                    serena_python=root / "python",
+                    runner=runner,
+                )
+            uv_check = next(
+                item for item in checks
+                if item["name"] == "serena_language_server_installer"
+            )
+            self.assertFalse(uv_check["ok"])
+            self.assertTrue(uv_check["required"])
+            self.assertFalse(required_checks_ok(checks))
 
     def test_missing_runtime_has_actionable_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

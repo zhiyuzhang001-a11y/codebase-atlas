@@ -102,6 +102,20 @@ address the observed behavior.
 - Planned resolution: canonicalize both the requested target and configured
   compiler roots through the filesystem before membership comparison.
 
+### SELF-017: Serena preflight accepted Python without its LS installer
+
+- Observed task: rerun the Python Windows multi-MCP qualification after stderr
+  attribution was fixed.
+- Expected: lifecycle acceptance rejects an environment that cannot start
+  Serena's configured Python language server.
+- Actual evidence: `serena` imported successfully, so doctor passed, but the
+  first semantic query failed because neither `uvx` nor `uv` was on PATH.
+- Safe fallback: reject the qualification and retain the fresh structural
+  generation without claiming semantic completeness.
+- Planned resolution: expose the configured interpreter's script directory,
+  require uv/uvx in Python runtime checks, and install/verify a pinned uv in the
+  six-architecture qualification environment.
+
 ## Resolved
 
 ### SELF-001: mixed-language repository selects an unrelated fixture project
