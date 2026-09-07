@@ -36,8 +36,13 @@ into a version-2 removal receipt, retaining version-1 receipt compatibility.
 Modified routing assets remain in place and are listed in
 `preserved_routing_assets` with `routing_cleanup=partial`. Recovery restores
 the recorded bytes and permissions only if the post-removal files still match;
-new user edits block recovery rather than being overwritten. Fresh routing
-installation and version-upgrade integration remain under development.
+new user edits block recovery rather than being overwritten. The development
+`enable` path now installs routing before indexing and retains a Provider
+generation backup through acceptance. Handled failure restores routing,
+configuration and index records under the project refresh lease. Unrecognized
+configuration writes are preserved and reported as incomplete rollback.
+Version-upgrade integration, crash recovery and installed-runtime acceptance
+remain under development; these local tests do not establish release readiness.
 
 `status` is a lightweight read-only observation and reports the current Codex
 task connection as unknown unless a task has actually proved it. `verify` runs

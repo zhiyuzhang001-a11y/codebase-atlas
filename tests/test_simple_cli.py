@@ -355,6 +355,8 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(result["status"], "ready")
             self.assertEqual(result["connection_status"], "configured_task_start_required")
+            self.assertTrue((repository / "AGENTS.md").is_file())
+            self.assertTrue((repository / ".agents/skills/codebase-atlas/SKILL.md").is_file())
             self.assertTrue(result["mutates"])
             self.assertEqual(
                 load_lifecycle_state(
@@ -366,6 +368,10 @@ class SimpleCliTests(unittest.TestCase):
     def test_failed_enable_restores_prior_stopped_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
+            original_config = path.read_bytes()
+            config.cache_dir.mkdir(parents=True)
+            database = config.cache_dir / f"{config.project}.db"
+            database.write_bytes(b"old generation")
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(
@@ -374,17 +380,32 @@ class SimpleCliTests(unittest.TestCase):
             )
             resolution = ProjectResolution("configured", repository, "ready", path)
             onboarding = {"status": "planned", "config": str(path)}
+            def index_then_fail(*_args, **_kwargs):
+                self.assertTrue((repository / "AGENTS.md").is_file())
+                temporary = config.cache_dir / "new-generation.db"
+                temporary.write_bytes(b"new generation")
+                temporary.replace(database)
+                path.write_text(config.render())
+                return {"status": "failed", "error": "injected"}, 2
             with (
                 patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
                 patch("codebase_atlas.simple_cli.build_plan", return_value=(onboarding, config)),
                 patch(
                     "codebase_atlas.simple_cli.apply_plan",
-                    return_value=({"status": "failed", "error": "injected"}, 2),
+                    side_effect=index_then_fail,
                 ),
             ):
                 result, code = enable_project(repository)
+                with patch("codebase_atlas.simple_cli.apply_plan", side_effect=KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        enable_project(repository)
             self.assertEqual(code, 2)
             self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["rollback_errors"], [])
+            self.assertEqual(path.read_bytes(), original_config)
+            self.assertEqual(database.read_bytes(), b"old generation")
+            self.assertFalse((repository / "AGENTS.md").exists())
+            self.assertFalse((repository / ".agents").exists())
             self.assertEqual(
                 load_lifecycle_state(
                     config.data_dir, config.repository, config.project

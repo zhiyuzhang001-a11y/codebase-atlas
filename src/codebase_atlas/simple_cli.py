@@ -56,6 +56,7 @@ from .version_check import _version_tuple
 from .verification_state import protected_snapshot
 from .routing_assets import plan_routing
 from .routing_transaction import RoutingTransaction
+from .enable_transaction import EnableTransaction
 from .provider_transport import CodebaseMemoryMcpTransport
 from .providers.cbm_impact import CodebaseMemoryImpactProvider
 
@@ -555,6 +556,9 @@ def enable_project(
     was_operational = resolution.status == "configured"
     previous: ProjectLifecycleState | None = None
     state_mutated = False
+    transaction: EnableTransaction | None = None
+    routing: RoutingTransaction | None = None
+    refresh: ProjectRefreshLease | None = None
     try:
         plan, candidate = build_plan(inputs)
         if plan["status"] != "planned" or candidate is None:
@@ -563,6 +567,8 @@ def enable_project(
                 project_state="not_enabled", index_status="unknown",
                 connection_status="unchanged", error=plan.get("error", ""),
             ), 2
+        if not candidate.project:
+            candidate = candidate.with_project(_operation_project(root))
         lifecycle_project = candidate.project
         previous = (
             load_lifecycle_state(
@@ -579,15 +585,21 @@ def enable_project(
                 connection_status="removed",
                 error="restore from the recorded recovery receipt before enabling",
             ), 2
+        refresh = ProjectRefreshLease(candidate.data_dir, root, candidate.project)
+        if not _acquire_refresh(refresh, timeout_seconds=30):
+            raise RuntimeError("timed out waiting for the active project refresh")
+        transaction = EnableTransaction(candidate, selected_config)
+        routing = RoutingTransaction(root)
+        routing.apply()
         if previous is not None and (previous.status != "ready" or not state_existed):
-            publish_lifecycle_state(
+            transaction.run(lambda: publish_lifecycle_state(
                 candidate.data_dir,
                 previous.transition("enabling", operation_id=operation_id),
-            )
+            ))
             state_mutated = True
-        applied, code = apply_plan(
+        applied, code = transaction.run(lambda: apply_plan(
             plan, candidate, indexer=_index_repository, mode=mode
-        )
+        ), indexes=True)
         if code != 0:
             raise RuntimeError(str(applied.get("error") or applied["status"]))
         configured = AtlasConfig.load(selected_config)
@@ -596,9 +608,10 @@ def enable_project(
         )
         if codex_preview["status"] == "blocked":
             raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
-        codex_result = codex_apply(
+        transaction.allow_codex_plan(codex_preview)
+        codex_result = transaction.run(lambda: codex_apply(
             selected_config, scope="project", codex_project_root=root
-        )
+        ))
         checks = diagnose(configured)
         freshness = index_freshness(
             configured.data_dir, configured.repository, configured.project
@@ -609,10 +622,10 @@ def enable_project(
             missing_status="ready",
         )
         if acceptance_state.status != "ready":
-            publish_lifecycle_state(
+            transaction.run(lambda: publish_lifecycle_state(
                 configured.data_dir,
                 acceptance_state.transition("ready", atlas_version=__version__),
-            )
+            ))
             state_mutated = True
         verification = _verification_query(configured, selected_config)
         if (
@@ -640,20 +653,39 @@ def enable_project(
             )
         )
         if state_mutated or not state_existed or current != final:
-            publish_lifecycle_state(configured.data_dir, final)
+            transaction.run(lambda: publish_lifecycle_state(configured.data_dir, final))
             state_mutated = True
+        backup_cleaned = transaction.commit()
         return _result(
             "enable", "ready", root,
             mutates=bool(applied.get("config_created"))
             or bool(codex_result.get("mutates")) or state_mutated
-            or restored_from_receipt,
+            or restored_from_receipt or any(p.before != p.after for p in routing.plans),
             project_state="ready", index_status="fresh",
             connection_status="configured_task_start_required",
             config=str(selected_config), project=configured.project,
             verification=verification,
             current_session_refresh_required=True,
+            routing_status="installed", backup_cleanup="complete" if backup_cleaned else "pending",
         ), 0
-    except (OSError, RuntimeError, ValueError) as exc:
+    except BaseException as exc:
+        if transaction is not None:
+            rollback_errors = routing.rollback() if routing is not None else []
+            rollback_errors.extend(transaction.rollback())
+            if not isinstance(exc, (OSError, RuntimeError, ValueError)):
+                if rollback_errors:
+                    exc.add_note("enable rollback incomplete: " + "; ".join(rollback_errors))
+                raise
+            return _result(
+                "enable", "incomplete", root, mutates=bool(rollback_errors) or restored_from_receipt,
+                project_state=(previous.status if previous and was_operational else "not_enabled") if not rollback_errors else "unknown",
+                index_status="preserved" if not rollback_errors else "unknown",
+                connection_status="unchanged", error=str(exc),
+                reason_code="enable_acceptance_failed", rollback_errors=rollback_errors,
+                previous_state_preserved=not rollback_errors,
+            ), 2
+        if not isinstance(exc, (OSError, RuntimeError, ValueError)):
+            raise
         if previous is not None and was_operational:
             try:
                 if state_mutated:
@@ -701,6 +733,8 @@ def enable_project(
             connection_status="unchanged", error=str(exc),
         ), 2
     finally:
+        if refresh is not None:
+            refresh.release()
         operation_lock.release()
 
 
