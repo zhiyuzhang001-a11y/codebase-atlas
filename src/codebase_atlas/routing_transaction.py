@@ -160,6 +160,34 @@ class RoutingTransaction:
                 raise RuntimeError("routing rollback incomplete: " + "; ".join(errors)) from exc
             raise
 
+    def apply_recovery(self):
+        """Idempotently restore removal records after an interrupted process."""
+        if self._started:
+            raise RuntimeError("routing transaction has already started")
+        self._started = True
+        states = []
+        for plan in self.plans:
+            _, current, current_mode = _read(
+                self.repository, str(plan.path.relative_to(self.repository))
+            )
+            before_mode = plan.mode if plan.before is not None else None
+            after_mode = self._after_mode(plan)
+            if current == plan.after and current_mode == after_mode:
+                states.append("restored")
+            elif current == plan.before and current_mode == before_mode:
+                states.append("removed")
+            else:
+                raise RuntimeError(f"routing recovery conflict preserved: {plan.path}")
+        for plan, state in zip(self.plans, states):
+            if state == "restored":
+                continue
+            self._applied.append(plan)
+            self._publish(
+                plan, plan.before,
+                plan.mode if plan.before is not None else None,
+                plan.after, self._after_mode(plan),
+            )
+
     def rollback(self) -> list[str]:
         errors = []
         for plan in reversed(self._applied):

@@ -27,4 +27,28 @@ address the observed behavior.
 
 ## Resolved
 
-Move findings here only after the regression test and verified fix are linked.
+### SELF-002: lifecycle rollback existed only in process memory
+
+- Observed task: review `enable`, `update`, and `stop` failure handling while
+  preparing lifecycle regression tests.
+- Expected: an interrupted process leaves enough durable evidence for the next
+  lifecycle command to restore or safely reject the prior transaction.
+- Actual evidence: `EnableTransaction` and `RoutingTransaction` could roll back
+  exceptions, but process termination discarded their snapshots.
+- Safe fallback: report the transitional lifecycle state and avoid accepting it
+  as ready.
+- Resolution: a repository-identity-bound journal outside the repository now
+  snapshots the wider lifecycle boundary, distinguishes accepted operations,
+  preserves external edits, cleans owned staging, and is exercised through an
+  actual child process exiting without exception cleanup.
+
+### SELF-003: removal receipt was published after destructive changes
+
+- Observed task: inject termination at every `remove` publication boundary.
+- Expected: every destructive phase has an already-durable recovery plan.
+- Actual evidence: the receipt was written only after configuration deletion
+  and data-directory movement, so termination in between was not resumable.
+- Safe fallback: retain the `removing` marker and refuse further mutation.
+- Resolution: schema 3 provisional receipts are written before the marker and
+  before source mutation. Recovery now handles interruption after routing
+  removal or data movement and preserves conflicting user edits.

@@ -13,15 +13,22 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
 from . import __version__
 from .cli import _index_repository, main as advanced_main
-from .codex_integration import codex_apply, codex_plan, codex_remove
+from .codex_integration import (
+    _remove_project_block,
+    codex_apply,
+    codex_plan,
+    codex_remove,
+)
 from .config import AtlasConfig, CONFIG_NAME, diagnose
 from .index_state import index_freshness
 from .lifecycle import (
@@ -57,6 +64,11 @@ from .verification_state import protected_snapshot
 from .routing_assets import decode_routing_bundle, plan_routing, routing_bundle
 from .routing_transaction import RoutingTransaction
 from .enable_transaction import EnableTransaction
+from .lifecycle_recovery import (
+    LifecycleRecoveryJournal,
+    journal_path as lifecycle_recovery_path,
+    recover_lifecycle_transaction,
+)
 from .provider_transport import CodebaseMemoryMcpTransport
 from .providers.cbm_impact import CodebaseMemoryImpactProvider
 
@@ -179,6 +191,34 @@ def _project_operation_lock(repository: Path) -> ProjectOperationLease:
     )
 
 
+def _recover_before_mutation(
+    repository: Path, operation: str
+) -> tuple[dict[str, Any], int] | None:
+    lock = _project_operation_lock(repository)
+    if not lock.acquire():
+        return _result(
+            operation, "blocked", repository, mutates=False,
+            project_state="busy", index_status="preserved",
+            connection_status="unchanged",
+            error="another lifecycle operation owns this project",
+        ), 2
+    try:
+        removal = load_removal_marker(repository)
+        if removal is not None and removal["status"] == "removing":
+            _recover_incomplete_removal(repository, removal)
+        recover_lifecycle_transaction(repository)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _result(
+            operation, "incomplete", repository, mutates=False,
+            project_state="unknown", index_status="unknown",
+            connection_status="unchanged", error=str(exc),
+            reason_code="lifecycle_recovery_required",
+        ), 2
+    finally:
+        lock.release()
+    return None
+
+
 def _load_removal_receipt(repository: Path, marker: dict[str, Any]) -> dict[str, Any]:
     receipt_path = Path(str(marker["receipt"]))
     recovery_root = project_recovery_root(repository).resolve()
@@ -199,18 +239,52 @@ def _load_removal_receipt(repository: Path, marker: dict[str, Any]) -> dict[str,
         "recovered_data_dir", "config_sha256", "codex_config_changed",
         "shared_installation_removed",
     }
-    if isinstance(receipt, dict) and receipt.get("schema_version") == 2:
+    if isinstance(receipt, dict) and receipt.get("schema_version") in {2, 3}:
         required.add("routing_assets")
+    if isinstance(receipt, dict) and receipt.get("schema_version") == 3:
+        required.update({
+            "config_mode", "previous_lifecycle", "codex_config_path",
+            "codex_config_existed", "codex_config_sha256",
+            "codex_removed_sha256", "codex_config_mode", "codex_backup",
+        })
     if (
         not isinstance(receipt, dict)
         or set(receipt) != required
-        or receipt.get("schema_version") not in {1, 2}
-        or receipt.get("status") != "removed"
+        or receipt.get("schema_version") not in {1, 2, 3}
+        or receipt.get("status") not in {"removing", "removed"}
+        or (
+            receipt.get("status") == "removing"
+            and receipt.get("schema_version") != 3
+        )
         or receipt.get("operation_id") != marker["operation_id"]
         or receipt.get("repository") != str(repository.resolve())
         or receipt.get("project") != marker["project"]
     ):
         raise RuntimeError("removal receipt schema or identity is invalid")
+    if marker["status"] == "removed" and receipt.get("status") != "removed":
+        raise RuntimeError("removal marker and receipt status mismatch")
+    if receipt.get("schema_version") == 3:
+        hashes = (
+            receipt.get("config_sha256"), receipt.get("codex_config_sha256"),
+            receipt.get("codex_removed_sha256"),
+        )
+        if (
+            type(receipt.get("config_mode")) is not int
+            or type(receipt.get("codex_config_mode")) is not int
+            or not 0 <= receipt["config_mode"] <= 0o777
+            or not 0 <= receipt["codex_config_mode"] <= 0o777
+            or type(receipt.get("codex_config_existed")) is not bool
+            or not isinstance(receipt.get("codex_config_path"), str)
+            or not isinstance(receipt.get("codex_backup"), str)
+            or not isinstance(receipt.get("previous_lifecycle"), dict)
+            or not all(
+                value == "absent" or (
+                    isinstance(value, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+                ) for value in hashes
+            )
+        ):
+            raise RuntimeError("removal receipt recovery fields are invalid")
     return receipt
 
 
@@ -218,6 +292,8 @@ def _restore_removed_project(
     repository: Path, marker: dict[str, Any]
 ) -> None:
     receipt = _load_removal_receipt(repository, marker)
+    if receipt["status"] != "removed":
+        raise RuntimeError("removal is incomplete and must be recovered first")
     config_path = Path(str(receipt["original_config"]))
     recovered_config = Path(str(receipt["recovered_config"]))
     data_dir = Path(str(receipt["original_data_dir"]))
@@ -296,6 +372,164 @@ def _restore_removed_project(
         raise
     finally:
         operation_lock.release()
+
+
+def _publish_recovery_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".removal-receipt-", suffix=".json", dir=path.parent
+    )
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _path_digest(path: Path) -> str:
+    if not os.path.lexists(path):
+        return "absent"
+    metadata = os.lstat(path)
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise RuntimeError("removal recovery target is unsafe")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _restore_recovery_backup(path: Path, backup: Path, mode: int) -> None:
+    if backup.is_symlink() or not backup.is_file():
+        raise RuntimeError("removal recovery backup is unsafe")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".atlas-remove-restore-", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as output, backup.open("rb") as source:
+            descriptor = -1
+            shutil.copyfileobj(source, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _recover_incomplete_removal(
+    repository: Path, marker: dict[str, Any]
+) -> dict[str, Any]:
+    if marker["status"] != "removing":
+        return {"status": "clean", "action": "none"}
+    receipt = _load_removal_receipt(repository, marker)
+    if receipt.get("schema_version") != 3:
+        raise RuntimeError("legacy incomplete removal requires manual recovery")
+    receipt_path = Path(marker["receipt"])
+    operation_root = receipt_path.parent.resolve()
+    recovery_root = project_recovery_root(repository).resolve()
+    if (
+        operation_root.parent != recovery_root
+        or receipt_path.resolve() != operation_root / "receipt.json"
+        or operation_root.is_symlink()
+        or not operation_root.is_dir()
+    ):
+        raise RuntimeError("removal recovery receipt location is unsafe")
+    if receipt["status"] == "removed":
+        publish_removal_marker(
+            repository, receipt["project"], receipt["operation_id"], receipt_path,
+            status="removed",
+        )
+        return {"status": "recovered", "action": "completed_removal"}
+
+    config_path = Path(receipt["original_config"])
+    config_backup = Path(receipt["recovered_config"])
+    data_dir = Path(receipt["original_data_dir"])
+    data_backup = Path(receipt["recovered_data_dir"])
+    codex_path = Path(receipt["codex_config_path"])
+    codex_backup = Path(receipt["codex_backup"]) if receipt["codex_backup"] else None
+    if (
+        config_backup.resolve() != operation_root / "project-config.toml"
+        or data_backup.resolve() != operation_root / "data"
+    ):
+        raise RuntimeError("removal recovery paths are unsafe")
+    if config_path.resolve() != Path(receipt["original_config"]).resolve():
+        raise RuntimeError("removal recovery config path is unsafe")
+    if not config_path.resolve().is_relative_to(repository.resolve()):
+        raise RuntimeError("removal recovery config is outside the repository")
+    if codex_path.resolve() != repository.resolve() / ".codex/config.toml":
+        raise RuntimeError("removal recovery Codex path is unsafe")
+    if codex_backup is not None and codex_backup.resolve() != operation_root / "codex-config.toml":
+        raise RuntimeError("removal recovery Codex backup is unsafe")
+    if hashlib.sha256(config_backup.read_bytes()).hexdigest() != receipt["config_sha256"]:
+        raise RuntimeError("removal recovery config checksum mismatch")
+    recovered_config = AtlasConfig.load(config_backup)
+    if (
+        recovered_config.repository != repository.resolve()
+        or recovered_config.project != receipt["project"]
+        or recovered_config.data_dir != data_dir.resolve()
+    ):
+        raise RuntimeError("removal recovery config identity mismatch")
+    config_current = _path_digest(config_path)
+    if config_current not in {receipt["config_sha256"], "absent"}:
+        raise RuntimeError("external config modification preserved")
+    codex_current = _path_digest(codex_path)
+    if codex_current not in {
+        receipt["codex_config_sha256"], receipt["codex_removed_sha256"]
+    }:
+        raise RuntimeError("external Codex modification preserved")
+    for directory in (data_dir, data_backup):
+        if os.path.lexists(directory):
+            metadata = os.lstat(directory)
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise RuntimeError("removal recovery data directory is unsafe")
+    if data_dir.exists() and data_backup.exists():
+        raise RuntimeError("both original and recovered data directories exist")
+    if not data_dir.exists() and not data_backup.exists():
+        raise RuntimeError("removal recovery data directory is missing")
+    previous_value = receipt["previous_lifecycle"]
+    try:
+        previous = ProjectLifecycleState(**previous_value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("removal recovery lifecycle snapshot is invalid") from exc
+    if (
+        previous.repository != str(repository.resolve())
+        or previous.project != receipt["project"]
+        or previous.status not in {"ready", "stopped", "failed"}
+    ):
+        raise RuntimeError("removal recovery lifecycle identity is invalid")
+    routing = RoutingTransaction.for_recovery(repository, receipt["routing_assets"])
+
+    marker_metadata = os.lstat(removal_marker_path(repository))
+    marker_identity = (marker_metadata.st_dev, marker_metadata.st_ino)
+    routing.apply_recovery()
+    if data_backup.exists():
+        os.replace(data_backup, data_dir)
+    if config_current == "absent":
+        _restore_recovery_backup(config_path, config_backup, receipt["config_mode"])
+    if receipt["codex_config_existed"]:
+        if codex_backup is None:
+            raise RuntimeError("removal recovery Codex backup is missing")
+        if codex_current != receipt["codex_config_sha256"]:
+            _restore_recovery_backup(
+                codex_path, codex_backup, receipt["codex_config_mode"]
+            )
+    elif codex_current != "absent":
+        codex_path.unlink()
+    publish_lifecycle_state(data_dir, previous)
+    _unlink_verified(removal_marker_path(repository), marker_identity)
+    shutil.rmtree(operation_root)
+    return {"status": "recovered", "action": "restored_incomplete_removal"}
 
 
 def _acquire_refresh(
@@ -499,6 +733,10 @@ def enable_project(
     mode: str = "fast",
 ) -> tuple[dict[str, Any], int]:
     root, resolution = _repository_root(repository)
+    recovery_failure = _recover_before_mutation(root, "enable")
+    if recovery_failure is not None:
+        return recovery_failure
+    root, resolution = _repository_root(root)
     try:
         routes = plan_routing(root)
         conflicts = [str(asset.path) for asset in routes if asset.status == "conflict"]
@@ -558,6 +796,7 @@ def enable_project(
     state_mutated = False
     transaction: EnableTransaction | None = None
     routing: RoutingTransaction | None = None
+    durable: LifecycleRecoveryJournal | None = None
     refresh: ProjectRefreshLease | None = None
     try:
         plan, candidate = build_plan(inputs)
@@ -590,6 +829,11 @@ def enable_project(
             raise RuntimeError("timed out waiting for the active project refresh")
         transaction = EnableTransaction(candidate, selected_config)
         routing = RoutingTransaction(root)
+        durable = LifecycleRecoveryJournal.begin(
+            candidate, selected_config, operation="enable",
+            operation_id=operation_id, routing=routing,
+        )
+        transaction.attach_recovery(durable)
         routing.apply()
         if previous is not None and (previous.status != "ready" or not state_existed):
             transaction.run(lambda: publish_lifecycle_state(
@@ -656,6 +900,7 @@ def enable_project(
             transaction.run(lambda: publish_lifecycle_state(configured.data_dir, final))
             state_mutated = True
         backup_cleaned = transaction.commit()
+        durable_cleaned = durable.commit()
         return _result(
             "enable", "ready", root,
             mutates=bool(applied.get("config_created"))
@@ -666,12 +911,17 @@ def enable_project(
             config=str(selected_config), project=configured.project,
             verification=verification,
             current_session_refresh_required=True,
-            routing_status="installed", backup_cleanup="complete" if backup_cleaned else "pending",
+            routing_status="installed",
+            backup_cleanup="complete" if backup_cleaned and durable_cleaned else "pending",
         ), 0
     except BaseException as exc:
         if transaction is not None:
             rollback_errors = routing.rollback() if routing is not None else []
             rollback_errors.extend(transaction.rollback())
+            if durable is not None:
+                rollback_errors.extend(
+                    f"durable: {error}" for error in durable.rollback()
+                )
             if not isinstance(exc, (OSError, RuntimeError, ValueError)):
                 if rollback_errors:
                     exc.add_note("enable rollback incomplete: " + "; ".join(rollback_errors))
@@ -773,6 +1023,14 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
     """Read the lightweight state of one exact project without starting providers."""
     root, resolution = _repository_root(repository)
     nested = _nested_git_repositories(root)
+    if lifecycle_recovery_path(root).exists():
+        return _result(
+            "status", "incomplete", root, mutates=False,
+            project_state="recovery_required", index_status="unknown",
+            connection_status="unknown", reason_code="lifecycle_recovery_required",
+            next_action=f"atlas enable --repo {root}",
+            nested_repositories=nested, checks=[],
+        ), 2
     removal = load_removal_marker(root)
     if removal is not None:
         state = str(removal["status"])
@@ -902,6 +1160,13 @@ def _owned_verification_query(config: AtlasConfig) -> dict[str, Any]:
 def verify_project(repository: Path) -> tuple[dict[str, Any], int]:
     """Run the existing acceptance checks without refreshing project state."""
     root, resolution = _repository_root(repository)
+    if lifecycle_recovery_path(root).exists():
+        return _result(
+            "verify", "INCOMPLETE", root, mutates=False,
+            project_state="recovery_required", index_status="unknown",
+            connection_status="unknown", reason_code="lifecycle_recovery_required",
+            next_action=f"atlas enable --repo {root}", checks=[],
+        ), 2
     if resolution.config is None:
         return _result(
             "verify", "INCOMPLETE", root, mutates=False,
@@ -998,6 +1263,10 @@ def stop_project(
     repository: Path, *, timeout_seconds: float = 30.0
 ) -> tuple[dict[str, Any], int]:
     root, resolution = _repository_root(repository)
+    recovery_failure = _recover_before_mutation(root, "stop")
+    if recovery_failure is not None:
+        return recovery_failure
+    root, resolution = _repository_root(root)
     if resolution.status != "configured" or resolution.config is None:
         return _result(
             "stop", "not_enabled", root, mutates=False,
@@ -1016,6 +1285,8 @@ def stop_project(
     refresh = ProjectRefreshLease(
         config.data_dir, config.repository, config.project
     )
+    durable: LifecycleRecoveryJournal | None = None
+    previous: ProjectLifecycleState | None = None
     try:
         previous = load_lifecycle_state(
             config.data_dir, config.repository, config.project
@@ -1040,20 +1311,36 @@ def stop_project(
                 error="timed out waiting for the active project refresh",
             ), 2
         operation_id = secrets.token_hex(16)
+        durable = LifecycleRecoveryJournal.begin(
+            config, resolution.config.resolve(), operation="stop",
+            operation_id=operation_id, routing=None,
+        )
         stopping = previous.transition("stopping", operation_id=operation_id)
         publish_lifecycle_state(config.data_dir, stopping)
         stopped = stopping.transition("stopped")
         publish_lifecycle_state(config.data_dir, stopped)
+        cleanup_complete = durable.commit()
         return _result(
             "stop", "stopped", root, mutates=True,
             project_state="stopped", index_status="preserved",
             connection_status="stopped",
+            backup_cleanup="complete" if cleanup_complete else "pending",
         ), 0
-    except (OSError, ValueError) as exc:
+    except BaseException as exc:
+        rollback_errors = durable.rollback() if durable is not None else []
+        if not isinstance(exc, (OSError, RuntimeError, ValueError)):
+            if rollback_errors:
+                exc.add_note("stop rollback incomplete: " + "; ".join(rollback_errors))
+            raise
         return _result(
             "stop", "incomplete", root, mutates=False,
-            project_state="failed", index_status="preserved",
+            project_state=(
+                "failed" if rollback_errors or previous is None else previous.status
+            ),
+            index_status="unknown" if rollback_errors else "preserved",
             connection_status="unchanged", error=str(exc),
+            rollback_errors=rollback_errors,
+            previous_state_preserved=not rollback_errors,
         ), 2
     finally:
         refresh.release()
@@ -1117,6 +1404,10 @@ def update_project(
     runner: Any = subprocess.run,
 ) -> tuple[dict[str, Any], int]:
     root, resolution = _repository_root(repository)
+    recovery_failure = _recover_before_mutation(root, "update")
+    if recovery_failure is not None:
+        return recovery_failure
+    root, resolution = _repository_root(root)
     if resolution.status != "configured" or resolution.config is None:
         return _result(
             "update", "not_enabled", root, mutates=False,
@@ -1159,6 +1450,8 @@ def update_project(
     refresh = ProjectRefreshLease(config.data_dir, config.repository, config.project)
     transaction: EnableTransaction | None = None
     routing: RoutingTransaction | None = None
+    durable: LifecycleRecoveryJournal | None = None
+    operation_id = secrets.token_hex(16)
     try:
         if not _acquire_refresh(refresh, timeout_seconds=timeout_seconds):
             raise RuntimeError("timed out waiting for the active project refresh")
@@ -1171,8 +1464,12 @@ def update_project(
         transaction = EnableTransaction(config, config_path)
         target_bundle = _external_routing_bundle(installation, runner=runner)
         routing = RoutingTransaction(root, bundle=target_bundle)
+        durable = LifecycleRecoveryJournal.begin(
+            config, config_path, operation="update", operation_id=operation_id,
+            routing=routing,
+        )
+        transaction.attach_recovery(durable)
         routing.apply()
-        operation_id = secrets.token_hex(16)
         updating = current.transition("updating", operation_id=operation_id)
         transaction.run(lambda: publish_lifecycle_state(config.data_dir, updating))
         preview = codex_plan(
@@ -1213,6 +1510,7 @@ def update_project(
         if final != candidate_ready:
             transaction.run(lambda: publish_lifecycle_state(config.data_dir, final))
         backup_cleaned = transaction.commit()
+        durable_cleaned = durable.commit()
         return _result(
             "update", "updated", root,
             mutates=True,
@@ -1225,7 +1523,7 @@ def update_project(
             doctor=doctor.get("status"), verification=verification,
             current_session_refresh_required=True,
             routing_status="updated",
-            backup_cleanup="complete" if backup_cleaned else "pending",
+            backup_cleanup="complete" if backup_cleaned and durable_cleaned else "pending",
         ), 0
     except BaseException as exc:
         rollback_errors: list[str] = []
@@ -1233,6 +1531,10 @@ def update_project(
             rollback_errors.extend(f"routing: {error}" for error in routing.rollback())
         if transaction is not None:
             rollback_errors.extend(transaction.rollback())
+        if durable is not None:
+            rollback_errors.extend(
+                f"durable: {error}" for error in durable.rollback()
+            )
         if not isinstance(exc, (OSError, RuntimeError, ValueError)):
             if rollback_errors:
                 exc.add_note("update rollback incomplete: " + "; ".join(rollback_errors))
@@ -1293,6 +1595,10 @@ def remove_project(
     repository: Path, *, timeout_seconds: float = 30.0
 ) -> tuple[dict[str, Any], int]:
     root, resolution = _repository_root(repository)
+    recovery_failure = _recover_before_mutation(root, "remove")
+    if recovery_failure is not None:
+        return recovery_failure
+    root, resolution = _repository_root(root)
     existing_marker = load_removal_marker(root)
     if existing_marker is not None and existing_marker["status"] == "removed":
         return _result(
@@ -1329,6 +1635,7 @@ def remove_project(
     codex_target: Path | None = None
     codex_identity: tuple[int, int] | None = None
     codex_bytes = b""
+    codex_removed_sha256 = "absent"
     marker_identity: tuple[int, int] | None = None
     data_moved = False
     config_removed = False
@@ -1360,25 +1667,69 @@ def remove_project(
         routing_records = routing.recovery_record()
         RoutingTransaction.for_recovery(root, routing_records)
         config_identity, config_bytes = _regular_snapshot(config_path)
+        config_mode = stat.S_IMODE(os.lstat(config_path).st_mode)
         preview = codex_plan(config_path, scope="project", codex_project_root=root)
         if preview["status"] == "blocked":
             raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
         codex_target = Path(str(preview["target"]))
         if codex_target.exists():
             codex_identity, codex_bytes = _regular_snapshot(codex_target)
-        removing = previous.transition("removing", operation_id=operation_id)
-        publish_lifecycle_state(config.data_dir, removing)
+            if preview.get("existing") in {"matching", "managed_different"}:
+                remainder = _remove_project_block(codex_bytes.decode("utf-8"))
+                codex_removed_sha256 = (
+                    hashlib.sha256(remainder.encode("utf-8")).hexdigest()
+                    if remainder.strip() else "absent"
+                )
+            else:
+                codex_removed_sha256 = hashlib.sha256(codex_bytes).hexdigest()
+        _write_recovery_file(config_destination, config_bytes)
+        codex_backup = operation_root / "codex-config.toml"
+        if codex_identity is not None:
+            _write_recovery_file(codex_backup, codex_bytes)
+        receipt = {
+            "schema_version": 3,
+            "status": "removing",
+            "operation_id": operation_id,
+            "repository": str(root),
+            "project": config.project,
+            "original_config": str(config_path),
+            "recovered_config": str(config_destination),
+            "original_data_dir": str(config.data_dir),
+            "recovered_data_dir": str(data_destination),
+            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "config_mode": config_mode,
+            "previous_lifecycle": previous.to_dict(),
+            "codex_config_changed": False,
+            "codex_config_path": str(codex_target),
+            "codex_config_existed": codex_identity is not None,
+            "codex_config_sha256": (
+                hashlib.sha256(codex_bytes).hexdigest()
+                if codex_identity is not None else "absent"
+            ),
+            "codex_removed_sha256": codex_removed_sha256,
+            "codex_config_mode": (
+                stat.S_IMODE(os.lstat(codex_target).st_mode)
+                if codex_identity is not None else 0o644
+            ),
+            "codex_backup": str(codex_backup) if codex_identity is not None else "",
+            "shared_installation_removed": False,
+            "routing_assets": routing_records,
+        }
+        _publish_recovery_json(receipt_path, receipt)
         publish_removal_marker(
             root, config.project, operation_id, receipt_path, status="removing"
         )
         marker_meta = os.lstat(removal_marker_path(root))
         marker_identity = (marker_meta.st_dev, marker_meta.st_ino)
+        removing = previous.transition("removing", operation_id=operation_id)
+        publish_lifecycle_state(config.data_dir, removing)
         codex_result = codex_remove(
             config_path, scope="project", codex_project_root=root
         )
         codex_changed = bool(codex_result.get("mutates"))
+        receipt["codex_config_changed"] = codex_changed
+        _publish_recovery_json(receipt_path, receipt)
         routing.apply()
-        _write_recovery_file(config_destination, config_bytes)
         if hashlib.sha256(config_destination.read_bytes()).digest() != hashlib.sha256(config_bytes).digest():
             raise RuntimeError("recovered project config digest mismatch")
         _unlink_verified(config_path, config_identity)
@@ -1389,25 +1740,8 @@ def remove_project(
         refresh_acquired = False
         os.replace(config.data_dir, data_destination)
         data_moved = True
-        receipt = {
-            "schema_version": 2,
-            "status": "removed",
-            "operation_id": operation_id,
-            "repository": str(root),
-            "project": config.project,
-            "original_config": str(config_path),
-            "recovered_config": str(config_destination),
-            "original_data_dir": str(config.data_dir),
-            "recovered_data_dir": str(data_destination),
-            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
-            "codex_config_changed": codex_changed,
-            "shared_installation_removed": False,
-            "routing_assets": routing_records,
-        }
-        _write_recovery_file(
-            receipt_path,
-            (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-        )
+        receipt["status"] = "removed"
+        _publish_recovery_json(receipt_path, receipt)
         publish_removal_marker(
             root, config.project, operation_id, receipt_path, status="removed"
         )

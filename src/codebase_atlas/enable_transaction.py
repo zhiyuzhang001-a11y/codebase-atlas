@@ -41,10 +41,20 @@ class EnableTransaction:
         self.backup = ProviderDatabaseBackup.create(self.database)
         self.database_identity = self._database_identity()
         self.database_touched = False
+        self.recovery = None
+
+    def attach_recovery(self, recovery):
+        self.recovery = recovery
+        for path, payloads in self.allowed.items():
+            for payload in payloads:
+                recovery.allow(path, payload)
 
     def allow_config(self, config: AtlasConfig):
         """Authorize one Atlas-rendered config generation for publication."""
-        self.allowed[self.paths[0]].add(config.render().encode("utf-8"))
+        payload = config.render().encode("utf-8")
+        self.allowed[self.paths[0]].add(payload)
+        if self.recovery is not None:
+            self.recovery.allow(self.paths[0], payload)
 
     def allow_codex_plan(self, plan: dict):
         block = plan.get("managed_block")
@@ -63,7 +73,10 @@ class EnableTransaction:
         else:
             separator = "" if not original or original.endswith("\n\n") else "\n" if original.endswith("\n") else "\n\n"
             candidate = original + separator + block
-        self.allowed[target].add(candidate.encode("utf-8"))
+        payload = candidate.encode("utf-8")
+        self.allowed[target].add(payload)
+        if self.recovery is not None:
+            self.recovery.allow(target, payload)
 
     def _database_identity(self):
         try:
