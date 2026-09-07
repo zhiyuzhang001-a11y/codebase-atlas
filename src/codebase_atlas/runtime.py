@@ -162,6 +162,7 @@ def runtime_checks(
         serena_search_path = os.pathsep.join(
             part for part in (
                 str(serena_path.parent) if serena_path else "",
+                str(serena_path.parent / "Scripts") if serena_path else "",
                 os.environ.get("PATH", ""),
             ) if part
         )

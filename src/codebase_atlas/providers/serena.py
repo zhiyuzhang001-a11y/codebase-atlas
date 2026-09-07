@@ -177,10 +177,12 @@ class SerenaSemanticProvider:
                 "PYTHONUNBUFFERED": "1",
             }
         )
-        environment["PATH"] = (
-            str(self.python.parent)
-            + os.pathsep
-            + environment.get("PATH", "")
+        python_script_dirs = (
+            self.python.parent,
+            self.python.parent / "Scripts",
+        )
+        environment["PATH"] = os.pathsep.join(
+            [*(str(path) for path in python_script_dirs), environment.get("PATH", "")]
         )
         if self.node_bin_dir is not None:
             environment["PATH"] = str(self.node_bin_dir) + os.pathsep + environment.get("PATH", "")

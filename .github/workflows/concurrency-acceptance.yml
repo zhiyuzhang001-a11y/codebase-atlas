@@ -123,7 +123,7 @@ jobs:
       - name: Verify Serena language-server installer
         run: >-
           ${{ env.ATLAS_CONCURRENCY_SERENA_PYTHON }} -c
-          "import pathlib,shutil,sys; root=str(pathlib.Path(sys.executable).parent);
+          "import shutil,sysconfig; root=sysconfig.get_path('scripts');
           assert shutil.which('uvx', path=root) or shutil.which('uv', path=root)"
       - name: External termination phase matrix
         run: >-

@@ -115,6 +115,9 @@ address the observed behavior.
 - Planned resolution: expose the configured interpreter's script directory,
   require uv/uvx in Python runtime checks, and install/verify a pinned uv in the
   six-architecture qualification environment.
+- Follow-up evidence: Windows system Python installs console scripts in a
+  `Scripts` child rather than beside `python.exe`; both layouts must be searched
+  and workflow verification must use Python's reported scripts directory.
 
 ## Resolved
 

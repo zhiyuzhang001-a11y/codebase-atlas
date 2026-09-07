@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -73,6 +74,37 @@ class RuntimeCheckTests(unittest.TestCase):
             self.assertFalse(uv_check["ok"])
             self.assertTrue(uv_check["required"])
             self.assertFalse(required_checks_ok(checks))
+
+    def test_python_runtime_finds_windows_system_python_scripts_child(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            python = root / "python-root" / "python.exe"
+            expected_scripts = str(python.parent / "Scripts")
+
+            def find(command, *, path=None):
+                if command == "uv" and expected_scripts in str(path).split(os.pathsep):
+                    return str(Path(expected_scripts) / "uv.exe")
+                return None
+
+            def runner(_command, **_kwargs):
+                return SimpleNamespace(returncode=0, stdout="20.0.0", stderr="")
+
+            with patch("codebase_atlas.runtime.shutil.which", side_effect=find):
+                checks = runtime_checks(
+                    repo,
+                    language="python",
+                    node=root / "node",
+                    cbm_binary=root / "cbm",
+                    serena_python=python,
+                    runner=runner,
+                )
+            uv_check = next(
+                item for item in checks
+                if item["name"] == "serena_language_server_installer"
+            )
+            self.assertTrue(uv_check["ok"])
 
     def test_missing_runtime_has_actionable_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
