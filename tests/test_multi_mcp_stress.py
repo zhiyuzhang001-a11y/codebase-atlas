@@ -18,6 +18,16 @@ from scripts.run_multi_mcp_stress import (
 
 
 class MultiMcpStressUnitTests(unittest.TestCase):
+    def test_require_executable_preserves_virtualenv_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "base-python"
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            target.chmod(0o755)
+            launcher = root / "venv-python"
+            launcher.symlink_to(target)
+            self.assertEqual(require_executable(launcher, "Serena"), launcher)
+
     def test_runtime_preflight_rejects_a_directory(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             with self.assertRaisesRegex(Exception, "must be an executable file"):

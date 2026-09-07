@@ -6,6 +6,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -29,6 +30,16 @@ def git(repository: Path, *args: str) -> None:
     )
 
 
+def private_runtime(prefix: str) -> tuple[tempfile.TemporaryDirectory, Path]:
+    parent = "/private/tmp" if sys.platform == "darwin" else None
+    temporary = tempfile.TemporaryDirectory(prefix=prefix, dir=parent)
+    runtime = Path(temporary.name)
+    if sys.platform == "darwin":
+        subprocess.run(["chmod", "-N", str(runtime)], check=True)
+    runtime.chmod(0o700)
+    return temporary, runtime
+
+
 @unittest.skipUnless(
     os.environ.get("ATLAS_M38_PROVIDER_BINARY"),
     "set ATLAS_M38_PROVIDER_BINARY for the isolated managed-Provider proof",
@@ -38,13 +49,10 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="m38-stage3-two-projects.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "m38-stage3-two-projects."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(os.environ, {
                 "CBM_RUNTIME_DIR": str(runtime.resolve()),
                 "XDG_DATA_HOME": str((root / "xdg-data").resolve()),
@@ -175,13 +183,10 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
             )
             git(worktree, "add", "sample.py")
             git(worktree, "commit", "-qm", "worktree")
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="atlas-worktree-isolation.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "atlas-worktree-isolation."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(os.environ, {
                 "CBM_RUNTIME_DIR": str(runtime.resolve()),
                 "XDG_DATA_HOME": str((root / "xdg-data").resolve()),
@@ -260,13 +265,10 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="m38-stage3-runtime.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "m38-stage3-runtime."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(
                 os.environ, {"CBM_RUNTIME_DIR": str(runtime.resolve())}
             )
@@ -358,13 +360,10 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="m38-stage2-runtime.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "m38-stage2-runtime."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(
                 os.environ, {"CBM_RUNTIME_DIR": str(runtime.resolve())}
             )

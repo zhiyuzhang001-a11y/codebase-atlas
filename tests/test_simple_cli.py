@@ -34,6 +34,7 @@ from codebase_atlas.simple_cli import (
 from codebase_atlas.simple_cli import update_project
 from codebase_atlas.release_installation import VersionedInstallation
 from codebase_atlas.routing_transaction import RoutingTransaction
+from codebase_atlas.routing_state import publish_routing_state
 
 
 def git_repository(root: Path) -> Path:
@@ -768,6 +769,10 @@ class SimpleCliTests(unittest.TestCase):
                 config.data_dir,
                 ProjectLifecycleState.initial(repository, config.project),
             )
+            RoutingTransaction(repository).apply()
+            publish_routing_state(
+                config.data_dir, repository, created_rule_file=True
+            )
             (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
             resolution = ProjectResolution("configured", repository, "ready", path)
             codex_target = repository / ".codex/config.toml"
@@ -793,6 +798,8 @@ class SimpleCliTests(unittest.TestCase):
             self.assertFalse(second["mutates"])
             self.assertFalse(path.exists())
             self.assertFalse(config.data_dir.exists())
+            self.assertFalse((repository / "AGENTS.md").exists())
+            self.assertFalse((repository / ".agents").exists())
             receipt = Path(first["receipt"])
             self.assertTrue(receipt.is_file())
             recovered = json.loads(receipt.read_text(encoding="utf-8"))

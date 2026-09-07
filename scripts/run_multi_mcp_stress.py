@@ -30,7 +30,9 @@ PROCESS_CLEANUP_GRACE_SECONDS = 20.0
 
 
 def require_executable(path: Path, label: str) -> Path:
-    selected = path.expanduser().resolve()
+    # Preserve a virtual-environment launcher path. Resolving its Python symlink
+    # can select the base interpreter and silently discard that environment.
+    selected = Path(os.path.abspath(path.expanduser()))
     if not selected.is_file() or not os.access(selected, os.X_OK):
         raise StressFailure(f"{label} must be an executable file: {selected}")
     return selected

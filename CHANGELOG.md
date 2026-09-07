@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.26.0 — Unreleased
+
+- Add the compact `atlas status` and non-refreshing `atlas verify` diagnostics
+  with explicit completeness, repository identity, and process-cleanup evidence.
+- Install versioned Codex routing rules and skills through enable/update/remove,
+  preserving foreign edits and supporting recoverable removal.
+- Add durable crash recovery across enable, stop, update, and remove lifecycle
+  publication boundaries.
+- Freeze read-only discovery and cleanup budgets; add nested-repository,
+  cross-project, worktree, and effective multi-MCP relationship gates.
+- Reject target paths outside the configured index language with structured
+  incomplete evidence before starting the Provider.
+
 All notable release changes are recorded here. The package uses semantic versions;
 0.x minor versions may still refine interfaces within the documented support
 boundary.

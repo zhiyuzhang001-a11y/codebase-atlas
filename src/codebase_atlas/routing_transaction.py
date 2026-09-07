@@ -17,9 +17,15 @@ from .routing_assets import AssetPlan, BEGIN, END, KNOWN_RULES, KNOWN_SKILLS, _r
 
 
 class RoutingTransaction:
-    def __init__(self, repository: Path, *, remove: bool = False, bundle=None):
+    def __init__(
+        self, repository: Path, *, remove: bool = False, bundle=None,
+        remove_created_rule_file: bool = False,
+    ):
         self.repository = repository.resolve(strict=True)
-        self.plans = plan_routing(self.repository, remove=remove, bundle=bundle)
+        self.plans = plan_routing(
+            self.repository, remove=remove, bundle=bundle,
+            remove_created_rule_file=remove_created_rule_file,
+        )
         self.conflicts = tuple(str(p.path) for p in self.plans if p.status == "conflict")
         if self.conflicts and not remove:
             raise RuntimeError("foreign or modified routing assets: " + ", ".join(self.conflicts))
@@ -92,8 +98,9 @@ class RoutingTransaction:
                     start -= 1
                 if after[finish:finish + 1] == b"\n":
                     finish += 1
+                original_remainder = before if before is not None else b""
                 if (hashlib.sha256(after[start:finish]).hexdigest() not in KNOWN_RULES
-                        or after[:start] + after[finish:] != before):
+                        or after[:start] + after[finish:] != original_remainder):
                     raise RuntimeError("routing recovery rule is not a known owned change")
             path = instance.repository / relative
             plans.append(AssetPlan(path, "recovery", before, after,

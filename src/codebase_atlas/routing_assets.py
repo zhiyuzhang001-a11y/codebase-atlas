@@ -130,6 +130,7 @@ def _read(repository: Path, relative: str) -> tuple[Path, bytes | None, int | No
 def plan_routing(
     repository: Path, *, remove: bool = False,
     bundle: tuple[bytes, bytes, frozenset[str], frozenset[str]] | None = None,
+    remove_created_rule_file: bool = False,
 ) -> tuple[AssetPlan, ...]:
     """Plan without creating directories or changing any project content."""
     repository = repository.resolve(strict=True)
@@ -155,6 +156,8 @@ def plan_routing(
         status = "matching" if block == desired_rule else "owned-old" if owned else "conflict"
         replacement = b"" if remove else desired_rule
         after = body[:start] + replacement + body[finish:] if owned else before
+        if remove and owned and remove_created_rule_file and after == b"":
+            after = None
         # AGENTS.md may predate Atlas even when empty. Remove only our block,
         # never infer ownership of the surrounding file from its contents.
         rule = AssetPlan(path, status, before, after, mode)

@@ -63,6 +63,7 @@ from .version_check import _version_tuple
 from .verification_state import protected_snapshot
 from .routing_assets import decode_routing_bundle, plan_routing, routing_bundle
 from .routing_transaction import RoutingTransaction
+from .routing_state import load_routing_state, publish_routing_state
 from .enable_transaction import EnableTransaction
 from .lifecycle_recovery import (
     LifecycleRecoveryJournal,
@@ -850,6 +851,15 @@ def enable_project(
         )
         transaction.attach_recovery(durable)
         routing.apply()
+        prior_routing_state = load_routing_state(candidate.data_dir, root)
+        created_rule_file = (
+            bool(prior_routing_state["created_rule_file"])
+            if prior_routing_state is not None
+            else routing.plans[0].before is None
+        )
+        transaction.run(lambda: publish_routing_state(
+            candidate.data_dir, root, created_rule_file=created_rule_file
+        ))
         if previous is not None and (previous.status != "ready" or not state_existed):
             transaction.run(lambda: publish_lifecycle_state(
                 candidate.data_dir,
@@ -1626,6 +1636,23 @@ def _restore_snapshot(
         _write_recovery_file(path, payload)
 
 
+def _cleanup_empty_project_routing_directories(repository: Path) -> None:
+    """Remove only empty directories that Atlas routing may have created."""
+    for directory in (
+        repository / ".agents/skills/codebase-atlas",
+        repository / ".agents/skills",
+        repository / ".agents",
+        repository / ".codex",
+    ):
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Preserve nonempty or concurrently changed directories.
+            continue
+
+
 def remove_project(
     repository: Path, *, timeout_seconds: float = 30.0
 ) -> tuple[dict[str, Any], int]:
@@ -1698,7 +1725,13 @@ def remove_project(
         )
         if previous.status not in {"ready", "stopped", "failed"}:
             raise RuntimeError("project lifecycle is not stable enough to remove")
-        routing = RoutingTransaction(root, remove=True)
+        routing_state = load_routing_state(config.data_dir, root)
+        routing = RoutingTransaction(
+            root, remove=True,
+            remove_created_rule_file=bool(
+                routing_state and routing_state["created_rule_file"]
+            ),
+        )
         routing_records = routing.recovery_record()
         RoutingTransaction.for_recovery(root, routing_records)
         config_identity, config_bytes = _regular_snapshot(config_path)
@@ -1780,6 +1813,7 @@ def remove_project(
         publish_removal_marker(
             root, config.project, operation_id, receipt_path, status="removed"
         )
+        _cleanup_empty_project_routing_directories(root)
         return _result(
             "remove", "removed", root, mutates=True,
             project_state="removed", index_status="recovery_area",

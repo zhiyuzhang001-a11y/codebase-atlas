@@ -68,3 +68,58 @@ No open self-use findings at this checkpoint.
   bundled Node and installed Serena interpreter.
 - Resolution: the stress entrypoint now requires Provider, Node.js, and Serena
   Python to be executable files before creating the test repository.
+
+### SELF-005: removal could not distinguish an Atlas-created rule file
+
+- Observed task: exercise `enable -> remove -> remove` with repository routing
+  enabled and require the repository to return to its original shape.
+- Expected: if Atlas created `AGENTS.md`, removal deletes it; if the file
+  existed before Atlas, removal preserves the file and removes only the exact
+  managed block.
+- Actual evidence: the original-existence bit lived only in the enable process.
+  A later removal either left an empty `AGENTS.md` behind or could not encode
+  “the original file was absent” in its recovery validation.
+- Safe fallback: preserve the empty file rather than risk deleting user data.
+- Resolution: a repository-identity-bound routing ownership record now survives
+  process boundaries, participates in lifecycle recovery, and deletes only an
+  Atlas-created rule file. Empty Atlas-created routing directories are removed
+  after the final recoverable-removal marker is durable. Regression tests cover
+  both created and pre-existing rule files.
+
+### SELF-006: executable normalization escaped the Serena environment
+
+- Observed task: run the installed-candidate acceptance with the verified
+  Serena tool interpreter.
+- Expected: execute the exact virtual-environment launcher supplied by the
+  operator.
+- Actual evidence: validation called `Path.resolve()`, followed the launcher's
+  symlink to its base Python, and then reported that `serena` was not installed.
+- Safe fallback: reject that run before treating it as product evidence.
+- Resolution: executable validation now makes paths absolute without resolving
+  symlinks. Both the concurrency and candidate-project acceptance entrypoints
+  preserve virtual-environment launch semantics, with a regression test.
+
+### SELF-007: macOS acceptance temp roots could violate Provider security
+
+- Observed task: enable the candidate in a disposable repository under the
+  default macOS per-user temporary directory.
+- Expected: the Provider creates its authenticated local daemon endpoint.
+- Actual evidence: inherited ACLs on the default temporary path caused the
+  Provider to reject the endpoint as insecure.
+- Safe fallback: reject the run; do not weaken Provider permission checks.
+- Resolution: the macOS acceptance fixture uses a private `/private/tmp`
+  directory, removes inherited ACLs from its runtime directory, and retains
+  mode `0700`. Product security policy remains unchanged.
+
+### SELF-008: Provider isolation fixtures assumed macOS utilities
+
+- Observed task: prepare checkout/worktree isolation for the public
+  Linux/macOS/Windows gate.
+- Expected: the same test selects a secure runtime directory on every runner.
+- Actual evidence: the fixture hard-coded `/private/tmp` and `chmod -N`, neither
+  of which is portable to Linux or Windows.
+- Safe fallback: keep the proof local to macOS and do not claim a platform
+  matrix result.
+- Resolution: runtime fixture creation is now platform-aware; macOS retains its
+  ACL cleanup while other systems use their native temporary root and mode
+  handling.

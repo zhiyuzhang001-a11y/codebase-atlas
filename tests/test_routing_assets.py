@@ -89,6 +89,17 @@ class RoutingAssetTests(unittest.TestCase):
                 self.assertEqual(plan_routing(root)[0].status, "matching")
                 self.assertEqual(plan_routing(root, remove=True)[0].after, foreign)
 
+    def test_remove_deletes_rule_file_only_with_recorded_creation_ownership(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            RoutingTransaction(root).apply()
+            preserved = plan_routing(root, remove=True)[0]
+            deleted = plan_routing(
+                root, remove=True, remove_created_rule_file=True
+            )[0]
+            self.assertEqual(preserved.after, b"")
+            self.assertIsNone(deleted.after)
+
     def test_markers_do_not_authorize_user_edit_replacement(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -25,6 +25,7 @@ from .project_lifecycle import lifecycle_state_path, project_recovery_root
 from .python_registration_store import registration_index_path
 from .refresh_planner import manifest_path
 from .routing_transaction import RoutingTransaction
+from .routing_state import routing_state_path
 
 
 JOURNAL_NAME = "active-lifecycle-v1.json"
@@ -47,7 +48,7 @@ def _cleanup_orphans(repository: Path) -> int:
     allowed_backups = {
         f"{label}.bak" for label in {
             "config", "codex", "rule", "skill", "lifecycle", "index",
-            "manifest", "registrations", "provider",
+            "manifest", "registrations", "routing_state", "provider",
         }
     }
     for candidate in root.iterdir():
@@ -193,6 +194,7 @@ class LifecycleRecoveryJournal:
             "index": state_path(config.data_dir),
             "manifest": manifest_path(config.data_dir),
             "registrations": registration_index_path(config.data_dir),
+            "routing_state": routing_state_path(config.data_dir),
             "provider": config.cache_dir / f"{config.project}.db",
         }
         routing_after = {
@@ -229,7 +231,8 @@ class LifecycleRecoveryJournal:
                     "before": before,
                     "allowed": sorted(allowed),
                     "owned": label in {
-                        "lifecycle", "index", "manifest", "registrations", "provider"
+                        "lifecycle", "index", "manifest", "registrations",
+                        "routing_state", "provider"
                     },
                 }
             document = {
@@ -310,7 +313,7 @@ def _validate(repository: Path, value: Any, path: Path) -> dict[str, Any]:
     artifacts = value["artifacts"]
     if not isinstance(artifacts, dict) or set(artifacts) != {
         "config", "codex", "rule", "skill", "lifecycle", "index", "manifest",
-        "registrations", "provider",
+        "registrations", "routing_state", "provider",
     }:
         raise RuntimeError("lifecycle recovery artifact set is invalid")
     repository = repository.resolve()
@@ -325,6 +328,7 @@ def _validate(repository: Path, value: Any, path: Path) -> dict[str, Any]:
         "index": state_path(data_dir),
         "manifest": manifest_path(data_dir),
         "registrations": registration_index_path(data_dir),
+        "routing_state": routing_state_path(data_dir),
         "provider": cache_dir / f"{value['project']}.db",
     }
     if not expected["config"].is_relative_to(repository):
@@ -338,7 +342,8 @@ def _validate(repository: Path, value: Any, path: Path) -> dict[str, Any]:
         } or type(entry["existed"]) is not bool or type(entry["owned"]) is not bool:
             raise RuntimeError("lifecycle recovery artifact schema is invalid")
         expected_owned = label in {
-            "lifecycle", "index", "manifest", "registrations", "provider"
+            "lifecycle", "index", "manifest", "registrations", "routing_state",
+            "provider"
         }
         if entry["owned"] != expected_owned:
             raise RuntimeError("lifecycle recovery ownership is invalid")
