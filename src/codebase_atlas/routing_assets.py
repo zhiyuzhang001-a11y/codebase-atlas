@@ -120,8 +120,11 @@ def _read(repository: Path, relative: str) -> tuple[Path, bytes | None, int | No
         content = stream.read(1024 * 1024 + 1)
         final = os.fstat(stream.fileno())
     current = path.lstat()
+    # st_ctime has platform-specific semantics and Windows may refresh the
+    # path/handle value without a content mutation. Identity, mode, size,
+    # mtime, and the bytes themselves provide the portable race check.
     signature = lambda value: (value.st_dev, value.st_ino, value.st_mode,
-                               value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+                               value.st_size, value.st_mtime_ns)
     if len(content) > 1024 * 1024 or signature(metadata) != signature(final) or signature(final) != signature(current):
         raise RuntimeError("routing asset changed or exceeded budget during inspection")
     return path, content, stat.S_IMODE(metadata.st_mode)

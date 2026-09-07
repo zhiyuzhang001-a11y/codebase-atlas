@@ -14,6 +14,19 @@ from codebase_atlas.index_state import record_index_state
 
 
 class ConfigTests(unittest.TestCase):
+    def test_written_config_bytes_match_rendered_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            config = AtlasConfig(
+                repository, "python", root / "node", root / "provider",
+                root / "serena", root / "data", "project-a",
+            )
+            path = root / "atlas.toml"
+            config.write(path)
+            self.assertEqual(path.read_bytes(), config.render().encode("utf-8"))
+
     def test_old_config_without_layout_marker_remains_legacy(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

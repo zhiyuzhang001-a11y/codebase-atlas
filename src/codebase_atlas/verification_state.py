@@ -64,7 +64,13 @@ def protected_snapshot(config: AtlasConfig, config_path: Path) -> dict[str, str]
             result[str(path)] = "missing"
             continue
         if stat.S_ISLNK(before.st_mode):
-            result[str(path)] = "link:" + os.readlink(path)
+            target = os.readlink(path)
+            if os.name == "nt" and target.startswith("\\\\?\\"):
+                target = (
+                    "\\\\" + target[8:]
+                    if target.startswith("\\\\?\\UNC\\") else target[4:]
+                )
+            result[str(path)] = "link:" + target
             continue
         if stat.S_ISDIR(before.st_mode):
             # Gitlinks belong to a different repository identity.

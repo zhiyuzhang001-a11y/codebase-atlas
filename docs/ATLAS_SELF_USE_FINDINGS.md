@@ -123,3 +123,19 @@ No open self-use findings at this checkpoint.
 - Resolution: runtime fixture creation is now platform-aware; macOS retains its
   ACL cleanup while other systems use their native temporary root and mode
   handling.
+
+### SELF-009: Windows exposed non-portable file snapshot assumptions
+
+- Observed task: run the 0.26 candidate on the public Windows/Python 3.14
+  matrix.
+- Expected: unchanged routing/config files compare identically across path and
+  open-handle snapshots, and generated configuration has canonical bytes.
+- Actual evidence: Windows gave `st_ctime_ns` different path/handle semantics,
+  text writes translated LF to CRLF while the transaction authorized LF bytes,
+  and `readlink` exposed an extended `\\?\\` path prefix. These cascaded into
+  safe but false rollback conflicts.
+- Safe fallback: the public gate failed; no merge or release was attempted.
+- Resolution: routing races use portable identity/mode/size/mtime plus content,
+  configuration writes disable newline translation, and Windows link targets
+  are normalized without following them. The public matrix is the regression
+  proof.

@@ -195,13 +195,14 @@ class AtlasConfig:
         )
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.render(), encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            stream.write(self.render())
 
     def write_exclusive(self, path: Path) -> None:
         """Create a new config without replacing an existing path."""
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
             stream.write(self.render())
 
     def write_verified(self, path: Path, expected_identity: tuple[int, int]) -> None:
@@ -222,7 +223,7 @@ class AtlasConfig:
         except (OSError, ValueError):
             os.close(descriptor)
             raise
-        with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "r+", encoding="utf-8", newline="") as stream:
             original = stream.read()
             try:
                 stream.seek(0)
