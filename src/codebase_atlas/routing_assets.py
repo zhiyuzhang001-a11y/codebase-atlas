@@ -7,9 +7,12 @@ known to this release; edited or hand-installed assets remain foreign.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import binascii
 import hashlib
 import os
 from pathlib import Path
+import re
 import stat
 
 
@@ -49,6 +52,37 @@ files outside the repository follow its managed runtime policy.
 # A locally supplied hash or marker is not a published ownership authority.
 KNOWN_RULES = frozenset({hashlib.sha256(RULE).hexdigest()})
 KNOWN_SKILLS = frozenset({hashlib.sha256(SKILL).hexdigest()})
+
+
+def routing_bundle() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "rule": base64.b64encode(RULE).decode("ascii"),
+        "skill": base64.b64encode(SKILL).decode("ascii"),
+        "known_rules": sorted(KNOWN_RULES),
+        "known_skills": sorted(KNOWN_SKILLS),
+    }
+
+
+def decode_routing_bundle(value: object) -> tuple[bytes, bytes, frozenset[str], frozenset[str]]:
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version", "rule", "skill", "known_rules", "known_skills"
+    } or value.get("schema_version") != 1:
+        raise RuntimeError("routing asset bundle schema is invalid")
+    try:
+        rule = base64.b64decode(value["rule"], validate=True)
+        skill = base64.b64decode(value["skill"], validate=True)
+    except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+        raise RuntimeError("routing asset bundle encoding is invalid") from exc
+    known_rules, known_skills = value["known_rules"], value["known_skills"]
+    if (len(rule) > 1024 * 1024 or len(skill) > 1024 * 1024
+            or not isinstance(known_rules, list) or not isinstance(known_skills, list)
+            or not all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+                       for item in [*known_rules, *known_skills])
+            or hashlib.sha256(rule).hexdigest() not in known_rules
+            or hashlib.sha256(skill).hexdigest() not in known_skills):
+        raise RuntimeError("routing asset bundle content is invalid")
+    return rule, skill, frozenset(known_rules), frozenset(known_skills)
 
 
 @dataclass(frozen=True)
@@ -93,15 +127,21 @@ def _read(repository: Path, relative: str) -> tuple[Path, bytes | None, int | No
     return path, content, stat.S_IMODE(metadata.st_mode)
 
 
-def plan_routing(repository: Path, *, remove: bool = False) -> tuple[AssetPlan, ...]:
+def plan_routing(
+    repository: Path, *, remove: bool = False,
+    bundle: tuple[bytes, bytes, frozenset[str], frozenset[str]] | None = None,
+) -> tuple[AssetPlan, ...]:
     """Plan without creating directories or changing any project content."""
     repository = repository.resolve(strict=True)
+    desired_rule, desired_skill, known_rules, known_skills = bundle or (
+        RULE, SKILL, KNOWN_RULES, KNOWN_SKILLS
+    )
     path, before, mode = _read(repository, "AGENTS.md")
     body = before or b""
     begin, end = BEGIN.encode(), END.encode()
     if begin not in body and end not in body:
         rule = AssetPlan(path, "absent", before,
-                         before if remove else body + RULE, mode)
+                         before if remove else body + desired_rule, mode)
     elif body.count(begin) != 1 or body.count(end) != 1:
         rule = AssetPlan(path, "conflict", before, before, mode)
     else:
@@ -111,15 +151,15 @@ def plan_routing(repository: Path, *, remove: bool = False) -> tuple[AssetPlan, 
         if body[finish:finish + 1] == b"\n":
             finish += 1
         block = body[start:finish]
-        owned = hashlib.sha256(block).hexdigest() in KNOWN_RULES
-        status = "matching" if block == RULE else "owned-old" if owned else "conflict"
-        replacement = b"" if remove else RULE
+        owned = hashlib.sha256(block).hexdigest() in known_rules
+        status = "matching" if block == desired_rule else "owned-old" if owned else "conflict"
+        replacement = b"" if remove else desired_rule
         after = body[:start] + replacement + body[finish:] if owned else before
         # AGENTS.md may predate Atlas even when empty. Remove only our block,
         # never infer ownership of the surrounding file from its contents.
         rule = AssetPlan(path, status, before, after, mode)
     path, before, mode = _read(repository, ".agents/skills/codebase-atlas/SKILL.md")
-    owned = before is not None and hashlib.sha256(before).hexdigest() in KNOWN_SKILLS
-    status = "absent" if before is None else "matching" if before == SKILL else "owned-old" if owned else "conflict"
-    after = before if status == "conflict" else None if remove else SKILL
+    owned = before is not None and hashlib.sha256(before).hexdigest() in known_skills
+    status = "absent" if before is None else "matching" if before == desired_skill else "owned-old" if owned else "conflict"
+    after = before if status == "conflict" else None if remove else desired_skill
     return rule, AssetPlan(path, status, before, after, mode)

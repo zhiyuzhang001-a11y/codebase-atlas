@@ -17,9 +17,9 @@ from .routing_assets import AssetPlan, BEGIN, END, KNOWN_RULES, KNOWN_SKILLS, _r
 
 
 class RoutingTransaction:
-    def __init__(self, repository: Path, *, remove: bool = False):
+    def __init__(self, repository: Path, *, remove: bool = False, bundle=None):
         self.repository = repository.resolve(strict=True)
-        self.plans = plan_routing(self.repository, remove=remove)
+        self.plans = plan_routing(self.repository, remove=remove, bundle=bundle)
         self.conflicts = tuple(str(p.path) for p in self.plans if p.status == "conflict")
         if self.conflicts and not remove:
             raise RuntimeError("foreign or modified routing assets: " + ", ".join(self.conflicts))

@@ -4,10 +4,42 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from codebase_atlas.routing_assets import RULE, SKILL, plan_routing
+from codebase_atlas.routing_assets import (
+    RULE, SKILL, decode_routing_bundle, plan_routing, routing_bundle,
+)
+from codebase_atlas.routing_transaction import RoutingTransaction
 
 
 class RoutingAssetTests(unittest.TestCase):
+    def test_versioned_bundle_round_trip_and_validation(self):
+        bundle = routing_bundle()
+        decoded = decode_routing_bundle(bundle)
+        self.assertEqual(decoded[:2], (RULE, SKILL))
+        changed = dict(bundle, rule="not base64!")
+        with self.assertRaisesRegex(RuntimeError, "encoding"):
+            decode_routing_bundle(changed)
+        changed = dict(bundle, known_rules=[])
+        with self.assertRaisesRegex(RuntimeError, "content"):
+            decode_routing_bundle(changed)
+
+    def test_target_bundle_upgrades_only_known_old_assets(self):
+        import base64
+        import hashlib
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            RoutingTransaction(root).apply()
+            new_rule = RULE.replace(b"Known single-file", b"Localized single-file")
+            new_skill = SKILL.replace(b"Call project_status", b"Always call project_status")
+            target = decode_routing_bundle({
+                "schema_version": 1,
+                "rule": base64.b64encode(new_rule).decode(),
+                "skill": base64.b64encode(new_skill).decode(),
+                "known_rules": [hashlib.sha256(RULE).hexdigest(), hashlib.sha256(new_rule).hexdigest()],
+                "known_skills": [hashlib.sha256(SKILL).hexdigest(), hashlib.sha256(new_skill).hexdigest()],
+            })
+            plans = plan_routing(root, bundle=target)
+            self.assertEqual([p.status for p in plans], ["owned-old", "owned-old"])
+            self.assertEqual([p.after for p in plans], [new_rule, new_skill])
     def test_replacement_between_stat_and_open_is_rejected(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

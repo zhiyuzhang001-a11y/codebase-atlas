@@ -20,6 +20,7 @@ from codebase_atlas.project_lifecycle import (
     publish_lifecycle_state,
 )
 from codebase_atlas.simple_cli import (
+    _external_routing_bundle,
     _enable_runtime_installation,
     _verification_candidate,
     _verification_query,
@@ -339,6 +340,10 @@ class SimpleCliTests(unittest.TestCase):
                     return_value={"ok": True},
                 ),
                 patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
+                patch(
                     "codebase_atlas.simple_cli._verification_query",
                     side_effect=lambda *_args, **_kwargs: (
                         self.assertEqual(
@@ -489,6 +494,19 @@ class SimpleCliTests(unittest.TestCase):
             self.assertFalse(result["mutates"])
             self.assertEqual(installer_calls, [])
 
+    def test_external_routing_bundle_rejects_invalid_target_output(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            installation = VersionedInstallation(
+                "0.25.0", "test", root, root / "python", root / "atlas",
+                root / "provider", "provider-2", "a" * 64, "b" * 64,
+            )
+            completed = SimpleNamespace(returncode=0, stdout="not-json")
+            with self.assertRaisesRegex(RuntimeError, "invalid routing assets"):
+                _external_routing_bundle(
+                    installation, runner=lambda *_args, **_kwargs: completed
+                )
+
     def test_update_switches_verified_installation_and_preserves_ready_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -529,13 +547,17 @@ class SimpleCliTests(unittest.TestCase):
                     "codebase_atlas.simple_cli._verification_query",
                     return_value={"symbol": "target", "cross_project_negative": "pass"},
                 ),
+                patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
             ):
                 result, code = update_project(
                     repository,
                     release_fetcher=lambda: SimpleNamespace(version="0.25.0"),
                     installer=lambda _release: (installation, True),
                 )
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 0, result)
             self.assertEqual(result["status"], "updated")
             self.assertEqual(AtlasConfig.load(path).cbm_binary, installation.provider_binary)
             state = load_lifecycle_state(
@@ -580,6 +602,10 @@ class SimpleCliTests(unittest.TestCase):
                     "codebase_atlas.simple_cli._external_doctor",
                     side_effect=RuntimeError("injected acceptance failure"),
                 ),
+                patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
             ):
                 result, code = update_project(
                     repository,
@@ -596,6 +622,92 @@ class SimpleCliTests(unittest.TestCase):
                 ).status,
                 "stopped",
             )
+
+    def test_interrupted_update_rolls_back_and_reraises(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            previous = ProjectLifecycleState.initial(
+                repository, config.project, atlas_version="0.24.0"
+            )
+            publish_lifecycle_state(config.data_dir, previous)
+            environment = root / "installation"
+            environment.mkdir()
+            for name in ("python", "atlas", "provider"):
+                (environment / name).touch()
+            installation = VersionedInstallation(
+                "0.25.0", "test", environment, environment / "python",
+                environment / "atlas", environment / "provider", "provider-2",
+                "a" * 64, "b" * 64,
+            )
+            config_before = path.read_bytes()
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch("codebase_atlas.simple_cli._external_routing_bundle", return_value=None),
+                patch("codebase_atlas.simple_cli.codex_plan", return_value={
+                    "status": "planned", "target": str(repository / ".codex/config.toml")
+                }),
+                patch("codebase_atlas.simple_cli.codex_apply"),
+                patch("codebase_atlas.simple_cli._external_doctor", side_effect=KeyboardInterrupt),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    update_project(
+                        repository,
+                        release_fetcher=lambda: SimpleNamespace(version="0.25.0"),
+                        installer=lambda _release: (installation, True),
+                    )
+            self.assertEqual(path.read_bytes(), config_before)
+            self.assertFalse((repository / "AGENTS.md").exists())
+            self.assertFalse((repository / ".agents").exists())
+            restored = load_lifecycle_state(
+                config.data_dir, config.repository, config.project
+            )
+            self.assertEqual(restored.status, previous.status)
+            self.assertEqual(restored.atlas_version, previous.atlas_version)
+
+    def test_update_preserves_external_config_edit_during_failed_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(
+                    repository, config.project, atlas_version="0.24.0"
+                ),
+            )
+            environment = root / "installation"
+            environment.mkdir()
+            for name in ("python", "atlas", "provider"):
+                (environment / name).touch()
+            installation = VersionedInstallation(
+                "0.25.0", "test", environment, environment / "python",
+                environment / "atlas", environment / "provider", "provider-2",
+                "a" * 64, "b" * 64,
+            )
+            resolution = ProjectResolution("configured", repository, "ready", path)
+
+            def external_edit(*_args, **_kwargs):
+                path.write_bytes(b"user changed config during update")
+                raise RuntimeError("acceptance failed")
+
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch("codebase_atlas.simple_cli._external_routing_bundle", return_value=None),
+                patch("codebase_atlas.simple_cli.codex_plan", return_value={
+                    "status": "planned", "target": str(repository / ".codex/config.toml")
+                }),
+                patch("codebase_atlas.simple_cli.codex_apply"),
+                patch("codebase_atlas.simple_cli._external_doctor", side_effect=external_edit),
+            ):
+                result, code = update_project(
+                    repository,
+                    release_fetcher=lambda: SimpleNamespace(version="0.25.0"),
+                    installer=lambda _release: (installation, True),
+                )
+            self.assertEqual(code, 2)
+            self.assertFalse(result["previous_state_preserved"])
+            self.assertEqual(path.read_bytes(), b"user changed config during update")
 
     def test_remove_moves_owned_config_and_data_to_recovery_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

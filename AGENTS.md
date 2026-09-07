@@ -15,3 +15,24 @@
 - Deployment is complete only after repository identity, health, freshness and
   one real query are verified. Existing Codex tasks must be reopened after MCP
   configuration changes.
+
+## Repository analysis
+
+- For cross-file discovery, dependency tracing, or impact analysis, first read
+  `.agents/skills/codebase-atlas/SKILL.md` and use this repository's Atlas MCP.
+- Check the exact repository identity and freshness with `project_status`
+  before accepting evidence, and use `analyze_change` for change-impact work.
+- If Atlas is stopped, stale, partial, mismatched, or fails the query, state the
+  limitation and fall back to direct source inspection. Never present failed or
+  mismatched Atlas output as repository fact.
+- Do not create parallel navigation caches, generated summaries, or other
+  substitute indexes in the repository.
+
+## Atlas self-use feedback
+
+- When Atlas is used to develop Atlas, record reproducible product shortcomings
+  in `docs/ATLAS_SELF_USE_FINDINGS.md`.
+- Each finding must include the observed command or task, expected behavior,
+  actual evidence, safe fallback, and the test or change that resolves it.
+- Keep unresolved findings explicit. Do not turn stale, partial, mismatched, or
+  failed output into facts about the codebase.

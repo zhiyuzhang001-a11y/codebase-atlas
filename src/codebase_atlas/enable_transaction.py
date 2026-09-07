@@ -42,6 +42,10 @@ class EnableTransaction:
         self.database_identity = self._database_identity()
         self.database_touched = False
 
+    def allow_config(self, config: AtlasConfig):
+        """Authorize one Atlas-rendered config generation for publication."""
+        self.allowed[self.paths[0]].add(config.render().encode("utf-8"))
+
     def allow_codex_plan(self, plan: dict):
         block = plan.get("managed_block")
         if not isinstance(block, str):

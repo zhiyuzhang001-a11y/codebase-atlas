@@ -54,7 +54,7 @@ from .release_installation import (
 )
 from .version_check import _version_tuple
 from .verification_state import protected_snapshot
-from .routing_assets import plan_routing
+from .routing_assets import decode_routing_bundle, plan_routing, routing_bundle
 from .routing_transaction import RoutingTransaction
 from .enable_transaction import EnableTransaction
 from .provider_transport import CodebaseMemoryMcpTransport
@@ -1091,6 +1091,23 @@ def _external_doctor(
     return payload
 
 
+def _external_routing_bundle(
+    installation: VersionedInstallation, *, runner: Any = subprocess.run
+):
+    completed = runner(
+        [str(installation.python), "-m", "codebase_atlas.simple_cli",
+         "_routing-assets"],
+        check=False, capture_output=True, text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("updated Atlas did not export routing assets")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("updated Atlas returned invalid routing assets") from exc
+    return decode_routing_bundle(payload)
+
+
 def update_project(
     repository: Path,
     *,
@@ -1140,12 +1157,8 @@ def update_project(
             error="another lifecycle operation owns this project",
         ), 2
     refresh = ProjectRefreshLease(config.data_dir, config.repository, config.project)
-    config_identity: tuple[int, int] | None = None
-    config_bytes = b""
-    codex_target: Path | None = None
-    codex_identity: tuple[int, int] | None = None
-    codex_bytes = b""
-    lifecycle_mutated = False
+    transaction: EnableTransaction | None = None
+    routing: RoutingTransaction | None = None
     try:
         if not _acquire_refresh(refresh, timeout_seconds=timeout_seconds):
             raise RuntimeError("timed out waiting for the active project refresh")
@@ -1154,29 +1167,36 @@ def update_project(
         )
         if current.operation_generation != previous.operation_generation:
             raise RuntimeError("project lifecycle changed while preparing update")
+        config_identity, _ = _regular_snapshot(config_path)
+        transaction = EnableTransaction(config, config_path)
+        target_bundle = _external_routing_bundle(installation, runner=runner)
+        routing = RoutingTransaction(root, bundle=target_bundle)
+        routing.apply()
         operation_id = secrets.token_hex(16)
         updating = current.transition("updating", operation_id=operation_id)
-        publish_lifecycle_state(config.data_dir, updating)
-        lifecycle_mutated = True
-        preview = codex_plan(config_path, scope="project", codex_project_root=root)
-        if preview["status"] == "blocked":
-            raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
-        codex_target = Path(str(preview["target"]))
-        if codex_target.exists():
-            codex_identity, codex_bytes = _regular_snapshot(codex_target)
-        config_identity, config_bytes = _regular_snapshot(config_path)
-        candidate = replace(config, cbm_binary=installation.provider_binary)
-        candidate.write_verified(config_path, config_identity)
-        codex_apply(
+        transaction.run(lambda: publish_lifecycle_state(config.data_dir, updating))
+        preview = codex_plan(
             config_path, scope="project", codex_project_root=root,
             atlas_executable=installation.atlas_executable,
         )
+        if preview["status"] == "blocked":
+            raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
+        candidate = replace(config, cbm_binary=installation.provider_binary)
+        transaction.allow_config(candidate)
+        transaction.run(lambda: candidate.write_verified(
+            config_path, config_identity
+        ))
+        transaction.allow_codex_plan(preview)
+        transaction.run(lambda: codex_apply(
+            config_path, scope="project", codex_project_root=root,
+            atlas_executable=installation.atlas_executable,
+        ))
         candidate_ready = updating.transition(
             "ready",
             atlas_version=installation.version,
             provider_version=installation.provider_version,
         )
-        publish_lifecycle_state(config.data_dir, candidate_ready)
+        transaction.run(lambda: publish_lifecycle_state(config.data_dir, candidate_ready))
         doctor = _external_doctor(installation, config_path, runner=runner)
         inspection = inspect_installation(candidate, deep=True)
         verification = _verification_query(
@@ -1191,7 +1211,8 @@ def update_project(
             else candidate_ready.transition("stopped")
         )
         if final != candidate_ready:
-            publish_lifecycle_state(config.data_dir, final)
+            transaction.run(lambda: publish_lifecycle_state(config.data_dir, final))
+        backup_cleaned = transaction.commit()
         return _result(
             "update", "updated", root,
             mutates=True,
@@ -1203,51 +1224,31 @@ def update_project(
             installation_reused=not installation_mutated,
             doctor=doctor.get("status"), verification=verification,
             current_session_refresh_required=True,
+            routing_status="updated",
+            backup_cleanup="complete" if backup_cleaned else "pending",
         ), 0
-    except (OSError, RuntimeError, ValueError) as exc:
-        rollback_errors = []
-        if config_identity is not None:
-            try:
-                AtlasConfig.restore_verified(config_path, config_identity, config_bytes)
-            except (OSError, ValueError) as rollback:
-                rollback_errors.append(f"config: {rollback}")
-        if codex_target is not None:
-            try:
-                if codex_identity is not None:
-                    AtlasConfig.restore_verified(
-                        codex_target, codex_identity, codex_bytes
-                    )
-                elif codex_target.exists():
-                    from .codex_integration import codex_remove
-                    codex_remove(config_path, scope="project", codex_project_root=root)
-            except (OSError, RuntimeError, ValueError) as rollback:
-                rollback_errors.append(f"codex: {rollback}")
-        if lifecycle_mutated:
-            try:
-                rollback_state = load_lifecycle_state(
-                    config.data_dir, config.repository, config.project,
-                    missing_status=previous.status,
-                ).transition(
-                    previous.status,
-                    atlas_version=previous.atlas_version,
-                    provider_version=previous.provider_version,
-                    index_generation=previous.index_generation,
-                    failure_reason=(
-                        previous.failure_reason if previous.status == "failed" else ""
-                    ),
-                )
-                publish_lifecycle_state(config.data_dir, rollback_state)
-            except (OSError, ValueError) as rollback:
-                rollback_errors.append(f"lifecycle: {rollback}")
+    except BaseException as exc:
+        rollback_errors: list[str] = []
+        if routing is not None:
+            rollback_errors.extend(f"routing: {error}" for error in routing.rollback())
+        if transaction is not None:
+            rollback_errors.extend(transaction.rollback())
+        if not isinstance(exc, (OSError, RuntimeError, ValueError)):
+            if rollback_errors:
+                exc.add_note("update rollback incomplete: " + "; ".join(rollback_errors))
+            raise
         detail = str(exc)
         if rollback_errors:
             detail += "; rollback failed: " + "; ".join(rollback_errors)
         return _result(
             "update", "incomplete", root,
-            mutates=installation_mutated or lifecycle_mutated,
-            project_state=previous.status, index_status="preserved",
+            mutates=installation_mutated or bool(rollback_errors),
+            project_state=previous.status if not rollback_errors else "unknown",
+            index_status="preserved" if not rollback_errors else "unknown",
             connection_status="unchanged", error=detail,
             previous_version=current_version,
+            rollback_errors=rollback_errors,
+            previous_state_preserved=not rollback_errors,
         ), 2
     finally:
         refresh.release()
@@ -1542,6 +1543,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="atlas")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("_routing-assets", help=argparse.SUPPRESS)
     enable = commands.add_parser("enable", help="enable Atlas for one exact Git repository")
     enable.add_argument("--repo", type=Path, default=Path.cwd())
     enable.add_argument("--config", type=Path)
@@ -1574,6 +1576,9 @@ def main(argv: list[str] | None = None) -> int:
     remove.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command == "_routing-assets":
+            print(json.dumps(routing_bundle(), separators=(",", ":")))
+            return 0
         if args.command == "enable":
             installation = _enable_runtime_installation()
             if not _same_executable(Path(sys.executable), installation.python):

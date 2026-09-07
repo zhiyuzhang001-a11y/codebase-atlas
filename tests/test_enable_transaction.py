@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from codebase_atlas.config import AtlasConfig
 from codebase_atlas.enable_transaction import EnableTransaction
 from tests.test_simple_cli import configured_project
 
@@ -49,6 +50,16 @@ class EnableTransactionTests(unittest.TestCase):
             path.write_bytes(b"user changed this")
             self.assertTrue(transaction.rollback())
             self.assertEqual(path.read_bytes(), b"user changed this")
+
+    def test_update_candidate_can_be_explicitly_authorized(self):
+        with tempfile.TemporaryDirectory() as raw:
+            _, config, path = configured_project(Path(raw))
+            transaction = EnableTransaction(config, path)
+            candidate = config.with_project("project-b")
+            transaction.allow_config(candidate)
+            transaction.run(lambda: path.write_text(candidate.render()))
+            self.assertEqual(transaction.rollback(), [])
+            self.assertEqual(AtlasConfig.load(path).project, config.project)
 
     def test_initial_failure_removes_new_index(self):
         with tempfile.TemporaryDirectory() as raw:
