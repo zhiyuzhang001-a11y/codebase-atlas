@@ -277,16 +277,24 @@ function loadProgram(repository, selectedConfig = '', targetPath = '') {
   let productionRoots = config.fileNames;
   if (targetPath) {
     const targetFile = path.resolve(repository, targetPath);
-    const configuredFiles = new Set(config.fileNames.map((filename) => path.resolve(filename)));
-    if (!configuredFiles.has(targetFile)) {
+    const canonicalTargetFile = fs.realpathSync.native(targetFile);
+    const configuredFiles = new Set(
+      config.fileNames.map((filename) => fs.realpathSync.native(filename)),
+    );
+    if (!configuredFiles.has(canonicalTargetFile)) {
       throw new Error(`${targetPath} is outside the selected TypeScript project ${configPath}`);
     }
     // Imports are loaded transitively, so a scoped query only needs its intended
     // declaration plus the selected project's tests as roots. This prevents an
     // unrelated monorepo package from consuming the entire compiler heap.
-    productionRoots = [targetFile];
+    productionRoots = [canonicalTargetFile];
   }
-  const rootNames = [...new Set([...productionRoots, ...testFiles])];
+  // Windows can enumerate the same file once through an 8.3 root and once
+  // through its long spelling. Canonicalize before de-duplicating so the
+  // compiler cannot create duplicate declarations for one physical source.
+  const rootNames = [...new Set(
+    [...productionRoots, ...testFiles].map(filename => fs.realpathSync.native(filename)),
+  )];
   return ts.createProgram({ rootNames, options: config.options });
 }
 

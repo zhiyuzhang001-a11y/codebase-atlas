@@ -2,10 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.25.2**. This patch makes lifecycle acceptance prefer
-product source over fixtures and tests. It retains the 0.25.1 self-bootstrap,
-relocated-launcher, real-query verification and intent-aware compact Change
-Brief improvements.
+Current stable release: **0.26.0**. This release adds compact status and verify
+diagnostics, transactionally managed Codex routing, durable lifecycle recovery,
+nested-repository discovery, and cross-platform multi-client qualification.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
@@ -96,6 +95,8 @@ automatically discovered by unrelated repositories.
 
 ```bash
 atlas enable                 # install/reuse, configure, index, verify, and enable
+atlas status                 # show lightweight project and Codex configuration state
+atlas verify                 # rerun deep acceptance checks without refreshing
 atlas stop                   # stop queries; preserve configuration and index
 atlas update                 # verify and switch this project to latest stable
 atlas remove                 # recoverably remove only this project's Atlas data
@@ -103,8 +104,8 @@ atlas remove                 # recoverably remove only this project's Atlas data
 
 Commands target the exact Git repository containing the current directory; use
 `--repo /absolute/path` to select one explicitly. `enable` is idempotent and also
-resumes a stopped or recoverably removed project. `stop`, `update`, and `remove`
-never silently enable an unconfigured project. All four commands support
+resumes a stopped or recoverably removed project. `status`, `verify`, `stop`,
+`update`, and `remove` never silently enable an unconfigured project. All commands support
 `--json` for stable schema-versioned output.
 
 The first `enable` writes an Atlas-owned project MCP block. Start one new Codex

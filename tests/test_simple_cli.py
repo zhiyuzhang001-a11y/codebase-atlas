@@ -20,16 +20,21 @@ from codebase_atlas.project_lifecycle import (
     publish_lifecycle_state,
 )
 from codebase_atlas.simple_cli import (
+    _external_routing_bundle,
     _enable_runtime_installation,
     _verification_candidate,
     _verification_query,
     enable_project,
     main,
     remove_project,
+    status_project,
     stop_project,
+    verify_project,
 )
 from codebase_atlas.simple_cli import update_project
 from codebase_atlas.release_installation import VersionedInstallation
+from codebase_atlas.routing_transaction import RoutingTransaction
+from codebase_atlas.routing_state import publish_routing_state
 
 
 def git_repository(root: Path) -> Path:
@@ -53,6 +58,189 @@ def configured_project(root: Path) -> tuple[Path, AtlasConfig, Path]:
 
 
 class SimpleCliTests(unittest.TestCase):
+    def test_enable_rejects_foreign_skill_before_restoration_or_onboarding(self):
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b"manually installed skill")
+            with (
+                patch("codebase_atlas.simple_cli.build_plan") as onboarding,
+                patch("codebase_atlas.simple_cli._restore_removed_project") as restore,
+            ):
+                result, code = enable_project(repository)
+            self.assertEqual(code, 2)
+            self.assertEqual(result["reason_code"], "routing_preflight_failed")
+            self.assertFalse(result["mutates"])
+            onboarding.assert_not_called()
+            restore.assert_not_called()
+            self.assertEqual(skill.read_bytes(), b"manually installed skill")
+
+    def test_status_reports_unconfigured_repository_without_mutating(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            before = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            result, code = status_project(repository)
+            after = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "not_enabled")
+            self.assertEqual(result["project_state"], "not_enabled")
+            self.assertFalse(result["mutates"])
+            self.assertEqual(before, after)
+
+    def test_status_reports_nested_git_repository_without_descending(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            nested = repository / "nested"
+            nested.mkdir()
+            subprocess.run(["git", "-C", str(nested), "init", "-q"], check=True)
+            deeper = nested / "not-scanned"
+            deeper.mkdir()
+            subprocess.run(["git", "-C", str(deeper), "init", "-q"], check=True)
+            result, code = status_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["nested_repositories"]["status"], "complete")
+            self.assertEqual(result["nested_repositories"]["repositories"], ["nested"])
+
+    def test_status_does_not_treat_bogus_git_marker_as_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            nested = repository / "not-a-repository"
+            nested.mkdir()
+            (nested / ".git").write_text("invalid git marker", encoding="utf-8")
+            result, code = status_project(repository)
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["nested_repositories"]["repositories"], [])
+            self.assertEqual(result["nested_repositories"]["status"], "partial")
+
+    def test_status_time_budget_is_explicit_and_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            before = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            with patch(
+                "codebase_atlas.simple_cli.STATUS_DISCOVERY_TIMEOUT_SECONDS", 0.0
+            ):
+                result, code = status_project(repository)
+            after = sorted(path.relative_to(repository) for path in repository.rglob("*"))
+            self.assertEqual(code, 2)
+            self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(
+                result["reason_code"], "nested_repository_time_budget_exceeded"
+            )
+            self.assertEqual(before, after)
+
+    def test_verification_refuses_missing_or_truncated_negative_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            source = repository / "target.py"
+            source.write_text("def target():\n    return 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "target.py"], check=True)
+            for negative in ({}, {"nodes": [], "truncated": True},
+                             {"nodes": [], "status": "partial"}):
+                with self.subTest(negative=negative), patch(
+                    "codebase_atlas.simple_cli._query_payload",
+                    side_effect=[{"nodes": [{"source": {"path": "target.py"}}]}, negative],
+                ):
+                    with self.assertRaises(RuntimeError):
+                        _verification_query(config, path)
+
+    def test_status_combines_lifecycle_index_and_codex_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={"status": "ready", "ok": True, "reason": "project_ready"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.operational_index_status",
+                    return_value={"status": "fresh", "ok": True, "reason": "current"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"existing": "matching", "target": str(repository / ".codex/config.toml")},
+                ),
+            ):
+                result, code = status_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(result["project"], config.project)
+            self.assertEqual(result["codex_config_status"], "configured")
+            self.assertEqual(result["current_task_connection"], "unknown")
+            self.assertIsNone(result["task_reload_required"])
+
+    def test_verify_stopped_project_does_not_query(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, _config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={"status": "stopped", "ok": False, "reason": "project_stopped"},
+                ),
+                patch("codebase_atlas.simple_cli._owned_verification_query") as query,
+            ):
+                result, code = verify_project(repository)
+            self.assertEqual(code, 4)
+            self.assertEqual(result["status"], "BLOCKED")
+            query.assert_not_called()
+
+    def test_verify_reuses_acceptance_checks_and_query(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            ready_checks = [{"name": "runtime", "ok": True, "required": True}]
+            verification = {
+                "symbol": "target", "target_path": "target.py",
+                "matched_nodes": 1, "nonexistent_symbol": "pass",
+                "owned_process_cleanup": "pass",
+            }
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={"status": "ready", "ok": True, "reason": "project_ready"},
+                ),
+                patch("codebase_atlas.simple_cli.diagnose", return_value=ready_checks),
+                patch(
+                    "codebase_atlas.simple_cli.index_freshness",
+                    return_value={"status": "fresh", "ok": True, "reason": "current"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.inspect_installation",
+                    return_value={"status": "healthy", "ok": True, "findings": []},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"existing": "matching", "target": str(repository / ".codex/config.toml")},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli._owned_verification_query",
+                    return_value=verification,
+                ) as query,
+            ):
+                result, code = verify_project(repository)
+                query.assert_called_once_with(config)
+                with patch("codebase_atlas.simple_cli.protected_snapshot",
+                           side_effect=[{"source": "before"}, {"source": "after"}]):
+                    changed, changed_code = verify_project(repository)
+                self.assertEqual(changed_code, 2)
+                self.assertEqual(changed["status"], "INCOMPLETE")
+                self.assertIn("protected state changed", changed["checks"][-1]["reason"])
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "PASS")
+            pending = {check["name"] for check in result["checks"]
+                       if check.get("status") == "not_run"}
+            self.assertNotIn("protected_state_unchanged", pending)
+            self.assertNotIn("owned_process_cleanup", pending)
+            self.assertIn("cross_repository_isolation", pending)
+            self.assertEqual(result["project"], config.project)
+            self.assertEqual(result["verification"], verification)
+
     def test_enable_runtime_prefers_latest_verified_stable_release(self) -> None:
         installation = VersionedInstallation(
             "0.25.1", "test", Path("/installation"), Path("/python"),
@@ -135,6 +323,39 @@ class SimpleCliTests(unittest.TestCase):
                 "stopped",
             )
 
+    def test_interrupted_stop_restores_ready_state_and_reraises(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, path = configured_project(Path(raw))
+            ready = ProjectLifecycleState.initial(
+                repository, config.project, atlas_version="0.25.2"
+            )
+            publish_lifecycle_state(config.data_dir, ready)
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            real_publish = publish_lifecycle_state
+            publications = 0
+
+            def interrupt_after_stopping(data_dir, state):
+                nonlocal publications
+                publications += 1
+                real_publish(data_dir, state)
+                if publications == 1:
+                    raise KeyboardInterrupt()
+
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.publish_lifecycle_state",
+                    side_effect=interrupt_after_stopping,
+                ),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    stop_project(repository, timeout_seconds=0)
+            restored = load_lifecycle_state(
+                config.data_dir, config.repository, config.project
+            )
+            self.assertEqual(restored.status, "ready")
+            self.assertEqual(restored.atlas_version, "0.25.2")
+
     def test_enable_composes_existing_onboarding_codex_and_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
@@ -171,6 +392,10 @@ class SimpleCliTests(unittest.TestCase):
                     return_value={"ok": True},
                 ),
                 patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
+                patch(
                     "codebase_atlas.simple_cli._verification_query",
                     side_effect=lambda *_args, **_kwargs: (
                         self.assertEqual(
@@ -187,6 +412,8 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(result["status"], "ready")
             self.assertEqual(result["connection_status"], "configured_task_start_required")
+            self.assertTrue((repository / "AGENTS.md").is_file())
+            self.assertTrue((repository / ".agents/skills/codebase-atlas/SKILL.md").is_file())
             self.assertTrue(result["mutates"])
             self.assertEqual(
                 load_lifecycle_state(
@@ -198,6 +425,10 @@ class SimpleCliTests(unittest.TestCase):
     def test_failed_enable_restores_prior_stopped_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
+            original_config = path.read_bytes()
+            config.cache_dir.mkdir(parents=True)
+            database = config.cache_dir / f"{config.project}.db"
+            database.write_bytes(b"old generation")
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(
@@ -206,17 +437,32 @@ class SimpleCliTests(unittest.TestCase):
             )
             resolution = ProjectResolution("configured", repository, "ready", path)
             onboarding = {"status": "planned", "config": str(path)}
+            def index_then_fail(*_args, **_kwargs):
+                self.assertTrue((repository / "AGENTS.md").is_file())
+                temporary = config.cache_dir / "new-generation.db"
+                temporary.write_bytes(b"new generation")
+                temporary.replace(database)
+                config.write(path)
+                return {"status": "failed", "error": "injected"}, 2
             with (
                 patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
                 patch("codebase_atlas.simple_cli.build_plan", return_value=(onboarding, config)),
                 patch(
                     "codebase_atlas.simple_cli.apply_plan",
-                    return_value=({"status": "failed", "error": "injected"}, 2),
+                    side_effect=index_then_fail,
                 ),
             ):
                 result, code = enable_project(repository)
+                with patch("codebase_atlas.simple_cli.apply_plan", side_effect=KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        enable_project(repository)
             self.assertEqual(code, 2)
             self.assertEqual(result["status"], "incomplete")
+            self.assertEqual(result["rollback_errors"], [])
+            self.assertEqual(path.read_bytes(), original_config)
+            self.assertEqual(database.read_bytes(), b"old generation")
+            self.assertFalse((repository / "AGENTS.md").exists())
+            self.assertFalse((repository / ".agents").exists())
             self.assertEqual(
                 load_lifecycle_state(
                     config.data_dir, config.repository, config.project
@@ -300,6 +546,19 @@ class SimpleCliTests(unittest.TestCase):
             self.assertFalse(result["mutates"])
             self.assertEqual(installer_calls, [])
 
+    def test_external_routing_bundle_rejects_invalid_target_output(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            installation = VersionedInstallation(
+                "0.25.0", "test", root, root / "python", root / "atlas",
+                root / "provider", "provider-2", "a" * 64, "b" * 64,
+            )
+            completed = SimpleNamespace(returncode=0, stdout="not-json")
+            with self.assertRaisesRegex(RuntimeError, "invalid routing assets"):
+                _external_routing_bundle(
+                    installation, runner=lambda *_args, **_kwargs: completed
+                )
+
     def test_update_switches_verified_installation_and_preserves_ready_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -340,13 +599,17 @@ class SimpleCliTests(unittest.TestCase):
                     "codebase_atlas.simple_cli._verification_query",
                     return_value={"symbol": "target", "cross_project_negative": "pass"},
                 ),
+                patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
             ):
                 result, code = update_project(
                     repository,
                     release_fetcher=lambda: SimpleNamespace(version="0.25.0"),
                     installer=lambda _release: (installation, True),
                 )
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 0, result)
             self.assertEqual(result["status"], "updated")
             self.assertEqual(AtlasConfig.load(path).cbm_binary, installation.provider_binary)
             state = load_lifecycle_state(
@@ -391,6 +654,10 @@ class SimpleCliTests(unittest.TestCase):
                     "codebase_atlas.simple_cli._external_doctor",
                     side_effect=RuntimeError("injected acceptance failure"),
                 ),
+                patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
             ):
                 result, code = update_project(
                     repository,
@@ -408,6 +675,92 @@ class SimpleCliTests(unittest.TestCase):
                 "stopped",
             )
 
+    def test_interrupted_update_rolls_back_and_reraises(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            previous = ProjectLifecycleState.initial(
+                repository, config.project, atlas_version="0.24.0"
+            )
+            publish_lifecycle_state(config.data_dir, previous)
+            environment = root / "installation"
+            environment.mkdir()
+            for name in ("python", "atlas", "provider"):
+                (environment / name).touch()
+            installation = VersionedInstallation(
+                "0.25.0", "test", environment, environment / "python",
+                environment / "atlas", environment / "provider", "provider-2",
+                "a" * 64, "b" * 64,
+            )
+            config_before = path.read_bytes()
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch("codebase_atlas.simple_cli._external_routing_bundle", return_value=None),
+                patch("codebase_atlas.simple_cli.codex_plan", return_value={
+                    "status": "planned", "target": str(repository / ".codex/config.toml")
+                }),
+                patch("codebase_atlas.simple_cli.codex_apply"),
+                patch("codebase_atlas.simple_cli._external_doctor", side_effect=KeyboardInterrupt),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    update_project(
+                        repository,
+                        release_fetcher=lambda: SimpleNamespace(version="0.25.0"),
+                        installer=lambda _release: (installation, True),
+                    )
+            self.assertEqual(path.read_bytes(), config_before)
+            self.assertFalse((repository / "AGENTS.md").exists())
+            self.assertFalse((repository / ".agents").exists())
+            restored = load_lifecycle_state(
+                config.data_dir, config.repository, config.project
+            )
+            self.assertEqual(restored.status, previous.status)
+            self.assertEqual(restored.atlas_version, previous.atlas_version)
+
+    def test_update_preserves_external_config_edit_during_failed_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(
+                    repository, config.project, atlas_version="0.24.0"
+                ),
+            )
+            environment = root / "installation"
+            environment.mkdir()
+            for name in ("python", "atlas", "provider"):
+                (environment / name).touch()
+            installation = VersionedInstallation(
+                "0.25.0", "test", environment, environment / "python",
+                environment / "atlas", environment / "provider", "provider-2",
+                "a" * 64, "b" * 64,
+            )
+            resolution = ProjectResolution("configured", repository, "ready", path)
+
+            def external_edit(*_args, **_kwargs):
+                path.write_bytes(b"user changed config during update")
+                raise RuntimeError("acceptance failed")
+
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch("codebase_atlas.simple_cli._external_routing_bundle", return_value=None),
+                patch("codebase_atlas.simple_cli.codex_plan", return_value={
+                    "status": "planned", "target": str(repository / ".codex/config.toml")
+                }),
+                patch("codebase_atlas.simple_cli.codex_apply"),
+                patch("codebase_atlas.simple_cli._external_doctor", side_effect=external_edit),
+            ):
+                result, code = update_project(
+                    repository,
+                    release_fetcher=lambda: SimpleNamespace(version="0.25.0"),
+                    installer=lambda _release: (installation, True),
+                )
+            self.assertEqual(code, 2)
+            self.assertFalse(result["previous_state_preserved"])
+            self.assertEqual(path.read_bytes(), b"user changed config during update")
+
     def test_remove_moves_owned_config_and_data_to_recovery_and_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -415,6 +768,10 @@ class SimpleCliTests(unittest.TestCase):
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(repository, config.project),
+            )
+            RoutingTransaction(repository).apply()
+            publish_routing_state(
+                config.data_dir, repository, created_rule_file=True
             )
             (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
             resolution = ProjectResolution("configured", repository, "ready", path)
@@ -441,6 +798,8 @@ class SimpleCliTests(unittest.TestCase):
             self.assertFalse(second["mutates"])
             self.assertFalse(path.exists())
             self.assertFalse(config.data_dir.exists())
+            self.assertFalse((repository / "AGENTS.md").exists())
+            self.assertFalse((repository / ".agents").exists())
             receipt = Path(first["receipt"])
             self.assertTrue(receipt.is_file())
             recovered = json.loads(receipt.read_text(encoding="utf-8"))
@@ -453,6 +812,10 @@ class SimpleCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            rule = repository / "AGENTS.md"
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            routing_before = (rule.read_bytes(), skill.read_bytes())
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(repository, config.project),
@@ -495,6 +858,7 @@ class SimpleCliTests(unittest.TestCase):
                 marker = simple_cli.load_removal_marker(repository)
             self.assertEqual(code, 2)
             self.assertIn("injected final marker failure", result["error"])
+            self.assertEqual(routing_before, (rule.read_bytes(), skill.read_bytes()))
             self.assertTrue(path.is_file())
             self.assertTrue((config.data_dir / "owned-index").is_file())
             self.assertIsNone(marker)
@@ -505,10 +869,141 @@ class SimpleCliTests(unittest.TestCase):
                 "ready",
             )
 
+    def test_next_command_recovers_remove_interrupted_after_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            rule_before = (repository / "AGENTS.md").read_bytes()
+            skill_before = (
+                repository / ".agents/skills/codebase-atlas/SKILL.md"
+            ).read_bytes()
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(repository, config.project),
+            )
+            (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            from codebase_atlas import simple_cli
+            real_unlink = simple_cli._unlink_verified
+
+            def exit_before_config_removal(target, identity):
+                if target.name == ".codebase-atlas.toml":
+                    raise SystemExit(91)
+                return real_unlink(target, identity)
+
+            with (
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}),
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli._unlink_verified",
+                    side_effect=exit_before_config_removal,
+                ),
+            ):
+                with self.assertRaisesRegex(SystemExit, "91"):
+                    remove_project(repository, timeout_seconds=0)
+            with patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}):
+                stopped, code = stop_project(repository, timeout_seconds=0)
+                marker = load_removal_marker(repository)
+            self.assertEqual(code, 0, stopped)
+            self.assertIsNone(marker)
+            self.assertTrue(path.is_file())
+            self.assertTrue((config.data_dir / "owned-index").is_file())
+            self.assertEqual((repository / "AGENTS.md").read_bytes(), rule_before)
+            self.assertEqual(
+                (repository / ".agents/skills/codebase-atlas/SKILL.md").read_bytes(),
+                skill_before,
+            )
+
+    def test_next_command_recovers_remove_interrupted_after_data_move(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(repository, config.project),
+            )
+            (config.data_dir / "owned-index").write_text("data", encoding="utf-8")
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            from codebase_atlas import simple_cli
+            real_publish = simple_cli._publish_recovery_json
+
+            def exit_before_final_receipt(target, value):
+                if value.get("status") == "removed":
+                    raise SystemExit(92)
+                return real_publish(target, value)
+
+            with (
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}),
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli._publish_recovery_json",
+                    side_effect=exit_before_final_receipt,
+                ),
+            ):
+                with self.assertRaisesRegex(SystemExit, "92"):
+                    remove_project(repository, timeout_seconds=0)
+                self.assertFalse(config.data_dir.exists())
+                self.assertFalse(path.exists())
+            with patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}):
+                stopped, code = stop_project(repository, timeout_seconds=0)
+                marker = load_removal_marker(repository)
+            self.assertEqual(code, 0, stopped)
+            self.assertIsNone(marker)
+            self.assertTrue(path.is_file())
+            self.assertTrue((config.data_dir / "owned-index").is_file())
+            self.assertTrue((repository / "AGENTS.md").is_file())
+            self.assertTrue(
+                (repository / ".agents/skills/codebase-atlas/SKILL.md").is_file()
+            )
+
+    def test_remove_crash_recovery_preserves_external_routing_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(repository, config.project),
+            )
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            from codebase_atlas import simple_cli
+            real_unlink = simple_cli._unlink_verified
+
+            def exit_before_config_removal(target, identity):
+                if target.name == ".codebase-atlas.toml":
+                    raise SystemExit(93)
+                return real_unlink(target, identity)
+
+            with (
+                patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}),
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli._unlink_verified",
+                    side_effect=exit_before_config_removal,
+                ),
+            ):
+                with self.assertRaises(SystemExit):
+                    remove_project(repository, timeout_seconds=0)
+            rule = repository / "AGENTS.md"
+            rule.write_text("user replacement", encoding="utf-8")
+            with patch.dict(os.environ, {"XDG_DATA_HOME": str(root / "xdg")}):
+                result, code = stop_project(repository, timeout_seconds=0)
+                marker = load_removal_marker(repository)
+            self.assertEqual(code, 2)
+            self.assertEqual(result["reason_code"], "lifecycle_recovery_required")
+            self.assertEqual(rule.read_text(encoding="utf-8"), "user replacement")
+            self.assertIsNotNone(marker)
+
     def test_enable_restores_a_removed_project_before_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            rule = repository / "AGENTS.md"
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            routing_before = (rule.read_bytes(), skill.read_bytes())
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(repository, config.project),
@@ -535,6 +1030,27 @@ class SimpleCliTests(unittest.TestCase):
             ):
                 removed, remove_code = remove_project(repository, timeout_seconds=0)
                 self.assertEqual(remove_code, 0)
+                self.assertFalse(skill.exists())
+                self.assertEqual(rule.read_bytes(), b"")
+                from codebase_atlas import simple_cli
+                real_unlink = simple_cli._unlink_verified
+
+                def fail_recovery_marker(target, identity):
+                    if target.name == "removed.json":
+                        raise OSError("injected recovery marker failure")
+                    return real_unlink(target, identity)
+
+                marker_before = load_removal_marker(repository)
+                with patch("codebase_atlas.simple_cli._unlink_verified", side_effect=fail_recovery_marker):
+                    with self.assertRaisesRegex(OSError, "recovery marker failure"):
+                        simple_cli._restore_removed_project(repository, marker_before)
+                self.assertEqual(load_removal_marker(repository), marker_before)
+                self.assertFalse(path.exists())
+                self.assertFalse(skill.exists())
+                receipt = json.loads(Path(removed["receipt"]).read_text())
+                self.assertEqual(load_lifecycle_state(
+                    Path(receipt["recovered_data_dir"]), config.repository, config.project
+                ).status, "removed")
                 with (
                     patch(
                         "codebase_atlas.simple_cli.build_plan",
@@ -572,6 +1088,7 @@ class SimpleCliTests(unittest.TestCase):
                     enabled, enable_code = enable_project(repository)
                 marker = load_removal_marker(repository)
             self.assertEqual(enable_code, 0)
+            self.assertEqual(routing_before, (rule.read_bytes(), skill.read_bytes()))
             self.assertTrue(enabled["mutates"])
             self.assertTrue(path.is_file())
             self.assertTrue((config.data_dir / "owned-index").is_file())

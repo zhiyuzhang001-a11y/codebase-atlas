@@ -41,6 +41,17 @@ def default_cbm_lock_path() -> Path:
     return runtime / f"codebase-atlas-cbm-{user}.lock"
 
 
+def default_provider_write_lock_path() -> Path:
+    """Return the machine-scoped lease for Provider database mutations."""
+    runtime = Path(
+        os.environ.get("ATLAS_RUNTIME_DIR")
+        or os.environ.get("XDG_RUNTIME_DIR")
+        or tempfile.gettempdir()
+    )
+    user = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
+    return runtime / f"codebase-atlas-provider-write-{user}.lock"
+
+
 def default_project_operation_dir() -> Path:
     runtime = Path(
         os.environ.get("ATLAS_RUNTIME_DIR")
@@ -106,6 +117,15 @@ class GlobalCbmLock:
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.release()
+
+
+class ProviderWriteLock(GlobalCbmLock):
+    """Cross-process lock for mutations handled by the shared Provider daemon."""
+
+    def __init__(self, *, timeout_seconds: float = 30.0) -> None:
+        super().__init__(
+            default_provider_write_lock_path(), timeout_seconds=timeout_seconds
+        )
 
 
 class ProjectRefreshLease:

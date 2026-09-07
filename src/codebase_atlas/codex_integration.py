@@ -298,7 +298,9 @@ def _write_project_config(target: Path, original: str, block: str) -> None:
             current = os.lstat(target)
             if (current.st_dev, current.st_ino) != identity:
                 raise RuntimeError("project Codex config changed before publication")
-            with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
+            with os.fdopen(
+                descriptor, "r+", encoding="utf-8", newline=""
+            ) as stream:
                 descriptor = -1
                 try:
                     stream.seek(0)
@@ -319,7 +321,9 @@ def _write_project_config(target: Path, original: str, block: str) -> None:
     else:
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            with os.fdopen(
+                descriptor, "w", encoding="utf-8", newline=""
+            ) as stream:
                 descriptor = -1
                 stream.write(payload)
                 stream.flush()
@@ -365,7 +369,9 @@ def _replace_project_block(target: Path, original: str, block: str) -> None:
             or (current.st_dev, current.st_ino) != identity
         ):
             raise RuntimeError("project Codex config changed before managed update")
-        with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
+        with os.fdopen(
+            descriptor, "r+", encoding="utf-8", newline=""
+        ) as stream:
             descriptor = -1
             try:
                 stream.seek(0)
@@ -561,7 +567,9 @@ def codex_remove(
                 opened = os.fstat(descriptor)
                 if (opened.st_dev, opened.st_ino) != identity or not stat.S_ISREG(opened.st_mode):
                     raise RuntimeError("project Codex config changed before removal")
-                with os.fdopen(descriptor, "r+", encoding="utf-8") as stream:
+                with os.fdopen(
+                    descriptor, "r+", encoding="utf-8", newline=""
+                ) as stream:
                     descriptor = -1
                     try:
                         stream.seek(0)

@@ -26,6 +26,18 @@ class StressFailure(RuntimeError):
     pass
 
 
+PROCESS_CLEANUP_GRACE_SECONDS = 20.0
+
+
+def require_executable(path: Path, label: str) -> Path:
+    # Preserve a virtual-environment launcher path. Resolving its Python symlink
+    # can select the base interpreter and silently discard that environment.
+    selected = Path(os.path.abspath(path.expanduser()))
+    if not selected.is_file() or not os.access(selected, os.X_OK):
+        raise StressFailure(f"{label} must be an executable file: {selected}")
+    return selected
+
+
 def remove_tree_with_retries(path: Path, *, attempts: int = 10) -> bool:
     """Best-effort cleanup without replacing a successful stress result."""
     for attempt in range(attempts):
@@ -310,6 +322,9 @@ def main() -> int:
         raise SystemExit("--clients must be greater than positive --writers")
     if args.files_per_writer < 1:
         raise SystemExit("--files-per-writer must be positive")
+    args.provider_binary = require_executable(args.provider_binary, "Provider")
+    args.node = require_executable(args.node, "Node.js")
+    args.serena_python = require_executable(args.serena_python, "Serena Python")
 
     temporary_parent = "/private/tmp" if sys.platform == "darwin" else None
     root = Path(tempfile.mkdtemp(
@@ -337,9 +352,20 @@ def main() -> int:
             return f"export function {symbol}(): string {{ return {value!r}; }}\n"
 
         baseline_name = f"baseline{extension}"
-        (repository / baseline_name).write_text(
-            source("atlas_stress_baseline", "baseline"), encoding="utf-8"
-        )
+        if args.language == "python":
+            (repository / baseline_name).write_text(
+                "def atlas_stress_leaf():\n"
+                "    return 'leaf'\n\n"
+                "def atlas_stress_baseline():\n"
+                "    return atlas_stress_leaf()\n\n"
+                "def atlas_stress_consumer():\n"
+                "    return atlas_stress_baseline()\n",
+                encoding="utf-8",
+            )
+        else:
+            (repository / baseline_name).write_text(
+                source("atlas_stress_baseline", "baseline"), encoding="utf-8"
+            )
         committed = [baseline_name]
         tsconfig = None
         if args.language == "typescript":
@@ -428,6 +454,78 @@ def main() -> int:
                 raise StressFailure(f"repository identity mismatch: {status}")
             if status.get("auto_update", {}).get("policy") != "on-query":
                 raise StressFailure(f"auto-update policy mismatch: {status}")
+
+        relationship_barrier = threading.Barrier(3)
+
+        def timed_relationship(client: McpClient, tool: str, arguments: dict[str, Any]):
+            relationship_barrier.wait(timeout=10)
+            started_at = time.monotonic()
+            result = structured(client.call(tool, arguments))
+            finished_at = time.monotonic()
+            return result, started_at, finished_at
+
+        relationship_requests = (
+            ("callers", {
+                "symbol": "atlas_stress_baseline",
+                "target_path": baseline_name,
+                "timeout_ms": 60000,
+            }, "atlas_stress_consumer"),
+            ("callees", {
+                "symbol": "atlas_stress_baseline",
+                "target_path": baseline_name,
+                "timeout_ms": 60000,
+            }, "atlas_stress_leaf"),
+            ("impact", {
+                "symbol": "atlas_stress_baseline",
+                "target_path": baseline_name,
+                "direction": "upstream",
+                "depth": 2,
+                "timeout_ms": 60000,
+            }, "atlas_stress_consumer"),
+        )
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            relationship_results = [
+                future.result(timeout=90)
+                for future in [
+                    executor.submit(
+                        timed_relationship, client, tool, arguments
+                    )
+                    for client, (tool, arguments, _expected) in zip(
+                        clients[:3], relationship_requests
+                    )
+                ]
+            ]
+        relationship_generations = set()
+        intervals = []
+        for (payload, started_at, finished_at), (_, _, expected) in zip(
+            relationship_results, relationship_requests
+        ):
+            names = {node.get("name") for node in payload.get("nodes", [])}
+            reasons = payload.get("truncation", {}).get("reasons", [])
+            if expected not in names or payload.get("truncated") or "provider_busy" in reasons:
+                raise StressFailure(
+                    f"concurrent relationship evidence incomplete for {expected}: {payload}"
+                )
+            generation = payload.get("generation_id")
+            if not isinstance(generation, str) or not generation:
+                raise StressFailure(f"relationship query has no generation: {payload}")
+            relationship_generations.add(generation)
+            intervals.append((started_at, finished_at))
+        overlap_ms = (min(end for _, end in intervals) - max(
+            start for start, _ in intervals
+        )) * 1000.0
+        if len(relationship_generations) != 1 or overlap_ms <= 0:
+            raise StressFailure(
+                f"relationship concurrency was not proven: generations="
+                f"{relationship_generations}, overlap_ms={overlap_ms}"
+            )
+        ledger["relationship_concurrency"] = {
+            "status": "passed",
+            "queries": [item[0] for item in relationship_requests],
+            "generation": next(iter(relationship_generations)),
+            "overlap_ms": overlap_ms,
+            "provider_busy": False,
+        }
 
         if args.language == "typescript":
             if registration_index_path(config.data_dir).exists():
@@ -791,7 +889,7 @@ def main() -> int:
         for client in clients:
             observed_children.update(descendants(client.process.pid))
             client.close()
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + PROCESS_CLEANUP_GRACE_SECONDS
         live: set[int] = set()
         new_provider_pids: set[int] = set()
         rooted_processes: set[int] = set()
@@ -820,6 +918,18 @@ def main() -> int:
             )
             (root / "ledger.json").write_text(json.dumps(ledger, indent=2), encoding="utf-8")
             exit_code = 1
+        ledger["process_cleanup"] = {
+            "status": (
+                "passed"
+                if not live and not new_provider_pids and not rooted_processes
+                else "failed"
+            ),
+            "grace_seconds": PROCESS_CLEANUP_GRACE_SECONDS,
+            "observed_owned_children": len(observed_children),
+            "residual_children": sorted(live),
+            "residual_provider_processes": sorted(new_provider_pids),
+            "residual_fixture_processes": sorted(rooted_processes),
+        }
         if args.ledger_out is not None:
             destination = args.ledger_out.resolve()
             destination.parent.mkdir(parents=True, exist_ok=True)

@@ -6,13 +6,17 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from codebase_atlas import __version__
 from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.provider_layout import provider_project_identity
+from codebase_atlas.provider_layout import provider_environment
+from codebase_atlas.provider_process import run_provider_command
 from codebase_atlas.operations import operational_index_status
 from codebase_atlas.provider_transport import CodebaseMemoryMcpTransport
 from codebase_atlas.providers.cbm_impact import CodebaseMemoryImpactProvider
@@ -29,6 +33,42 @@ def git(repository: Path, *args: str) -> None:
     )
 
 
+def private_runtime(prefix: str) -> tuple[tempfile.TemporaryDirectory, Path]:
+    parent = "/private/tmp" if sys.platform == "darwin" else None
+    temporary = tempfile.TemporaryDirectory(prefix=prefix, dir=parent)
+    runtime = Path(temporary.name)
+    if sys.platform == "darwin":
+        subprocess.run(["chmod", "-N", str(runtime)], check=True)
+    runtime.chmod(0o700)
+    return temporary, runtime
+
+
+def wait_for_private_provider_exit(
+    binary: Path, cache_dir: Path, repository: Path, *, timeout_seconds: float = 20.0
+) -> None:
+    """Wait for the test-owned non-permanent daemon to release Windows files."""
+    if os.name != "nt":
+        return
+    deadline = time.monotonic() + timeout_seconds
+    environment = provider_environment(cache_dir, repository)
+    last_output = ""
+    while time.monotonic() < deadline:
+        completed = run_provider_command(
+            [str(binary), "daemon", "status"],
+            env=environment,
+            cwd=repository,
+            timeout=5.0,
+        )
+        last_output = f"{completed.stdout}\n{completed.stderr}".strip()
+        if "not running" in last_output.lower():
+            return
+        time.sleep(0.2)
+    raise AssertionError(
+        f"private Provider daemon did not retire within {timeout_seconds:.1f}s: "
+        f"{last_output}"
+    )
+
+
 @unittest.skipUnless(
     os.environ.get("ATLAS_M38_PROVIDER_BINARY"),
     "set ATLAS_M38_PROVIDER_BINARY for the isolated managed-Provider proof",
@@ -38,13 +78,10 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="m38-stage3-two-projects.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "m38-stage3-two-projects."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(os.environ, {
                 "CBM_RUNTIME_DIR": str(runtime.resolve()),
                 "XDG_DATA_HOME": str((root / "xdg-data").resolve()),
@@ -62,7 +99,8 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                 git(repository, "config", "user.email", "atlas@example.invalid")
                 git(repository, "config", "user.name", "Atlas Test")
                 (repository / "sample.py").write_text(
-                    f"def {symbol}():\n    return {index}\n"
+                    f"def {symbol}():\n    return {index}\n\n"
+                    f"def shared_symbol():\n    return 'repository-{index}'\n"
                 )
                 git(repository, "add", "sample.py")
                 git(repository, "commit", "-qm", "initial")
@@ -102,7 +140,11 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                         lambda coordinator: coordinator.refresh(timeout_ms=300_000),
                         coordinators,
                     ))
-                self.assertEqual([item["status"] for item in results], ["refreshed", "refreshed"])
+                self.assertEqual(
+                    [item["status"] for item in results],
+                    ["refreshed", "refreshed"],
+                    results,
+                )
                 for owner, foreign, service in (
                     (symbols[0], symbols[1], services[0]),
                     (symbols[1], symbols[0], services[1]),
@@ -115,6 +157,18 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                     ))
                     self.assertEqual([node.name for node in own.nodes], [owner])
                     self.assertEqual(absent.nodes, ())
+                shared = [
+                    service.query(QueryRequest(
+                        "definition", "shared_symbol", {"timeout_ms": 30_000}
+                    ))
+                    for service in services
+                ]
+                self.assertEqual(
+                    [[node.name for node in result.nodes] for result in shared],
+                    [["shared_symbol"], ["shared_symbol"]],
+                )
+                shared_digests = [result.nodes[0].evidence_hash for result in shared]
+                self.assertNotEqual(shared_digests[0], shared_digests[1])
                 first_pid = transports[0].process.pid
                 second_pid = transports[1].process.pid
                 services[0].close()
@@ -130,23 +184,130 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                     "project_b_pid": second_pid,
                     "refresh_durations_ms": [item["duration_ms"] for item in results],
                     "foreign_fact_counts": [0, 0],
+                    "shared_source_digests": shared_digests,
                     "second_alive_after_first_close": True,
                 }, sort_keys=True))
             finally:
                 for service in services:
                     service.close()
+                wait_for_private_provider_exit(
+                    binary, config.cache_dir, config.repository
+                )
+
+    def test_checkout_and_worktree_keep_distinct_projects_and_same_name_facts(self) -> None:
+        binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            primary = root / "primary"
+            worktree = root / "worktree"
+            primary.mkdir()
+            git(primary, "init", "-q")
+            git(primary, "config", "user.email", "atlas@example.invalid")
+            git(primary, "config", "user.name", "Atlas Test")
+            (primary / "sample.py").write_text(
+                "def shared_worktree_symbol():\n    return 'primary'\n\n"
+                "def primary_only_symbol():\n    return 1\n",
+                encoding="utf-8",
+            )
+            git(primary, "add", "sample.py")
+            git(primary, "commit", "-qm", "primary")
+            git(primary, "worktree", "add", "-qb", "alternate", str(worktree))
+            (worktree / "sample.py").write_text(
+                "def shared_worktree_symbol():\n    return 'worktree'\n\n"
+                "def worktree_only_symbol():\n    return 2\n",
+                encoding="utf-8",
+            )
+            git(worktree, "add", "sample.py")
+            git(worktree, "commit", "-qm", "worktree")
+            runtime_temporary, runtime = private_runtime(
+                "atlas-worktree-isolation."
+            )
+            self.addCleanup(runtime_temporary.cleanup)
+            environment = patch.dict(os.environ, {
+                "CBM_RUNTIME_DIR": str(runtime.resolve()),
+                "XDG_DATA_HOME": str((root / "xdg-data").resolve()),
+            })
+            environment.start()
+            self.addCleanup(environment.stop)
+            services = []
+            coordinators = []
+            configs = []
+            for index, repository in enumerate((primary, worktree)):
+                for name in (f"node-worktree-{index}", f"serena-worktree-{index}"):
+                    (root / name).touch()
+                project = provider_project_identity(repository)
+                config = AtlasConfig(
+                    repository, "python", root / f"node-worktree-{index}", binary,
+                    root / f"serena-worktree-{index}", root / f"data-worktree-{index}",
+                    project, provider_layout=SHARED_PROVIDER_LAYOUT,
+                )
+                status = operational_index_status(
+                    config.data_dir, repository, config.cache_dir, project
+                )
+                status["identity"] = {
+                    "repository": str(repository.resolve()), "project": project,
+                }
+                transport = CodebaseMemoryMcpTransport(
+                    binary, repository, config.cache_dir, exclusive=False,
+                    client_version=__version__,
+                )
+                provider = CodebaseMemoryImpactProvider(
+                    binary, repository, config.cache_dir, project, transport=transport
+                )
+                service = AtlasService(
+                    repository=repository, structural_provider=provider,
+                    impact_provider=provider, lifecycle=transport,
+                )
+                service.start()
+                configs.append(config)
+                services.append(service)
+                coordinators.append(RefreshCoordinator(config, transport, service, status))
+            try:
+                self.assertNotEqual(configs[0].project, configs[1].project)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    refreshed = list(executor.map(
+                        lambda coordinator: coordinator.refresh(timeout_ms=300_000),
+                        coordinators,
+                    ))
+                self.assertEqual(
+                    [result["status"] for result in refreshed],
+                    ["refreshed", "refreshed"],
+                    refreshed,
+                )
+                shared = [
+                    service.query(QueryRequest(
+                        "definition", "shared_worktree_symbol", {"timeout_ms": 30_000}
+                    )).nodes[0]
+                    for service in services
+                ]
+                self.assertNotEqual(shared[0].evidence_hash, shared[1].evidence_hash)
+                self.assertEqual(
+                    services[0].query(QueryRequest(
+                        "definition", "worktree_only_symbol", {"timeout_ms": 30_000}
+                    )).nodes,
+                    (),
+                )
+                self.assertEqual(
+                    services[1].query(QueryRequest(
+                        "definition", "primary_only_symbol", {"timeout_ms": 30_000}
+                    )).nodes,
+                    (),
+                )
+            finally:
+                for service in services:
+                    service.close()
+                wait_for_private_provider_exit(
+                    binary, configs[-1].cache_dir, configs[-1].repository
+                )
 
     def test_post_provider_state_failure_restores_queryable_old_generation(self) -> None:
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="m38-stage3-runtime.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "m38-stage3-runtime."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(
                 os.environ, {"CBM_RUNTIME_DIR": str(runtime.resolve())}
             )
@@ -238,13 +399,10 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            runtime_temporary = tempfile.TemporaryDirectory(
-                prefix="m38-stage2-runtime.", dir="/private/tmp"
+            runtime_temporary, runtime = private_runtime(
+                "m38-stage2-runtime."
             )
             self.addCleanup(runtime_temporary.cleanup)
-            runtime = Path(runtime_temporary.name)
-            subprocess.run(["chmod", "-N", str(runtime)], check=True)
-            runtime.chmod(0o700)
             environment = patch.dict(
                 os.environ, {"CBM_RUNTIME_DIR": str(runtime.resolve())}
             )

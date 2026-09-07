@@ -34,6 +34,7 @@ env:
   PROVIDER_COMMIT: e088a41b8e7619fb532afda0d611b944002cfebf
   PROVIDER_VERSION: 0.10.8-atlas.2+e088a41b
   SERENA_COMMIT: 3ad624f511511bb7a77447e413425198fc574349
+  UV_VERSION: 0.12.5
 
 jobs:
   native-provider:
@@ -117,11 +118,34 @@ jobs:
       - name: Install pinned Serena under test
         run: >-
           ${{ env.ATLAS_CONCURRENCY_SERENA_PYTHON }} -m pip install
+          "uv==${{ env.UV_VERSION }}"
           "git+https://github.com/oraios/serena.git@${{ env.SERENA_COMMIT }}"
+      - name: Verify Serena language-server installer
+        run: >-
+          ${{ env.ATLAS_CONCURRENCY_SERENA_PYTHON }} -c
+          "import shutil,sysconfig; root=sysconfig.get_path('scripts');
+          assert shutil.which('uvx', path=root) or shutil.which('uv', path=root)"
       - name: External termination phase matrix
         run: >-
           python -m unittest
           tests.test_refresh_coordinator.RefreshCoordinatorTests.test_external_process_termination_recovers_every_durable_phase
+      - name: Checkout, worktree, and independent repository isolation
+        env:
+          ATLAS_M38_PROVIDER_BINARY: ${{ github.workspace }}/provider/${{ matrix.target }}/${{ matrix.binary }}
+        run: >-
+          python -m unittest
+          tests.test_refresh_integration.ManagedProviderRefreshIntegrationTests.test_two_projects_refresh_without_foreign_facts_or_lifecycle_coupling
+          tests.test_refresh_integration.ManagedProviderRefreshIntegrationTests.test_checkout_and_worktree_keep_distinct_projects_and_same_name_facts
+          -v
+      - name: Build candidate wheel
+        run: python -m pip wheel . --no-deps --wheel-dir artifacts/candidate
+      - name: Installed candidate project lifecycle
+        run: >-
+          python scripts/candidate_project_acceptance.py
+          --wheel artifacts/candidate
+          --provider ${{ github.workspace }}/provider/${{ matrix.target }}/${{ matrix.binary }}
+          --node ${{ env.ATLAS_CONCURRENCY_NODE }}
+          --serena-python ${{ env.ATLAS_CONCURRENCY_SERENA_PYTHON }}
       - name: Python and TypeScript 10-round qualification
         env:
           ATLAS_CONCURRENCY_PROVIDER_BINARY: ${{ github.workspace }}/provider/${{ matrix.target }}/${{ matrix.binary }}

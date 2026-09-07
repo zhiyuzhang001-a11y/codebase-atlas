@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -11,11 +12,27 @@ from scripts import run_multi_mcp_stress as stress_module
 from scripts.run_multi_mcp_stress import (
     parse_windows_process_table,
     remove_tree_with_retries,
+    require_executable,
     run_json,
 )
 
 
 class MultiMcpStressUnitTests(unittest.TestCase):
+    def test_require_executable_preserves_virtualenv_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            target = root / "base-python"
+            target.write_text("#!/bin/sh\n", encoding="utf-8")
+            target.chmod(0o755)
+            launcher = root / "venv-python"
+            launcher.symlink_to(target)
+            self.assertEqual(require_executable(launcher, "Serena"), launcher)
+
+    def test_runtime_preflight_rejects_a_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaisesRegex(Exception, "must be an executable file"):
+                require_executable(Path(raw), "Node.js")
+
     def test_parses_windows_process_inventory_for_cleanup_checks(self) -> None:
         table = parse_windows_process_table(
             '[{"ProcessId":12,"ParentProcessId":4,"CommandLine":"atlas mcp"},'

@@ -30,6 +30,11 @@ class FakeLifecycle:
         self.closes += 1
 
 
+class FailingIfStartedLifecycle(FakeLifecycle):
+    def start(self, *, timeout_seconds=None) -> None:
+        raise AssertionError("mismatched target must not start the Provider")
+
+
 class FakeImpactProvider:
     def definitions(self, symbol, *, target_path="", target_owner=""):
         return (Node("target", "function", symbol, SourceRange("src/x.py", 1, 1), "fake", 1.0, HASH),)
@@ -63,6 +68,36 @@ class FakeImpactProvider:
         caller = Node("caller", "function", "caller", SourceRange("src/x.py", 2, 2), "fake", 1.0, HASH)
         edge = Edge("caller", "target", "calls", "fake", 1.0, HASH)
         return (ImpactHit(caller, min(max_depth, 1), (edge,)),)
+
+
+class LanguageScopeTests(unittest.TestCase):
+    def test_typescript_index_rejects_python_target_without_starting_provider(self):
+        service = AtlasService(
+            repository=Path.cwd(), structural_provider=FakeImpactProvider(),
+            lifecycle=FailingIfStartedLifecycle(), indexed_language="typescript",
+        )
+        with service:
+            response = service.query(QueryRequest(
+                "impact", "update_project",
+                {"target_path": "src/codebase_atlas/simple_cli.py"},
+            ))
+        self.assertTrue(response.truncated)
+        self.assertEqual(
+            response.truncation["reasons"],
+            ("target_outside_indexed_language_scope",),
+        )
+
+    def test_python_index_rejects_typescript_target(self):
+        service = AtlasService(
+            repository=Path.cwd(), structural_provider=FakeImpactProvider(),
+            lifecycle=FailingIfStartedLifecycle(), indexed_language="python",
+        )
+        with service:
+            response = service.query(QueryRequest(
+                "definition", "component", {"target_path": "src/view.tsx"},
+            ))
+        self.assertTrue(response.truncated)
+        self.assertIn("target_outside_indexed_language_scope", response.truncation["reasons"])
 
 
 class FakeSemanticProvider:

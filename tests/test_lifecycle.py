@@ -14,6 +14,7 @@ from codebase_atlas.lifecycle import (
     CodebaseMemoryDaemon,
     GlobalCbmLock,
     ProjectRefreshLease,
+    ProviderWriteLock,
     SharedCodebaseMemorySession,
 )
 from codebase_atlas.cli import _provider_lifecycle
@@ -194,6 +195,30 @@ class LifecycleTests(unittest.TestCase):
                     second.acquire(timeout_seconds=0.05)
             finally:
                 first.release()
+
+    def test_provider_write_lock_is_machine_scoped_and_distinct_from_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            previous = os.environ.get("ATLAS_RUNTIME_DIR")
+            os.environ["ATLAS_RUNTIME_DIR"] = raw
+            try:
+                first = ProviderWriteLock()
+                second = ProviderWriteLock()
+                startup = GlobalCbmLock()
+                self.assertEqual(first.path, second.path)
+                self.assertNotEqual(first.path, startup.path)
+                first.acquire()
+                try:
+                    with self.assertRaisesRegex(TimeoutError, "global CBM lock"):
+                        second.acquire(timeout_seconds=0.05)
+                    startup.acquire(timeout_seconds=0.05)
+                    startup.release()
+                finally:
+                    first.release()
+            finally:
+                if previous is None:
+                    os.environ.pop("ATLAS_RUNTIME_DIR", None)
+                else:
+                    os.environ["ATLAS_RUNTIME_DIR"] = previous
 
     def test_shared_sessions_use_short_admission_and_never_stop_daemon(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

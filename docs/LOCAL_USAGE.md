@@ -8,13 +8,15 @@ version-controlled `docs/CODEX_DEPLOYMENT_RULES.md`. It requires stable GitHub
 Release assets, checksum verification, project isolation and an end-to-end
 identity/health/query acceptance gate.
 
-## Four-command project lifecycle
+## Simple project lifecycle and diagnostics
 
 After the one-time machine installation of Codebase Atlas, ordinary project
 management uses only:
 
 ```bash
 atlas enable --repo /absolute/path/to/repository
+atlas status --repo /absolute/path/to/repository
+atlas verify --repo /absolute/path/to/repository
 atlas stop --repo /absolute/path/to/repository
 atlas update --repo /absolute/path/to/repository
 atlas remove --repo /absolute/path/to/repository
@@ -23,11 +25,37 @@ atlas remove --repo /absolute/path/to/repository
 Omit `--repo` inside the intended Git repository. `enable` prepares or reuses a
 verified runtime, creates or restores the exact project state, indexes it,
 installs only Atlas's project-scoped Codex block, and passes doctor, deep health,
-positive-query and cross-project-negative gates before reporting ready. `stop`
+positive-query and nonexistent-symbol gates before reporting ready. `stop`
 preserves configuration and data. `update` means a verified software upgrade;
 routine source edits refresh automatically before the next query. `remove`
 moves Atlas-owned project assets to a verified recovery receipt rather than
 permanently deleting them. Add `--json` for the stable structured result.
+
+The development branch also removes known Atlas-owned routing blocks and skills
+into a version-2 removal receipt, retaining version-1 receipt compatibility.
+Modified routing assets remain in place and are listed in
+`preserved_routing_assets` with `routing_cleanup=partial`. Recovery restores
+the recorded bytes and permissions only if the post-removal files still match;
+new user edits block recovery rather than being overwritten. The development
+`enable` path now installs routing before indexing and retains a Provider
+generation backup through acceptance. Handled failure restores routing,
+configuration and index records under the project refresh lease. Unrecognized
+configuration writes are preserved and reported as incomplete rollback.
+Version-upgrade integration, crash recovery and installed-runtime acceptance
+remain under development; these local tests do not establish release readiness.
+
+`status` is a lightweight read-only observation and reports the current Codex
+task connection as unknown unless a task has actually proved it. `verify` runs
+runtime, freshness, deep database, Codex configuration and target-query checks;
+it refuses a stale or stopped project rather than refreshing or enabling it.
+`PASS` additionally requires equal before/after content and permission snapshots
+of Git-visible files, project configuration, routing assets, lifecycle/index
+records and the project database/WAL, plus confirmed exit of its owned stdio
+Provider child. It preserves any pre-existing shared daemon. Snapshot limits or
+unconfirmed cleanup return `INCOMPLETE`; ignored files outside these explicit
+protected paths are not covered. Random absent-symbol
+checks do not establish cross-repository isolation; that requires the separate
+two-repository acceptance suite.
 
 The first MCP registration requires one new Codex task. The 0.25 `mcp-auto`
 bootstrap then rechecks exact project identity, lifecycle state and selected

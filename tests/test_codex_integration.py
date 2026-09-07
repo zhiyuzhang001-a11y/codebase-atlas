@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -179,6 +180,20 @@ class CodexIntegrationTests(unittest.TestCase):
             removed = codex_remove(config, scope="project", atlas_executable=atlas)
             self.assertTrue(removed["mutates"])
             self.assertFalse(target.exists())
+
+    def test_project_scope_writes_disable_platform_newline_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, config, atlas = self.project_paths(Path(raw))
+            with patch(
+                "codebase_atlas.codex_integration.os.fdopen", wraps=os.fdopen
+            ) as opened:
+                codex_apply(config, scope="project", atlas_executable=atlas)
+                codex_remove(config, scope="project", atlas_executable=atlas)
+
+            self.assertGreaterEqual(opened.call_count, 1)
+            self.assertTrue(
+                all(call.kwargs.get("newline") == "" for call in opened.call_args_list)
+            )
 
     def test_project_scope_preserves_foreign_config_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

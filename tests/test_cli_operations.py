@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 import json
 import signal
@@ -51,6 +52,28 @@ class CliOperationTests(unittest.TestCase):
                     ])
             self.assertEqual(code, 4)
             self.assertEqual(json.loads(output.getvalue())["code"], "stopped")
+            provider.assert_not_called()
+
+    def test_mismatched_target_language_returns_structured_error_before_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            config, path = self.config(Path(raw))
+            tsconfig = config.repository / "tsconfig.json"
+            tsconfig.write_text("{}", encoding="utf-8")
+            replace(config, language="typescript", tsconfig=tsconfig).write(path)
+            output = StringIO()
+            with patch("codebase_atlas.cli._provider_lifecycle") as provider:
+                with redirect_stdout(output):
+                    code = main([
+                        "query", "impact", "target",
+                        "--config", str(path),
+                        "--target-path", "src/module.py",
+                    ])
+            result = json.loads(output.getvalue())
+            self.assertEqual(code, 2)
+            self.assertEqual(
+                result["code"], "target_outside_indexed_language_scope"
+            )
+            self.assertIn("next_action", result)
             provider.assert_not_called()
 
     def config(self, root: Path) -> tuple[AtlasConfig, Path]:

@@ -25,7 +25,9 @@ from codebase_atlas.python_registration_store import (
 )
 from codebase_atlas.refresh_coordinator import (
     RefreshCoordinator,
+    RefreshPlanError,
     SnapshotWaitTimeout,
+    _provider_database_path,
     refresh_with_retry,
 )
 from codebase_atlas.lifecycle import ProjectRefreshLease
@@ -108,6 +110,17 @@ class FakeTransport:
         }
 
 
+class RecordingProviderWriteLock:
+    def __init__(self) -> None:
+        self.events = []
+
+    def acquire(self, *, timeout_seconds=None) -> None:
+        self.events.append(("acquire", timeout_seconds))
+
+    def release(self) -> None:
+        self.events.append(("release", None))
+
+
 def external_refresh_until_phase(
     root_text: str, repository_text: str, phase: str, marker_text: str
 ) -> None:
@@ -150,6 +163,20 @@ def external_refresh_until_phase(
 
 
 class RefreshCoordinatorTests(unittest.TestCase):
+    def test_provider_database_path_is_lexically_contained_without_resolve(self) -> None:
+        cache = Path("cache-root")
+        with patch.object(Path, "resolve", side_effect=AssertionError("must not resolve")):
+            self.assertEqual(
+                _provider_database_path(cache, "atlas-project-123"),
+                cache / "atlas-project-123.db",
+            )
+        for project in (
+            "", ".", "..", "../foreign", "sub/project", "sub\\project", "C:ads"
+        ):
+            with self.subTest(project=project):
+                with self.assertRaises(RefreshPlanError):
+                    _provider_database_path(cache, project)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -269,6 +296,25 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertNotEqual(result["generation_after"], "generation-1")
         self.assertEqual(self.status["generation_id"], result["generation_after"])
 
+    def test_provider_mutation_uses_and_releases_machine_write_lock(self) -> None:
+        write_lock = RecordingProviderWriteLock()
+        coordinator = RefreshCoordinator(
+            self.config,
+            self.transport,
+            self.service,
+            self.status,
+            provider_write_lock=write_lock,
+        )
+
+        result = coordinator.refresh(force_provider=True, timeout_ms=12_345)
+
+        self.assertEqual(result["status"], "refreshed", result)
+        self.assertEqual(
+            write_lock.events,
+            [("acquire", 12.345), ("release", None)],
+        )
+        self.assertIn("provider_admission", result["timings_ms"])
+
     def test_refresh_persists_every_publication_phase_in_order(self) -> None:
         from codebase_atlas import refresh_recovery as recovery_module
 
@@ -332,7 +378,7 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(
             set(result["timings_ms"]),
             {
-                "plan", "snapshot", "registration", "provider",
+                "plan", "snapshot", "registration", "provider_admission", "provider",
                 "provider_validation", "publication", "total",
             },
         )
@@ -493,7 +539,13 @@ class RefreshCoordinatorTests(unittest.TestCase):
                 samples.append((monotonic() - started) * 1000.0)
         ordered = sorted(samples)
         p95 = ordered[int(len(ordered) * 0.95) - 1]
-        self.assertLessEqual(p95, 2.022, (p95, statistics.median(samples)))
+        # Windows runners can expose a roughly 15 ms scheduling/timer quantum
+        # even when the median operation rounds to zero. Keep a bounded gate
+        # there without pretending it is comparable to the POSIX measurement.
+        threshold_ms = 20.0 if os.name == "nt" else 2.022
+        self.assertLessEqual(
+            p95, threshold_ms, (p95, statistics.median(samples))
+        )
 
     def test_snapshot_timeout_is_diagnostic_and_does_not_adopt_old_state(self) -> None:
         owner = ProjectRefreshLease(
