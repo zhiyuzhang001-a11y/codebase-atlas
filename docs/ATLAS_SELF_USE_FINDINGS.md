@@ -7,7 +7,34 @@ address the observed behavior.
 
 ## Open
 
-No open self-use findings at this checkpoint.
+### SELF-010: cross-project refreshes raced in the shared Provider daemon
+
+- Observed task: run two real repository refreshes concurrently in the
+  six-architecture Provider qualification gate.
+- Expected: both distinct projects publish fresh, isolated generations and the
+  final frontend disconnect releases all private-fixture files.
+- Actual evidence: Windows x86_64 intermittently returned one `refreshed` and
+  one `failed`; both Windows architectures retained daemon log/lifetime-lock
+  handles long enough for immediate fixture cleanup to fail.
+- Safe fallback: reject the architecture gate and do not merge or release.
+- Planned resolution: serialize only Provider mutation calls across projects,
+  retain concurrent read queries, wait for the private non-permanent daemon to
+  retire in real integration fixtures, then rerun local and six-architecture
+  regression gates.
+
+### SELF-011: Serena child-exit diagnostics omitted stderr
+
+- Observed task: run the real multi-MCP stress gate on Linux x86_64.
+- Expected: if the Serena subprocess exits, the structured failure identifies
+  its underlying startup or runtime error.
+- Actual evidence: Atlas reported only `Serena runner exited before responding
+  (exit=1)`; concurrent clients also wrote to one shared `runner.stderr.log`, so
+  the failed process's diagnostic could not be attributed reliably.
+- Safe fallback: reject the architecture gate and avoid guessing at the cause.
+- Planned resolution: give each runner a private stderr log, include a bounded
+  tail in child-exit errors, clean successful-run logs, and rerun the failing
+  architecture before deciding whether a deeper Serena coordination fix is
+  required.
 
 ## Resolved
 

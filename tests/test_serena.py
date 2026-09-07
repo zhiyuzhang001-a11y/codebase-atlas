@@ -1,13 +1,39 @@
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from codebase_atlas.providers.serena import normalize_serena_rows
+from codebase_atlas.providers.serena import SerenaSemanticProvider, normalize_serena_rows
 
 
 class SerenaNormalizationTests(unittest.TestCase):
+    def test_child_exit_error_includes_bounded_private_stderr_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            stderr_path = Path(directory) / "runner-private.stderr.log"
+            stderr_path.write_text("x" * 5000 + "\nroot cause\n", encoding="utf-8")
+            provider = object.__new__(SerenaSemanticProvider)
+            provider.timeout_seconds = 1.0
+            provider._stderr_path = stderr_path
+            provider._process = SimpleNamespace(
+                stdout=StringIO(""), poll=lambda: 1
+            )
+
+            with patch(
+                "codebase_atlas.providers.serena.select.select",
+                return_value=([1], [], []),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    provider._read()
+
+            self.assertIn("exit=1", str(raised.exception))
+            self.assertIn("stderr_tail=", str(raised.exception))
+            self.assertIn("root cause", str(raised.exception))
+            self.assertLess(len(str(raised.exception)), 4200)
+
     def test_normalizes_exact_reference_occurrence(self) -> None:
         nodes = normalize_serena_rows(
             [

@@ -16,7 +16,7 @@ from typing import Any, Callable
 from .config import AtlasConfig
 from .index_state import record_index_state, repository_snapshot, state_path
 from .maintenance import inspect_provider_database_at
-from .lifecycle import ProjectRefreshLease
+from .lifecycle import ProjectRefreshLease, ProviderWriteLock
 from .operations import operational_index_status
 from .provider_transport import CodebaseMemoryMcpTransport
 from .python_registration_store import (
@@ -170,6 +170,7 @@ class RefreshCoordinator:
         index_status: dict[str, Any],
         *,
         phase_observer: Callable[[str], None] | None = None,
+        provider_write_lock: ProviderWriteLock | None = None,
     ) -> None:
         self.config = config
         self.transport = transport
@@ -180,6 +181,11 @@ class RefreshCoordinator:
         self._lease = ProjectRefreshLease(
             config.data_dir, config.repository, config.project
         )
+        # Provider projects have distinct databases, but all frontends share
+        # one machine daemon. Some Provider builds cannot safely execute two
+        # index_repository writes at once (notably on Windows), so serialize
+        # only that mutation while leaving queries concurrent.
+        self._provider_write_lock = provider_write_lock or ProviderWriteLock()
         # Recovery deletes recognized orphan staging. It must never run while a
         # different process owns a live transaction using those same prefixes.
         if self._lease.acquire():
@@ -430,17 +436,24 @@ class RefreshCoordinator:
             self._observe_phase("prepared")
             provider_backup = ProviderDatabaseBackup.create(database)
 
-            provider_called = True
-            with _measure_phase(timings_ms, "provider"):
-                provider = self.transport.call(
-                    "index_repository",
-                    {
-                        "repo_path": str(self.config.repository),
-                        "name": self.config.project,
-                        "mode": mode,
-                    },
-                    timeout_ms=timeout_ms,
+            with _measure_phase(timings_ms, "provider_admission"):
+                self._provider_write_lock.acquire(
+                    timeout_seconds=timeout_ms / 1000.0
                 )
+            try:
+                provider_called = True
+                with _measure_phase(timings_ms, "provider"):
+                    provider = self.transport.call(
+                        "index_repository",
+                        {
+                            "repo_path": str(self.config.repository),
+                            "name": self.config.project,
+                            "mode": mode,
+                        },
+                        timeout_ms=timeout_ms,
+                    )
+            finally:
+                self._provider_write_lock.release()
             self._advance_recovery(recovery, "provider_indexed")
             self.service.mark_structural_started()
             if provider.get("status") != "indexed" or provider.get("project") != self.config.project:

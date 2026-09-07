@@ -8,12 +8,15 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from codebase_atlas import __version__
 from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.provider_layout import provider_project_identity
+from codebase_atlas.provider_layout import provider_environment
+from codebase_atlas.provider_process import run_provider_command
 from codebase_atlas.operations import operational_index_status
 from codebase_atlas.provider_transport import CodebaseMemoryMcpTransport
 from codebase_atlas.providers.cbm_impact import CodebaseMemoryImpactProvider
@@ -38,6 +41,30 @@ def private_runtime(prefix: str) -> tuple[tempfile.TemporaryDirectory, Path]:
         subprocess.run(["chmod", "-N", str(runtime)], check=True)
     runtime.chmod(0o700)
     return temporary, runtime
+
+
+def wait_for_private_provider_exit(
+    binary: Path, cache_dir: Path, repository: Path, *, timeout_seconds: float = 20.0
+) -> None:
+    """Wait for the test-owned non-permanent daemon to release Windows files."""
+    deadline = time.monotonic() + timeout_seconds
+    environment = provider_environment(cache_dir, repository)
+    last_output = ""
+    while time.monotonic() < deadline:
+        completed = run_provider_command(
+            [str(binary), "daemon", "status"],
+            env=environment,
+            cwd=repository,
+            timeout=5.0,
+        )
+        last_output = f"{completed.stdout}\n{completed.stderr}".strip()
+        if "not running" in last_output.lower():
+            return
+        time.sleep(0.2)
+    raise AssertionError(
+        f"private Provider daemon did not retire within {timeout_seconds:.1f}s: "
+        f"{last_output}"
+    )
 
 
 @unittest.skipUnless(
@@ -111,7 +138,11 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
                         lambda coordinator: coordinator.refresh(timeout_ms=300_000),
                         coordinators,
                     ))
-                self.assertEqual([item["status"] for item in results], ["refreshed", "refreshed"])
+                self.assertEqual(
+                    [item["status"] for item in results],
+                    ["refreshed", "refreshed"],
+                    results,
+                )
                 for owner, foreign, service in (
                     (symbols[0], symbols[1], services[0]),
                     (symbols[1], symbols[0], services[1]),
@@ -157,6 +188,9 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
             finally:
                 for service in services:
                     service.close()
+                wait_for_private_provider_exit(
+                    binary, config.cache_dir, config.repository
+                )
 
     def test_checkout_and_worktree_keep_distinct_projects_and_same_name_facts(self) -> None:
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
@@ -260,6 +294,9 @@ class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
             finally:
                 for service in services:
                     service.close()
+                wait_for_private_provider_exit(
+                    binary, configs[-1].cache_dir, configs[-1].repository
+                )
 
     def test_post_provider_state_failure_restores_queryable_old_generation(self) -> None:
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import select
 import subprocess
 from typing import Any
@@ -108,7 +109,18 @@ class SerenaSemanticProvider:
         self.timeout_seconds = timeout_seconds
         self._process: subprocess.Popen[str] | None = None
         self._stderr_handle: Any = None
+        self._stderr_path: Path | None = None
         self.startup_ms = 0.0
+
+    def _stderr_tail(self, limit: int = 4000) -> str:
+        path = self._stderr_path
+        if path is None:
+            return ""
+        try:
+            payload = path.read_bytes()[-limit:]
+        except OSError:
+            return ""
+        return payload.decode("utf-8", "replace").strip()
 
     def _read(self, timeout_seconds: float | None = None) -> dict[str, Any]:
         if self._process is None or self._process.stdout is None:
@@ -119,7 +131,12 @@ class SerenaSemanticProvider:
             raise TimeoutError(f"Serena runner exceeded {timeout:.3f}s")
         line = self._process.stdout.readline()
         if not line:
-            raise RuntimeError(f"Serena runner exited before responding (exit={self._process.poll()})")
+            exit_code = self._process.poll()
+            diagnostic = self._stderr_tail()
+            suffix = f"; stderr_tail={diagnostic}" if diagnostic else ""
+            raise RuntimeError(
+                f"Serena runner exited before responding (exit={exit_code}){suffix}"
+            )
         value = json.loads(line)
         if not isinstance(value, dict):
             raise ValueError("Serena runner response must be an object")
@@ -130,7 +147,10 @@ class SerenaSemanticProvider:
             return
         self.serena_home.mkdir(parents=True, exist_ok=True)
         self.metadata_root.mkdir(parents=True, exist_ok=True)
-        stderr_path = self.serena_home / "runner.stderr.log"
+        stderr_path = self.serena_home / (
+            f"runner-{os.getpid()}-{secrets.token_hex(6)}.stderr.log"
+        )
+        self._stderr_path = stderr_path
         self._stderr_handle = stderr_path.open("w", encoding="utf-8")
         environment = os.environ.copy()
         environment.update(
@@ -229,6 +249,9 @@ class SerenaSemanticProvider:
         if self._stderr_handle is not None:
             self._stderr_handle.close()
             self._stderr_handle = None
+        if self._stderr_path is not None:
+            self._stderr_path.unlink(missing_ok=True)
+            self._stderr_path = None
 
     def _terminate(self) -> None:
         process = self._process
@@ -243,3 +266,6 @@ class SerenaSemanticProvider:
         if self._stderr_handle is not None:
             self._stderr_handle.close()
             self._stderr_handle = None
+        if self._stderr_path is not None:
+            self._stderr_path.unlink(missing_ok=True)
+            self._stderr_path = None

@@ -108,6 +108,17 @@ class FakeTransport:
         }
 
 
+class RecordingProviderWriteLock:
+    def __init__(self) -> None:
+        self.events = []
+
+    def acquire(self, *, timeout_seconds=None) -> None:
+        self.events.append(("acquire", timeout_seconds))
+
+    def release(self) -> None:
+        self.events.append(("release", None))
+
+
 def external_refresh_until_phase(
     root_text: str, repository_text: str, phase: str, marker_text: str
 ) -> None:
@@ -269,6 +280,25 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertNotEqual(result["generation_after"], "generation-1")
         self.assertEqual(self.status["generation_id"], result["generation_after"])
 
+    def test_provider_mutation_uses_and_releases_machine_write_lock(self) -> None:
+        write_lock = RecordingProviderWriteLock()
+        coordinator = RefreshCoordinator(
+            self.config,
+            self.transport,
+            self.service,
+            self.status,
+            provider_write_lock=write_lock,
+        )
+
+        result = coordinator.refresh(force_provider=True, timeout_ms=12_345)
+
+        self.assertEqual(result["status"], "refreshed", result)
+        self.assertEqual(
+            write_lock.events,
+            [("acquire", 12.345), ("release", None)],
+        )
+        self.assertIn("provider_admission", result["timings_ms"])
+
     def test_refresh_persists_every_publication_phase_in_order(self) -> None:
         from codebase_atlas import refresh_recovery as recovery_module
 
@@ -332,7 +362,7 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(
             set(result["timings_ms"]),
             {
-                "plan", "snapshot", "registration", "provider",
+                "plan", "snapshot", "registration", "provider_admission", "provider",
                 "provider_validation", "publication", "total",
             },
         )
