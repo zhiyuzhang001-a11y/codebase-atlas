@@ -21,17 +21,10 @@ def run_provider_command(
         "check": False,
         "timeout": timeout,
     }
-    if os.name != "nt":
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            **arguments,
-        )
-
-    # Windows Provider frontends may bootstrap a background daemon which
-    # briefly inherits their standard handles. Pipes then wait for descendant
-    # EOF after the frontend exits; seekable files do not have that coupling.
+    # Provider frontends may bootstrap a background daemon which briefly
+    # inherits their standard handles. This was first visible on Windows and
+    # later reproduced on Linux ARM. Pipes then wait for descendant EOF after
+    # the frontend exits; seekable files do not have that coupling.
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         completed = subprocess.run(
             command,

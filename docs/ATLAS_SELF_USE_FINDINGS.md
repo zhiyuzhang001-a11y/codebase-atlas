@@ -36,6 +36,19 @@ address the observed behavior.
   architecture before deciding whether a deeper Serena coordination fix is
   required.
 
+### SELF-012: Provider command capture assumed inherited pipes were Windows-only
+
+- Observed task: wait for a private Provider daemon to retire after the Linux
+  ARM dual-repository isolation proof had passed.
+- Expected: `daemon status` returns promptly and permits bounded cleanup.
+- Actual evidence: the direct frontend exited, but its background daemon kept
+  the capture pipe open; Atlas timed out after five seconds. The safe
+  seekable-file capture path was restricted to Windows.
+- Safe fallback: reject the platform job even though its isolation assertions
+  passed.
+- Planned resolution: use seekable temporary files for Provider command output
+  on every platform, then rerun the cross-platform gate.
+
 ## Resolved
 
 ### SELF-001: mixed-language repository selects an unrelated fixture project

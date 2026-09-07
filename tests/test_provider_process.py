@@ -8,7 +8,7 @@ from codebase_atlas import provider_process
 
 
 class ProviderProcessTests(unittest.TestCase):
-    def test_windows_capture_uses_files_not_descendant_pipes(self) -> None:
+    def test_capture_uses_files_not_descendant_pipes_on_every_platform(self) -> None:
         def run(command, **arguments):
             self.assertNotIn("capture_output", arguments)
             self.assertNotIn("text", arguments)
@@ -16,10 +16,7 @@ class ProviderProcessTests(unittest.TestCase):
             arguments["stderr"].write(b"warning")
             return SimpleNamespace(args=command, returncode=0)
 
-        with (
-            mock.patch.object(provider_process.os, "name", "nt"),
-            mock.patch.object(provider_process.subprocess, "run", side_effect=run),
-        ):
+        with mock.patch.object(provider_process.subprocess, "run", side_effect=run):
             completed = provider_process.run_provider_command(["provider"], env={})
 
         self.assertEqual(completed.returncode, 0)
