@@ -55,6 +55,7 @@ from .release_installation import (
 from .version_check import _version_tuple
 from .verification_state import protected_snapshot
 from .routing_assets import plan_routing
+from .routing_transaction import RoutingTransaction
 from .provider_transport import CodebaseMemoryMcpTransport
 from .providers.cbm_impact import CodebaseMemoryImpactProvider
 
@@ -197,10 +198,12 @@ def _load_removal_receipt(repository: Path, marker: dict[str, Any]) -> dict[str,
         "recovered_data_dir", "config_sha256", "codex_config_changed",
         "shared_installation_removed",
     }
+    if isinstance(receipt, dict) and receipt.get("schema_version") == 2:
+        required.add("routing_assets")
     if (
         not isinstance(receipt, dict)
         or set(receipt) != required
-        or receipt.get("schema_version") != 1
+        or receipt.get("schema_version") not in {1, 2}
         or receipt.get("status") != "removed"
         or receipt.get("operation_id") != marker["operation_id"]
         or receipt.get("repository") != str(repository.resolve())
@@ -237,15 +240,19 @@ def _restore_removed_project(
         or recovered.project != marker["project"]
     ):
         raise RuntimeError("recovered project config identity mismatch")
+    routing = RoutingTransaction.for_recovery(repository, receipt.get("routing_assets", []))
     operation_lock = _project_operation_lock(repository)
     if not operation_lock.acquire():
         raise RuntimeError("another lifecycle operation owns this project")
     restored_config_identity: tuple[int, int] | None = None
     data_restored = False
+    lifecycle_before: bytes | None = None
+    lifecycle_after: tuple[tuple[int, int], bytes] | None = None
     try:
         current_marker = load_removal_marker(repository)
         if current_marker != marker:
             raise RuntimeError("removal marker changed before recovery")
+        routing.apply()
         os.replace(recovered_data, data_dir)
         data_restored = True
         _write_recovery_file(config_path, config_bytes)
@@ -256,21 +263,35 @@ def _restore_removed_project(
         )
         if removed_state.status != "removed":
             raise RuntimeError("recovered project lifecycle is not removed")
+        state_path = lifecycle_state_path(data_dir)
+        lifecycle_before = state_path.read_bytes()
         publish_lifecycle_state(data_dir, removed_state.transition("stopped"))
+        lifecycle_after = _regular_snapshot(state_path)
         marker_path = removal_marker_path(repository)
         marker_meta = os.lstat(marker_path)
         _unlink_verified(marker_path, (marker_meta.st_dev, marker_meta.st_ino))
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError) as exc:
+        routing_errors = routing.rollback()
+        if lifecycle_after is not None and lifecycle_before is not None:
+            try:
+                state_path = lifecycle_state_path(data_dir)
+                if _regular_snapshot(state_path) != lifecycle_after:
+                    raise RuntimeError("lifecycle changed during recovery rollback")
+                AtlasConfig.restore_verified(state_path, lifecycle_after[0], lifecycle_before)
+            except (OSError, RuntimeError, ValueError) as rollback:
+                routing_errors.append(f"lifecycle: {rollback}")
         if restored_config_identity is not None and config_path.exists():
             try:
                 _unlink_verified(config_path, restored_config_identity)
-            except (OSError, RuntimeError):
-                pass
+            except (OSError, RuntimeError) as rollback:
+                routing_errors.append(f"config: {rollback}")
         if data_restored and data_dir.exists() and not recovered_data.exists():
             try:
                 os.replace(data_dir, recovered_data)
-            except OSError:
-                pass
+            except OSError as rollback:
+                routing_errors.append(f"data: {rollback}")
+        if routing_errors:
+            raise RuntimeError(str(exc) + "; recovery rollback incomplete: " + "; ".join(routing_errors)) from exc
         raise
     finally:
         operation_lock.release()
@@ -1278,6 +1299,7 @@ def remove_project(
     config_removed = False
     codex_changed = False
     previous: ProjectLifecycleState | None = None
+    routing: RoutingTransaction | None = None
     try:
         if existing_marker is not None:
             raise RuntimeError("an incomplete prior removal requires recovery")
@@ -1299,6 +1321,9 @@ def remove_project(
         )
         if previous.status not in {"ready", "stopped", "failed"}:
             raise RuntimeError("project lifecycle is not stable enough to remove")
+        routing = RoutingTransaction(root, remove=True)
+        routing_records = routing.recovery_record()
+        RoutingTransaction.for_recovery(root, routing_records)
         config_identity, config_bytes = _regular_snapshot(config_path)
         preview = codex_plan(config_path, scope="project", codex_project_root=root)
         if preview["status"] == "blocked":
@@ -1317,6 +1342,7 @@ def remove_project(
             config_path, scope="project", codex_project_root=root
         )
         codex_changed = bool(codex_result.get("mutates"))
+        routing.apply()
         _write_recovery_file(config_destination, config_bytes)
         if hashlib.sha256(config_destination.read_bytes()).digest() != hashlib.sha256(config_bytes).digest():
             raise RuntimeError("recovered project config digest mismatch")
@@ -1329,7 +1355,7 @@ def remove_project(
         os.replace(config.data_dir, data_destination)
         data_moved = True
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "removed",
             "operation_id": operation_id,
             "repository": str(root),
@@ -1341,6 +1367,7 @@ def remove_project(
             "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
             "codex_config_changed": codex_changed,
             "shared_installation_removed": False,
+            "routing_assets": routing_records,
         }
         _write_recovery_file(
             receipt_path,
@@ -1354,9 +1381,13 @@ def remove_project(
             project_state="removed", index_status="recovery_area",
             connection_status="removed", receipt=str(receipt_path),
             recovery_data=str(data_destination),
+            preserved_routing_assets=list(routing.conflicts),
+            routing_cleanup="partial" if routing.conflicts else "complete",
         ), 0
     except (OSError, RuntimeError, ValueError) as exc:
         rollback_errors = []
+        if routing is not None:
+            rollback_errors.extend("routing: " + error for error in routing.rollback())
         if data_moved:
             try:
                 if config.data_dir.exists():

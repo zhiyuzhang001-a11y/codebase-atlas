@@ -32,6 +32,7 @@ from codebase_atlas.simple_cli import (
 )
 from codebase_atlas.simple_cli import update_project
 from codebase_atlas.release_installation import VersionedInstallation
+from codebase_atlas.routing_transaction import RoutingTransaction
 
 
 def git_repository(root: Path) -> Path:
@@ -620,6 +621,10 @@ class SimpleCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            rule = repository / "AGENTS.md"
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            routing_before = (rule.read_bytes(), skill.read_bytes())
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(repository, config.project),
@@ -662,6 +667,7 @@ class SimpleCliTests(unittest.TestCase):
                 marker = simple_cli.load_removal_marker(repository)
             self.assertEqual(code, 2)
             self.assertIn("injected final marker failure", result["error"])
+            self.assertEqual(routing_before, (rule.read_bytes(), skill.read_bytes()))
             self.assertTrue(path.is_file())
             self.assertTrue((config.data_dir / "owned-index").is_file())
             self.assertIsNone(marker)
@@ -676,6 +682,10 @@ class SimpleCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository, config, path = configured_project(root)
+            RoutingTransaction(repository).apply()
+            rule = repository / "AGENTS.md"
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            routing_before = (rule.read_bytes(), skill.read_bytes())
             publish_lifecycle_state(
                 config.data_dir,
                 ProjectLifecycleState.initial(repository, config.project),
@@ -702,6 +712,27 @@ class SimpleCliTests(unittest.TestCase):
             ):
                 removed, remove_code = remove_project(repository, timeout_seconds=0)
                 self.assertEqual(remove_code, 0)
+                self.assertFalse(skill.exists())
+                self.assertEqual(rule.read_bytes(), b"")
+                from codebase_atlas import simple_cli
+                real_unlink = simple_cli._unlink_verified
+
+                def fail_recovery_marker(target, identity):
+                    if target.name == "removed.json":
+                        raise OSError("injected recovery marker failure")
+                    return real_unlink(target, identity)
+
+                marker_before = load_removal_marker(repository)
+                with patch("codebase_atlas.simple_cli._unlink_verified", side_effect=fail_recovery_marker):
+                    with self.assertRaisesRegex(OSError, "recovery marker failure"):
+                        simple_cli._restore_removed_project(repository, marker_before)
+                self.assertEqual(load_removal_marker(repository), marker_before)
+                self.assertFalse(path.exists())
+                self.assertFalse(skill.exists())
+                receipt = json.loads(Path(removed["receipt"]).read_text())
+                self.assertEqual(load_lifecycle_state(
+                    Path(receipt["recovered_data_dir"]), config.repository, config.project
+                ).status, "removed")
                 with (
                     patch(
                         "codebase_atlas.simple_cli.build_plan",
@@ -739,6 +770,7 @@ class SimpleCliTests(unittest.TestCase):
                     enabled, enable_code = enable_project(repository)
                 marker = load_removal_marker(repository)
             self.assertEqual(enable_code, 0)
+            self.assertEqual(routing_before, (rule.read_bytes(), skill.read_bytes()))
             self.assertTrue(enabled["mutates"])
             self.assertTrue(path.is_file())
             self.assertTrue((config.data_dir / "owned-index").is_file())

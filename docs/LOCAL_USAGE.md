@@ -31,6 +31,14 @@ routine source edits refresh automatically before the next query. `remove`
 moves Atlas-owned project assets to a verified recovery receipt rather than
 permanently deleting them. Add `--json` for the stable structured result.
 
+The development branch also removes known Atlas-owned routing blocks and skills
+into a version-2 removal receipt, retaining version-1 receipt compatibility.
+Modified routing assets remain in place and are listed in
+`preserved_routing_assets` with `routing_cleanup=partial`. Recovery restores
+the recorded bytes and permissions only if the post-removal files still match;
+new user edits block recovery rather than being overwritten. Fresh routing
+installation and version-upgrade integration remain under development.
+
 `status` is a lightweight read-only observation and reports the current Codex
 task connection as unknown unless a task has actually proved it. `verify` runs
 runtime, freshness, deep database, Codex configuration and target-query checks;

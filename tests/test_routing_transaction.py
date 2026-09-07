@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import os
+import base64
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,59 @@ from codebase_atlas.routing_transaction import RoutingTransaction
 
 
 class RoutingTransactionTests(unittest.TestCase):
+    def test_recovery_rejects_modified_managed_payload(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            RoutingTransaction(root).apply()
+            records = RoutingTransaction(root, remove=True).recovery_record()
+            for record in records:
+                modified = dict(record)
+                modified["original"] = base64.b64encode(b"unrecognized instructions").decode()
+                with self.subTest(path=record["path"]):
+                    with self.assertRaises(RuntimeError):
+                        RoutingTransaction.for_recovery(root, [modified])
+
+    def test_removal_receipt_restores_exact_bytes_and_modes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "AGENTS.md").write_bytes(b"foreign rules")
+            RoutingTransaction(root).apply()
+            skill = root / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.chmod(0o600)
+            original = {p: (p.read_bytes(), p.stat().st_mode & 0o777)
+                        for p in (root / "AGENTS.md", skill)}
+            removal = RoutingTransaction(root, remove=True)
+            records = removal.recovery_record()
+            removal.apply()
+            self.assertFalse(skill.exists())
+            self.assertEqual((root / "AGENTS.md").read_bytes(), b"foreign rules")
+            RoutingTransaction.for_recovery(root, records).apply()
+            self.assertEqual(original, {p: (p.read_bytes(), p.stat().st_mode & 0o777)
+                                        for p in original})
+
+    def test_recovery_rejects_foreign_target_and_duplicate_records(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            RoutingTransaction(root).apply()
+            records = RoutingTransaction(root, remove=True).recovery_record()
+            with self.assertRaisesRegex(RuntimeError, "target"):
+                RoutingTransaction.for_recovery(root, [records[0], records[0]])
+            records[0]["path"] = "../outside"
+            with self.assertRaisesRegex(RuntimeError, "target"):
+                RoutingTransaction.for_recovery(root, records)
+
+    def test_recovery_does_not_overwrite_new_user_rules(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            RoutingTransaction(root).apply()
+            removal = RoutingTransaction(root, remove=True)
+            records = removal.recovery_record()
+            removal.apply()
+            (root / "AGENTS.md").write_bytes(b"new rules")
+            with self.assertRaisesRegex(RuntimeError, "changed since planning"):
+                RoutingTransaction.for_recovery(root, records).apply()
+            self.assertEqual((root / "AGENTS.md").read_bytes(), b"new rules")
+
     def test_failure_after_atomic_publish_restores_original_state(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

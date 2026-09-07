@@ -7,10 +7,13 @@ coordinator must keep its wider transaction open until acceptance succeeds.
 from __future__ import annotations
 
 import os
+import base64
+import binascii
+import hashlib
 from pathlib import Path
 import tempfile
 
-from .routing_assets import AssetPlan, _read, plan_routing
+from .routing_assets import AssetPlan, BEGIN, END, KNOWN_RULES, KNOWN_SKILLS, _read, plan_routing
 
 
 class RoutingTransaction:
@@ -23,6 +26,86 @@ class RoutingTransaction:
         self._applied: list[AssetPlan] = []
         self._directories: list[Path] = []
         self._started = False
+        self._target_modes: dict[Path, int] = {}
+
+    def recovery_record(self) -> list[dict]:
+        """Serialize changed assets into the private project removal receipt."""
+        return [{
+            "path": str(plan.path.relative_to(self.repository)),
+            "original": base64.b64encode(plan.before).decode("ascii") if plan.before is not None else None,
+            "removed": base64.b64encode(plan.after).decode("ascii") if plan.after is not None else None,
+            "mode": plan.mode,
+        } for plan in self.plans if plan.before != plan.after]
+
+    @classmethod
+    def for_recovery(cls, repository: Path, records: object):
+        if not isinstance(records, list) or len(records) > 2:
+            raise RuntimeError("invalid routing recovery records")
+        instance = cls.__new__(cls)
+        instance.repository = repository.resolve(strict=True)
+        instance.conflicts = ()
+        instance._applied = []
+        instance._directories = []
+        instance._started = False
+        instance._target_modes = {}
+        plans = []
+        seen = set()
+        for record in records:
+            if not isinstance(record, dict) or set(record) != {"path", "original", "removed", "mode"}:
+                raise RuntimeError("invalid routing recovery record")
+            relative = record["path"]
+            if not isinstance(relative, str) or relative not in {
+                "AGENTS.md", ".agents/skills/codebase-atlas/SKILL.md"
+            } or relative in seen:
+                raise RuntimeError("invalid routing recovery target")
+            seen.add(relative)
+            mode = record["mode"]
+            if type(mode) is not int or not 0 <= mode <= 0o777:
+                raise RuntimeError("invalid routing recovery permissions")
+            payloads = []
+            for field in ("removed", "original"):
+                value = record[field]
+                if value is None:
+                    payloads.append(None)
+                    continue
+                if not isinstance(value, str) or len(value) > 1_398_104:
+                    raise RuntimeError("invalid routing recovery payload")
+                try:
+                    payload = base64.b64decode(value, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise RuntimeError("invalid routing recovery encoding") from exc
+                if len(payload) > 1024 * 1024:
+                    raise RuntimeError("routing recovery payload exceeds budget")
+                payloads.append(payload)
+            before, after = payloads
+            if after is None:
+                raise RuntimeError("removal recovery requires original asset bytes")
+            if relative.endswith("SKILL.md"):
+                if before is not None or hashlib.sha256(after).hexdigest() not in KNOWN_SKILLS:
+                    raise RuntimeError("routing recovery skill is not a known owned asset")
+            else:
+                begin, end = BEGIN.encode(), END.encode()
+                if after.count(begin) != 1 or after.count(end) != 1:
+                    raise RuntimeError("routing recovery rule markers are invalid")
+                start, finish = after.index(begin), after.index(end) + len(end)
+                if start > 0 and after[start - 1:start] == b"\n":
+                    start -= 1
+                if after[finish:finish + 1] == b"\n":
+                    finish += 1
+                if (hashlib.sha256(after[start:finish]).hexdigest() not in KNOWN_RULES
+                        or after[:start] + after[finish:] != before):
+                    raise RuntimeError("routing recovery rule is not a known owned change")
+            path = instance.repository / relative
+            plans.append(AssetPlan(path, "recovery", before, after,
+                                   mode if before is not None else None))
+            instance._target_modes[path] = mode
+        instance.plans = tuple(plans)
+        return instance
+
+    def _after_mode(self, plan: AssetPlan) -> int | None:
+        if plan.after is None:
+            return None
+        return self._target_modes.get(plan.path, plan.mode if plan.mode is not None else 0o644)
 
     def _check(self, plan: AssetPlan, expected: bytes | None, mode: int | None):
         _, actual, actual_mode = _read(self.repository, str(plan.path.relative_to(self.repository)))
@@ -70,7 +153,7 @@ class RoutingTransaction:
                 if plan.before == plan.after:
                     continue
                 self._applied.append(plan)
-                self._publish(plan, plan.before, plan.mode, plan.after, plan.mode)
+                self._publish(plan, plan.before, plan.mode, plan.after, self._after_mode(plan))
         except BaseException as exc:
             errors = self.rollback()
             if errors:
@@ -80,7 +163,7 @@ class RoutingTransaction:
     def rollback(self) -> list[str]:
         errors = []
         for plan in reversed(self._applied):
-            after_mode = (plan.mode if plan.mode is not None else 0o644) if plan.after is not None else None
+            after_mode = self._after_mode(plan)
             try:
                 # Publication may raise either before or after the rename.
                 # A target still at its original state needs no restoration.
