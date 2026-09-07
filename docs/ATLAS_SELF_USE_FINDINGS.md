@@ -79,6 +79,29 @@ address the observed behavior.
   `20 ms` Windows threshold that covers timer/scheduler granularity while still
   catching meaningful regressions.
 
+### SELF-015: Serena stdout waiting used Unix-only pipe selection
+
+- Observed task: run the Python multi-MCP stress qualification on Windows.
+- Expected: each Serena semantic subprocess returns bounded responses through
+  its stdio transport.
+- Actual evidence: `select.select()` was called on a Windows pipe and raised
+  `WinError 10038` because Windows `select` accepts sockets only.
+- Safe fallback: return an explicit tool error and reject the qualification.
+- Planned resolution: drain stdout on a dedicated thread into a bounded-wait
+  queue, matching the cross-platform Provider transport pattern.
+
+### SELF-016: TypeScript scope membership compared Windows path spellings
+
+- Observed task: run the TypeScript multi-MCP stress qualification on Windows.
+- Expected: `baseline.ts` is recognized as a root in the selected fixture
+  `tsconfig.json`.
+- Actual evidence: the target used an 8.3 temporary-root spelling while the
+  compiler file list used the long spelling, so string-set membership falsely
+  reported the file outside the project.
+- Safe fallback: reject the query rather than analyze the wrong project.
+- Planned resolution: canonicalize both the requested target and configured
+  compiler roots through the filesystem before membership comparison.
+
 ## Resolved
 
 ### SELF-001: mixed-language repository selects an unrelated fixture project

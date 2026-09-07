@@ -6,9 +6,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import secrets
-import select
 import subprocess
+import threading
 from typing import Any
 
 from ..contracts import Node, SourceRange, repository_path
@@ -110,6 +111,8 @@ class SerenaSemanticProvider:
         self._process: subprocess.Popen[str] | None = None
         self._stderr_handle: Any = None
         self._stderr_path: Path | None = None
+        self._responses: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._reader_thread: threading.Thread | None = None
         self.startup_ms = 0.0
 
     def _stderr_tail(self, limit: int = 4000) -> str:
@@ -123,24 +126,35 @@ class SerenaSemanticProvider:
         return payload.decode("utf-8", "replace").strip()
 
     def _read(self, timeout_seconds: float | None = None) -> dict[str, Any]:
-        if self._process is None or self._process.stdout is None:
+        if self._process is None:
             raise RuntimeError("Serena runner is not started")
         timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
-        ready, _, _ = select.select([self._process.stdout], [], [], timeout)
-        if not ready:
-            raise TimeoutError(f"Serena runner exceeded {timeout:.3f}s")
-        line = self._process.stdout.readline()
-        if not line:
+        try:
+            kind, value = self._responses.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise TimeoutError(f"Serena runner exceeded {timeout:.3f}s") from exc
+        if kind == "error":
+            raise RuntimeError(f"Serena runner output failed: {value}")
+        if kind == "eof":
             exit_code = self._process.poll()
             diagnostic = self._stderr_tail()
             suffix = f"; stderr_tail={diagnostic}" if diagnostic else ""
             raise RuntimeError(
                 f"Serena runner exited before responding (exit={exit_code}){suffix}"
             )
+        line = str(value)
         value = json.loads(line)
         if not isinstance(value, dict):
             raise ValueError("Serena runner response must be an object")
         return value
+
+    def _drain_stdout(self, stream: Any) -> None:
+        try:
+            for line in stream:
+                self._responses.put(("line", line))
+            self._responses.put(("eof", None))
+        except BaseException as exc:
+            self._responses.put(("error", exc))
 
     def start(self, *, timeout_seconds: float | None = None) -> None:
         if self._process is not None:
@@ -182,6 +196,15 @@ class SerenaSemanticProvider:
             text=True,
             env=environment,
         )
+        assert self._process.stdout is not None
+        self._responses = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._drain_stdout,
+            args=(self._process.stdout,),
+            daemon=True,
+            name="atlas-serena-stdout",
+        )
+        self._reader_thread.start()
         try:
             response = self._read(timeout_seconds)
             if response.get("status") != "ready":
@@ -246,6 +269,9 @@ class SerenaSemanticProvider:
                     process.kill()
                     process.wait(timeout=5)
         self._process = None
+        if self._reader_thread is not None and self._reader_thread is not threading.current_thread():
+            self._reader_thread.join(timeout=1.0)
+        self._reader_thread = None
         if self._stderr_handle is not None:
             self._stderr_handle.close()
             self._stderr_handle = None
@@ -263,6 +289,9 @@ class SerenaSemanticProvider:
                 process.kill()
                 process.wait(timeout=5)
         self._process = None
+        if self._reader_thread is not None and self._reader_thread is not threading.current_thread():
+            self._reader_thread.join(timeout=1.0)
+        self._reader_thread = None
         if self._stderr_handle is not None:
             self._stderr_handle.close()
             self._stderr_handle = None
