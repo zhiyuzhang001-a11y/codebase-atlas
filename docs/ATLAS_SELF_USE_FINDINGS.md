@@ -36,18 +36,19 @@ address the observed behavior.
   architecture before deciding whether a deeper Serena coordination fix is
   required.
 
-### SELF-012: Provider command capture assumed inherited pipes were Windows-only
+### SELF-012: cleanup probed a retiring Unix daemon unnecessarily
 
 - Observed task: wait for a private Provider daemon to retire after the Linux
   ARM dual-repository isolation proof had passed.
 - Expected: `daemon status` returns promptly and permits bounded cleanup.
-- Actual evidence: the direct frontend exited, but its background daemon kept
-  the capture pipe open; Atlas timed out after five seconds. The safe
-  seekable-file capture path was restricted to Windows.
+- Actual evidence: Linux ARM's `daemon status` frontend itself remained in the
+  daemon retirement path for more than five seconds and timed out. Unlike
+  Windows, Unix does not require the process to release handles before removing
+  the private fixture tree.
 - Safe fallback: reject the platform job even though its isolation assertions
   passed.
-- Planned resolution: use seekable temporary files for Provider command output
-  on every platform, then rerun the cross-platform gate.
+- Planned resolution: poll daemon retirement only on Windows, where open file
+  handles block fixture removal, then rerun the cross-platform gate.
 
 ## Resolved
 

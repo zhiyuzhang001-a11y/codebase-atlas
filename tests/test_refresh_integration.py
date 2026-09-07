@@ -47,6 +47,8 @@ def wait_for_private_provider_exit(
     binary: Path, cache_dir: Path, repository: Path, *, timeout_seconds: float = 20.0
 ) -> None:
     """Wait for the test-owned non-permanent daemon to release Windows files."""
+    if os.name != "nt":
+        return
     deadline = time.monotonic() + timeout_seconds
     environment = provider_environment(cache_dir, repository)
     last_output = ""
