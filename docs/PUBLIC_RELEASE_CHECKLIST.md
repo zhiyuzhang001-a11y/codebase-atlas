@@ -45,7 +45,7 @@ exhaustive query recall or remove the documented limits in `SUPPORT.md`.
   x86_64 and ARM64, including Python/TypeScript 10-round and 8-client/100-file
   contention gates (Actions run 34137764725).
 - [x] Record and close reproducible Atlas self-use findings SELF-001–SELF-017.
-- [ ] Merge the accepted candidate, create the draft `v0.26.0` Release, verify
+- [x] Merge the accepted candidate, create the draft `v0.26.0` Release, verify
   public assets in isolation, publish it, then deploy and verify the saved
   project while retaining the prior verified installation.
 
