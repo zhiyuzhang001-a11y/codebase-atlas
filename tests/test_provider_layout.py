@@ -46,6 +46,23 @@ class ProviderLayoutTests(unittest.TestCase):
                 and call[1]["env"]["CBM_ALLOWED_ROOT"] == str(repository.resolve())
                 for call in calls
             ))
+
+    def test_managed_cache_rejects_unsafe_existing_root(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            target = root / "target"
+            target.mkdir(mode=0o700)
+            link = root / "managed-cache"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks are unavailable")
+            with self.assertRaisesRegex(RuntimeError, "unsafe managed Provider cache"):
+                configure_managed_provider_cache(
+                    root / "provider", link, repository, runner=lambda *_a, **_k: None
+                )
     def test_default_projects_share_provider_root_but_not_atlas_state(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(
             os.environ, {"XDG_DATA_HOME": str(Path(raw) / "data")}, clear=False

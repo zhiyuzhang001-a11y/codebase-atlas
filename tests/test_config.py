@@ -14,6 +14,20 @@ from codebase_atlas.index_state import record_index_state
 
 
 class ConfigTests(unittest.TestCase):
+    def test_discovery_defaults_new_projects_to_shared_provider_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            config = AtlasConfig.discover(
+                repository,
+                node=root / "node",
+                cbm_binary=root / "provider",
+                serena_python=root / "serena",
+            )
+            self.assertEqual(config.provider_layout, "shared-v1")
+            self.assertEqual(config.project, config.shared_project)
+
     def test_written_config_bytes_match_rendered_contract(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

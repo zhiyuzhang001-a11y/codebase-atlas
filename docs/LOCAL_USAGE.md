@@ -252,11 +252,13 @@ codebase-atlas analyze-change Class.method \
 
 The response distinguishes unresolved/ambiguous identity from partial evidence,
 preserves every subquery's truncation, and lists evidence-backed source/test
-targets. Shared-layout UI, MCP and query sessions for different repositories may
-reuse the same Provider daemon concurrently. Same-project writes remain
-serialized. A legacy-layout or short admission conflict returns
-`provider_busy`; inspect and explicitly migrate that project instead of deleting
-its old cache.
+targets. New projects use the shared layout by default. Shared-layout UI, MCP
+and query sessions for the same or different repositories may reuse the
+Provider daemon concurrently. Same-project writes remain serialized. A project
+created by an older release can still use the legacy layout; inspect and
+explicitly migrate it instead of deleting its old cache. Treat `provider_busy`
+or `provider_startup_timeout` as transient backpressure and retry within the
+remaining task budget rather than recreating the Codex task.
 
 Long-lived batch and MCP sessions expose the state captured at session startup
 without adding Git work to every warm query. A project-scoped M30 MCP transport

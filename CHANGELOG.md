@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.26.1 — 2026-09-09
+
+- Default new projects to the identity-isolated shared Provider layout so
+  independent Codex agents can query concurrently without a legacy session
+  owning the Provider for its whole lifetime.
+- Retry Provider startup on a later request after transient `provider_busy` or
+  `provider_startup_timeout` instead of poisoning the MCP session.
+- Migrate and transactionally roll back durable lifecycle identity together
+  with Provider config publication, including repair of an already-published
+  shared config with a valid legacy lifecycle state.
+- Teach Codex to allow parallel Atlas reads, assign explicit mutations to one
+  owner, and wait/retry transient Provider backpressure without recreating the
+  task.
+- Verify the final shared layout with three concurrent agents performing nine
+  strict fresh-index queries, all returning exact target evidence without busy
+  or timeout results.
+
 ## 0.26.0 — 2026-09-08
 
 - Add the compact `atlas status` and non-refreshing `atlas verify` diagnostics

@@ -181,12 +181,13 @@ def source_snapshot(fingerprint: str | None = "source-a") -> RepositorySnapshot:
 
 
 class ServiceTests(unittest.TestCase):
-    def test_provider_lock_conflict_is_explicit(self) -> None:
+    def test_provider_lock_conflict_is_explicit_and_next_request_retries(self) -> None:
         class BusyLifecycle(FakeLifecycle):
             def start(self, *, timeout_seconds=None):
                 self.starts += 1
                 self.last_timeout = timeout_seconds
-                raise TimeoutError("busy")
+                if self.starts == 1:
+                    raise TimeoutError("busy")
 
         lifecycle = BusyLifecycle()
         service = AtlasService(
@@ -201,9 +202,29 @@ class ServiceTests(unittest.TestCase):
             ))
         self.assertTrue(response.truncated)
         self.assertEqual(response.truncation["reasons"], ("provider_busy",))
-        self.assertEqual(repeated.truncation["reasons"], ("provider_busy",))
-        self.assertEqual(lifecycle.starts, 1)
+        self.assertFalse(repeated.truncated)
+        self.assertEqual(lifecycle.starts, 2)
         self.assertEqual(lifecycle.last_timeout, 60.0)
+
+    def test_separated_provider_startup_retries_after_transient_busy(self) -> None:
+        class BusyOnceLifecycle(FakeLifecycle):
+            def start_for_request(
+                self, *, lock_timeout_seconds, initialize_timeout_seconds
+            ):
+                self.starts += 1
+                if self.starts == 1:
+                    raise TimeoutError("busy")
+
+        lifecycle = BusyOnceLifecycle()
+        service = AtlasService(
+            impact_provider=FakeImpactProvider(), lifecycle=lifecycle
+        )
+        with service:
+            first = service.query(QueryRequest("definition", "target"))
+            second = service.query(QueryRequest("definition", "target"))
+        self.assertEqual(first.truncation["reasons"], ("provider_busy",))
+        self.assertFalse(second.truncated)
+        self.assertEqual(lifecycle.starts, 2)
 
     def test_locate_files_separates_lock_initialize_and_remaining_tool_budget(self) -> None:
         class SeparatedLifecycle(FakeLifecycle):

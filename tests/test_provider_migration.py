@@ -15,6 +15,11 @@ from unittest.mock import patch
 from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.cli import main
 from codebase_atlas.provider_migration import plan_provider_migration
+from codebase_atlas.project_lifecycle import (
+    ProjectLifecycleState,
+    load_lifecycle_state,
+    publish_lifecycle_state,
+)
 from codebase_atlas.refresh_planner import (
     build_generation_manifest,
     load_generation_manifest,
@@ -196,6 +201,10 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             legacy_bytes = legacy.read_bytes()
             config_path = config.repository / ".codebase-atlas.toml"
             config.write(config_path)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(config.repository, config.project),
+            )
 
             def indexer(candidate: AtlasConfig, _mode: str) -> dict[str, object]:
                 _database(candidate.cache_dir, candidate.project, candidate.repository)
@@ -215,6 +224,10 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             self.assertEqual(migrated.legacy_project, config.project)
             self.assertEqual(migrated.cache_dir, migrated.shared_cache_dir)
             self.assertEqual(legacy.read_bytes(), legacy_bytes)
+            lifecycle = load_lifecycle_state(
+                migrated.data_dir, migrated.repository, migrated.project
+            )
+            self.assertEqual(lifecycle.project, migrated.shared_project)
             called.assert_called_once()
 
             second = StringIO()
@@ -226,6 +239,38 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             self.assertEqual(second_code, 0)
             self.assertEqual(second_payload["action"], "already_active")
             repeated.assert_not_called()
+
+    def test_apply_repairs_legacy_lifecycle_identity_after_config_was_published(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, patch.dict(
+            os.environ, {"XDG_DATA_HOME": str(Path(raw) / "account")}, clear=False
+        ):
+            config = self._config(Path(raw))
+            candidate = config.__class__(
+                config.repository, config.language, config.node, config.cbm_binary,
+                config.serena_python, config.data_dir, config.shared_project,
+                provider_layout=SHARED_PROVIDER_LAYOUT, legacy_project=config.project,
+            )
+            _database(candidate.shared_cache_dir, candidate.project, candidate.repository)
+            config_path = config.repository / ".codebase-atlas.toml"
+            candidate.write(config_path)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(config.repository, config.project),
+            )
+
+            plan = plan_provider_migration(candidate)
+            self.assertEqual(plan.action, "repair_lifecycle_identity")
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main([
+                    "migrate-provider", "--config", str(config_path), "--apply"
+                ])
+
+            self.assertEqual(code, 0)
+            repaired = load_lifecycle_state(
+                candidate.data_dir, candidate.repository, candidate.project
+            )
+            self.assertEqual(repaired.project, candidate.project)
 
     def test_apply_replaces_legacy_generation_manifest_with_shared_identity(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(
@@ -331,6 +376,10 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             _database(config.legacy_cache_dir, config.project, config.repository)
             config_path = config.repository / ".codebase-atlas.toml"
             config.write(config_path)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(config.repository, config.project),
+            )
             original = config_path.read_bytes()
 
             def indexer(candidate: AtlasConfig, _mode: str) -> dict[str, object]:
@@ -347,6 +396,10 @@ class ProviderMigrationPlanTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(config_path.read_bytes(), original)
             self.assertEqual(AtlasConfig.load(config_path).provider_layout, "legacy-project-v0")
+            restored = load_lifecycle_state(
+                config.data_dir, config.repository, config.project
+            )
+            self.assertEqual(restored.project, config.project)
 
     def test_interrupt_preserves_config_and_leaves_shared_unpublished(self) -> None:
         with tempfile.TemporaryDirectory() as raw, patch.dict(

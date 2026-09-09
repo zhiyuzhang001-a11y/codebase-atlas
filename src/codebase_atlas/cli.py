@@ -50,9 +50,14 @@ from .project_discovery import resolve_project
 from .reloadable_mcp import ReloadingMcpServer
 from .provider_layout import provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
-from .project_lifecycle import operational_lifecycle_status
+from .project_lifecycle import (
+    load_lifecycle_state,
+    operational_lifecycle_status,
+    publish_lifecycle_state,
+)
 from .refresh_coordinator import RefreshCoordinator, refresh_with_retry
 from .provider_migration import (
+    migrated_lifecycle_state,
     plan_provider_migration,
     prepare_shared_provider_root,
     shared_provider_config,
@@ -518,7 +523,16 @@ def main(argv: list[str] | None = None) -> int:
         config_published = False
         staged_registrations = None
         staged_manifest = None
+        previous_lifecycle = None
+        lifecycle_published = False
         try:
+            migrated_lifecycle = migrated_lifecycle_state(candidate)
+            if migrated_lifecycle is not None:
+                previous_lifecycle = load_lifecycle_state(
+                    config.data_dir,
+                    config.repository,
+                    config.legacy_project or config.project,
+                )
             if plan.action in {"fresh_shared_index", "rebuild_into_shared"}:
                 root_created = prepare_shared_provider_root(candidate.cache_dir)
                 provider_result = _index_repository(candidate, args.mode)
@@ -573,6 +587,9 @@ def main(argv: list[str] | None = None) -> int:
                 staged_registrations.publish()
             if staged_manifest is not None:
                 staged_manifest.publish(manifest_path(candidate.data_dir))
+            if migrated_lifecycle is not None:
+                publish_lifecycle_state(candidate.data_dir, migrated_lifecycle)
+                lifecycle_published = True
             candidate.write_verified(args.config, config_identity)
             config_published = True
             record_index_state(
@@ -600,6 +617,11 @@ def main(argv: list[str] | None = None) -> int:
             if config_published:
                 try:
                     AtlasConfig.restore_verified(args.config, config_identity, config_bytes)
+                except (OSError, ValueError):
+                    pass
+            if lifecycle_published and previous_lifecycle is not None:
+                try:
+                    publish_lifecycle_state(config.data_dir, previous_lifecycle)
                 except (OSError, ValueError):
                     pass
             if isinstance(exc, KeyboardInterrupt):

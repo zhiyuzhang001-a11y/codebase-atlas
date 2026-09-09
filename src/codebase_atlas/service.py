@@ -182,8 +182,6 @@ class AtlasService:
     def _ensure_structural(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
         if self._structural_started:
             return True
-        if self._structural_unavailable_reason in {"provider_busy", "provider_startup_timeout"}:
-            return False
         if self.lifecycle is not None:
             try:
                 # Startup admission is ordinary backpressure. Give it the

@@ -27,6 +27,12 @@
   mismatched Atlas output as repository fact.
 - Do not create parallel navigation caches, generated summaries, or other
   substitute indexes in the repository.
+- Multiple agents may issue Atlas read/query calls concurrently. Assign
+  explicit enable, stop, update, remove, migration, index, or refresh work to
+  one owning agent while the others wait. Treat `provider_busy` and
+  `provider_startup_timeout` as transient backpressure: retry within the
+  remaining task budget after the owner finishes; do not archive or recreate a
+  task merely to recover.
 
 ## Atlas self-use feedback
 
