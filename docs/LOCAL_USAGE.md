@@ -312,6 +312,10 @@ Public 0.22.x assets use these target names: `linux-x86_64`, `linux-arm64`,
 the archive and adjacent `.sha256` file for exactly one matching target from the
 same Atlas Release. `PROVIDER_SHA256SUMS.txt` covers the complete set.
 
+`macos-x86_64` is retained only for historical releases and existing verified
+installations. New Atlas releases do not build or update macOS Intel; their
+active target set is the other five names above.
+
 For TypeScript repositories, `--node-bin-dir` must contain
 `typescript-language-server` when it is not beside the configured Node executable.
 

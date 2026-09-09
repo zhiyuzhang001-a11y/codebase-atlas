@@ -33,6 +33,11 @@ that must not be inferred or automated.
 All public launch gates passed for 0.12.2. Passing this checklist does not imply
 exhaustive query recall or remove the documented limits in `SUPPORT.md`.
 
+For all future candidates, macOS Intel (`macos-x86_64`) is frozen rather than
+actively supported. Preserve its historical Release assets and test records,
+but require only Linux x86-64/ARM64, macOS Apple Silicon, and Windows
+x86-64/ARM64 for new Provider builds and native qualification.
+
 ## 0.26.0 simplicity and stability candidate
 
 - [x] Add compact read-only status/verify diagnostics and the four-command

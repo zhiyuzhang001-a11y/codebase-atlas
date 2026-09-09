@@ -30,6 +30,14 @@ TARGETS = {
     "windows-arm64": ("windows", "codebase-memory-mcp.exe", "zip"),
 }
 
+# macOS Intel bundles published in earlier releases remain valid historical
+# artifacts, but Atlas no longer builds or updates that target.
+LEGACY_TARGETS = {"macos-x86_64": TARGETS["macos-x86_64"]}
+ACTIVE_TARGETS = {
+    target: metadata for target, metadata in TARGETS.items()
+    if target not in LEGACY_TARGETS
+}
+
 
 def run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
     completed = subprocess.run(
@@ -111,7 +119,7 @@ def build_once(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--target", choices=sorted(TARGETS), required=True)
+    parser.add_argument("--target", choices=sorted(ACTIVE_TARGETS), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-commit", default=DEFAULT_COMMIT)
     parser.add_argument("--version", default=DEFAULT_VERSION)
@@ -129,7 +137,7 @@ def main() -> int:
         raise RuntimeError(f"output is not empty; refusing overwrite: {output}")
     output.mkdir(parents=True, exist_ok=True)
     epoch = int(run(["git", "show", "-s", "--format=%ct", commit], cwd=source))
-    _system, binary_name, archive_kind = TARGETS[args.target]
+    _system, binary_name, archive_kind = ACTIVE_TARGETS[args.target]
 
     build_root = source / "build"
     build_root.mkdir(exist_ok=True)

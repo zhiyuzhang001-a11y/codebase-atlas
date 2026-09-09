@@ -6,7 +6,8 @@ long-term-support guarantee.
 ## Tested scope
 
 - Python 3.11 through 3.14;
-- Linux, macOS, and Windows through the CI matrix;
+- Linux x86_64/ARM64, macOS Apple Silicon, and Windows x86_64/ARM64 through the
+  CI matrix;
 - Node.js 18 or newer;
 - Python and TypeScript/JavaScript repositories;
 - local CLI, JSON-lines batch, and read-only stdio MCP use;
@@ -19,10 +20,14 @@ commits are recorded in the release evidence; a public Atlas release must pin an
 installable upstream or maintained build rather than silently accepting an
 older incompatible executable.
 
-The 0.22.0 release provides exact-source managed Provider bundles for Linux
-x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x86_64/ARM64. Each bundle
-contains its own MIT license and manifest and remains a separate program rather
-than becoming part of the Apache-2.0 Atlas wheel.
+Releases through 0.26.2 provide exact-source managed Provider bundles for Linux
+x86_64/ARM64, macOS Intel/Apple Silicon, and Windows x86_64/ARM64. Existing
+macOS Intel installations and historical Release assets are retained, but
+`macos-x86_64` is frozen: Atlas does not build, test, update, or promise new
+Provider bundles for it after that release. Current releases actively support
+the other five targets. Each bundle contains its own MIT license and manifest
+and remains a separate program rather than becoming part of the Apache-2.0
+Atlas wheel.
 
 Only the latest release is the primary support target. A passing setup
 check verifies discoverable capabilities, not every Provider/repository version.

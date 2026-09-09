@@ -54,6 +54,7 @@ from .project_lifecycle import (
 from .provider_layout import provider_project_identity
 from .runtime import required_checks_ok
 from .release_installation import (
+    MacOSIntelFrozenError,
     VersionedInstallation,
     fetch_stable_release,
     install_stable_release,
@@ -1984,7 +1985,7 @@ def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
 def _enable_runtime_installation() -> VersionedInstallation:
     try:
         release = fetch_stable_release()
-    except OSError:
+    except (OSError, MacOSIntelFrozenError):
         return load_versioned_installation(__version__)
     installation, _created = install_stable_release(release)
     return installation

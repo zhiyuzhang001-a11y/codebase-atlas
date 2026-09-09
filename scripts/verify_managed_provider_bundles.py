@@ -12,9 +12,19 @@ import zipfile
 from pathlib import Path
 
 try:
-    from build_managed_provider import DEFAULT_COMMIT, DEFAULT_VERSION, TARGETS
+    from build_managed_provider import (
+        ACTIVE_TARGETS,
+        DEFAULT_COMMIT,
+        DEFAULT_VERSION,
+        LEGACY_TARGETS,
+    )
 except ModuleNotFoundError:  # Imported as scripts.verify_managed_provider_bundles.
-    from scripts.build_managed_provider import DEFAULT_COMMIT, DEFAULT_VERSION, TARGETS
+    from scripts.build_managed_provider import (
+        ACTIVE_TARGETS,
+        DEFAULT_COMMIT,
+        DEFAULT_VERSION,
+        LEGACY_TARGETS,
+    )
 
 
 def sha256(path: Path) -> str:
@@ -53,7 +63,15 @@ def main() -> int:
     args = parser.parse_args()
     directory = args.directory.resolve()
     results = []
-    for target, (_system, binary_name, archive_kind) in TARGETS.items():
+    targets = dict(ACTIVE_TARGETS)
+    for target, metadata in LEGACY_TARGETS.items():
+        archive_kind = metadata[2]
+        suffix = ".zip" if archive_kind == "zip" else ".tar.gz"
+        archive = directory / f"codebase-atlas-provider-{args.version}-{target}{suffix}"
+        sidecar = directory / f"{archive.name}.sha256"
+        if archive.exists() or sidecar.exists():
+            targets[target] = metadata
+    for target, (_system, binary_name, archive_kind) in targets.items():
         suffix = ".zip" if archive_kind == "zip" else ".tar.gz"
         archive = directory / f"codebase-atlas-provider-{args.version}-{target}{suffix}"
         sidecar = directory / f"{archive.name}.sha256"
@@ -89,7 +107,12 @@ def main() -> int:
                 raise RuntimeError(f"binary version mismatch for {target}")
             if "MIT License" not in (bundle / "LICENSE").read_text(encoding="utf-8"):
                 raise RuntimeError(f"MIT license missing for {target}")
-        results.append({"target": target, "archive": archive.name, "sha256": expected_archive_hash})
+        results.append({
+            "target": target,
+            "support": "legacy-frozen" if target in LEGACY_TARGETS else "active",
+            "archive": archive.name,
+            "sha256": expected_archive_hash,
+        })
     extras = sorted(
         path.name for path in directory.iterdir()
         if path.is_file() and path.name.startswith("codebase-atlas-provider-")

@@ -33,6 +33,10 @@ MAX_PROVIDER_BYTES = 256 * 1024 * 1024
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 
 
+class MacOSIntelFrozenError(RuntimeError):
+    """Raised when a new managed release is requested on frozen macOS Intel."""
+
+
 @dataclass(frozen=True)
 class ReleaseAsset:
     name: str
@@ -80,6 +84,12 @@ def current_platform_target(
     if selected_system not in systems or selected_machine not in machines:
         raise RuntimeError(
             f"unsupported release platform: {selected_system}-{selected_machine}"
+        )
+    if selected_system == "darwin" and machines[selected_machine] == "x86_64":
+        raise MacOSIntelFrozenError(
+            "macOS Intel release support is frozen: keep an existing verified "
+            "Atlas installation and Provider bundle; new releases are not built "
+            "or updated for macos-x86_64"
         )
     return f"{systems[selected_system]}-{machines[selected_machine]}"
 

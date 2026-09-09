@@ -9,8 +9,10 @@ from pathlib import Path
 from unittest import mock
 
 from scripts.build_managed_provider import (
+    ACTIVE_TARGETS,
     DEFAULT_COMMIT,
     DEFAULT_VERSION,
+    LEGACY_TARGETS,
     TARGETS,
     write_tar,
     write_zip,
@@ -24,9 +26,12 @@ def sha256(path: Path) -> str:
 
 
 class ManagedProviderBundleTests(unittest.TestCase):
-    def make_release_set(self, directory: Path) -> None:
+    def make_release_set(self, directory: Path, *, include_legacy: bool = False) -> None:
         epoch = 1_788_068_456
-        for target, (_system, binary_name, kind) in TARGETS.items():
+        targets = dict(ACTIVE_TARGETS)
+        if include_legacy:
+            targets.update(LEGACY_TARGETS)
+        for target, (_system, binary_name, kind) in targets.items():
             bundle = directory / target
             bundle.mkdir()
             binary = bundle / binary_name
@@ -68,6 +73,18 @@ class ManagedProviderBundleTests(unittest.TestCase):
             self.make_release_set(directory)
             with mock.patch.object(sys, "argv", ["verify", str(directory)]):
                 self.assertEqual(verify_main(), 0)
+
+    def test_historical_intel_bundle_is_optional_but_still_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            self.make_release_set(directory, include_legacy=True)
+            with mock.patch.object(sys, "argv", ["verify", str(directory)]):
+                self.assertEqual(verify_main(), 0)
+            intel_archive = next(directory.glob("*macos-x86_64.tar.gz"))
+            intel_archive.write_bytes(intel_archive.read_bytes() + b"corrupt")
+            with mock.patch.object(sys, "argv", ["verify", str(directory)]):
+                with self.assertRaisesRegex(RuntimeError, "macos-x86_64"):
+                    verify_main()
 
     def test_corrupt_archive_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

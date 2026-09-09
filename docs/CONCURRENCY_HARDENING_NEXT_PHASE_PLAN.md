@@ -12,6 +12,11 @@ This phase does not change machine-local Atlas/Codex configuration, install a
 different Provider, or publish a release. CI and release activation remain
 separate reviewed operations.
 
+Platform policy for this and future phases: macOS Intel (`macos-x86_64`) is a
+frozen historical target. Existing artifacts and recorded results remain, but
+no new Intel build, update, CI, soak, or release gate is planned. Active native
+coverage is Linux x86-64/ARM64, macOS Apple Silicon, and Windows x86-64/ARM64.
+
 ## Workstream 1: deterministic publication failpoints
 
 Add durable journal phase transitions around these boundaries:
@@ -91,7 +96,7 @@ and scheduled `Concurrency Acceptance` workflow using verified managed Provider
 artifacts for:
 
 - Ubuntu x86-64 and ARM64;
-- macOS Intel and Apple Silicon;
+- macOS Apple Silicon;
 - Windows x86-64 and ARM64 when the corresponding hosted runner is available.
 
 The workflow will use native path, locking, process termination, and temporary

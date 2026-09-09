@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.4 — 2026-09-09
+
+- Freeze macOS Intel (`macos-x86_64`) after the existing historical releases:
+  retain and verify old assets when present, but stop building, testing,
+  updating, or requiring that target in future release plans. New managed
+  Provider releases cover Linux x86_64/ARM64, macOS Apple Silicon, and Windows
+  x86_64/ARM64.
+
 ## 0.26.3 — 2026-09-09
 
 - Treat only byte-exact, published Atlas routing insertions and upgrades as

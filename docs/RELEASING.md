@@ -13,7 +13,13 @@ Codebase Atlas releases from its public GitHub repository under Apache License
 5. The tag is exactly `v<version>`.
 6. `scripts/check_publication_readiness.py --mode public` passes.
 7. The `Managed Provider Bundles` workflow passes on the final candidate and
-   produces all six exact-source bundles plus `PROVIDER_SHA256SUMS.txt`.
+   produces the five actively supported exact-source bundles plus
+   `PROVIDER_SHA256SUMS.txt`.
+
+macOS Intel (`macos-x86_64`) is a frozen historical target. Never add it to a
+new release build, update, or required CI matrix. Do not delete or rewrite its
+existing Release assets; the aggregate verifier accepts and rigorously checks a
+historical Intel bundle when one is present, but does not require one.
 
 ## Release
 
@@ -64,9 +70,10 @@ python scripts/normalize_sdist.py "dist-b/codebase_atlas-${VERSION}.tar.gz" \
 cmp normalized-a.tar.gz normalized-b.tar.gz
 ```
 
-The published GitHub Release contains the verified Atlas wheel/checksum and six
-separately licensed managed Provider bundles/checksums. The Provider bundles are
-not embedded in the wheel and do not replace an unrelated global installation.
+The published GitHub Release contains the verified Atlas wheel/checksum and five
+actively supported, separately licensed managed Provider bundles/checksums. The
+Provider bundles are not embedded in the wheel and do not replace an unrelated
+global installation.
 
 ## License boundary
 

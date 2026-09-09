@@ -33,7 +33,7 @@ from codebase_atlas.simple_cli import (
     verify_project,
 )
 from codebase_atlas.simple_cli import update_project
-from codebase_atlas.release_installation import VersionedInstallation
+from codebase_atlas.release_installation import MacOSIntelFrozenError, VersionedInstallation
 from codebase_atlas.routing_transaction import RoutingTransaction
 from codebase_atlas.routing_state import publish_routing_state
 
@@ -315,6 +315,26 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(_enable_runtime_installation(), installation)
         installer.assert_called_once_with(release)
         fallback.assert_not_called()
+
+    def test_enable_runtime_reuses_existing_installation_on_frozen_macos_intel(self) -> None:
+        installation = VersionedInstallation(
+            "0.26.2", "macos-x86_64", Path("/installation"), Path("/python"),
+            Path("/atlas"), Path("/provider"), "provider-test", "a" * 64, "b" * 64,
+        )
+        with (
+            patch(
+                "codebase_atlas.simple_cli.fetch_stable_release",
+                side_effect=MacOSIntelFrozenError("frozen"),
+            ),
+            patch(
+                "codebase_atlas.simple_cli.load_versioned_installation",
+                return_value=installation,
+            ) as fallback,
+            patch("codebase_atlas.simple_cli.install_stable_release") as installer,
+        ):
+            self.assertEqual(_enable_runtime_installation(), installation)
+        fallback.assert_called_once_with("0.26.4")
+        installer.assert_not_called()
 
     def test_verification_skips_hidden_sources_and_accepts_location_schema(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

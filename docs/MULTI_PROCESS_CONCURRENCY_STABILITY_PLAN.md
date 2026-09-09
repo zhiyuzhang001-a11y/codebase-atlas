@@ -11,6 +11,11 @@ A query succeeds only when it is bound to a fully published generation whose
 source fingerprint is current. A refresh owned by another process is a wait or
 retry condition, never permission to return stale or deleted facts as success.
 
+Platform policy for this and future execution: macOS Intel (`macos-x86_64`) is
+frozen. Preserve historical artifacts and evidence, but do not schedule new
+Intel builds, updates, CI, or release gates. The active matrix is Linux
+x86-64/ARM64, macOS Apple Silicon, and Windows x86-64/ARM64.
+
 ## Phases and failure criteria
 
 1. **Baseline and deterministic reproduction**

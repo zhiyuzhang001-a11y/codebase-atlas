@@ -153,7 +153,6 @@ class ReleaseInstallationTests(unittest.TestCase):
         cases = {
             ("Linux", "x86_64"): "linux-x86_64",
             ("Linux", "aarch64"): "linux-arm64",
-            ("Darwin", "AMD64"): "macos-x86_64",
             ("Darwin", "arm64"): "macos-arm64",
             ("Windows", "x86_64"): "windows-x86_64",
             ("Windows", "ARM64"): "windows-arm64",
@@ -165,6 +164,8 @@ class ReleaseInstallationTests(unittest.TestCase):
                 )
         with self.assertRaisesRegex(RuntimeError, "unsupported"):
             current_platform_target(system="Plan9", machine="mips")
+        with self.assertRaisesRegex(RuntimeError, "macOS Intel release support is frozen"):
+            current_platform_target(system="Darwin", machine="AMD64")
 
     def test_release_requires_published_stable_exact_assets(self) -> None:
         release = parse_stable_release(release_payload(), target="linux-x86_64")
