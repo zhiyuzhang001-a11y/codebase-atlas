@@ -103,8 +103,6 @@ def _nested_git_repositories(repository: Path) -> dict[str, Any]:
             if name != ".git" and not (current_path / name).is_symlink()
         )
         if depth >= STATUS_MAX_DEPTH:
-            if directories:
-                partial_reason = "nested_repository_depth_budget_exceeded"
             directories[:] = []
             continue
         retained: list[str] = []
@@ -1013,10 +1011,18 @@ def enable_project(
         operation_lock.release()
 
 
-def _codex_project_status(config_path: Path, repository: Path) -> dict[str, Any]:
+def _codex_project_status(
+    config_path: Path,
+    repository: Path,
+    *,
+    atlas_executable: Path | None = None,
+) -> dict[str, Any]:
     try:
         plan = codex_plan(
-            config_path, scope="project", codex_project_root=repository
+            config_path,
+            scope="project",
+            codex_project_root=repository,
+            atlas_executable=atlas_executable,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         return {
@@ -1107,7 +1113,18 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
     index = operational_index_status(
         config.data_dir, config.repository, config.cache_dir, config.project
     )
-    codex = _codex_project_status(resolution.config, root)
+    atlas_executable = None
+    atlas_version = lifecycle.get("atlas_version")
+    if isinstance(atlas_version, str) and atlas_version:
+        try:
+            atlas_executable = load_versioned_installation(
+                atlas_version
+            ).atlas_executable
+        except (OSError, RuntimeError, ValueError):
+            pass
+    codex = _codex_project_status(
+        resolution.config, root, atlas_executable=atlas_executable
+    )
     project_state = str(lifecycle.get("status", "unknown"))
     index_status = str(index.get("status", "unknown"))
     if project_state != "ready":
@@ -1423,6 +1440,40 @@ def _external_doctor(
     return payload
 
 
+def _external_index_update(
+    installation: VersionedInstallation,
+    config_path: Path,
+    *,
+    timeout_seconds: float,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    completed = runner(
+        [
+            str(installation.atlas_executable),
+            "update",
+            "--config",
+            str(config_path),
+            "--mode",
+            "fast",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("current Atlas index update returned invalid JSON") from exc
+    if completed.returncode != 0 or payload.get("status") not in {
+        "current",
+        "updated",
+    }:
+        detail = str(payload.get("error") or completed.stderr.strip() or "update failed")
+        raise RuntimeError(f"current Atlas index update failed: {detail}")
+    return payload
+
+
 def _external_routing_bundle(
     installation: VersionedInstallation, *, runner: Any = subprocess.run
 ):
@@ -1497,7 +1548,19 @@ def update_project(
     routing: RoutingTransaction | None = None
     durable: LifecycleRecoveryJournal | None = None
     operation_id = secrets.token_hex(16)
+    pre_update_refresh: dict[str, Any] = {"status": "not_needed"}
     try:
+        index_before = operational_index_status(
+            config.data_dir, config.repository, config.cache_dir, config.project
+        )
+        if index_before.get("status") == "stale":
+            current_installation = load_versioned_installation(current_version)
+            pre_update_refresh = _external_index_update(
+                current_installation,
+                config_path,
+                timeout_seconds=timeout_seconds,
+                runner=runner,
+            )
         if not _acquire_refresh(refresh, timeout_seconds=timeout_seconds):
             raise RuntimeError("timed out waiting for the active project refresh")
         current = load_lifecycle_state(
@@ -1567,6 +1630,7 @@ def update_project(
             atlas_version=installation.version,
             provider_version=installation.provider_version,
             installation_reused=not installation_mutated,
+            pre_update_refresh=pre_update_refresh,
             doctor=doctor.get("status"), verification=verification,
             current_session_refresh_required=True,
             routing_status=(

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from codebase_atlas.codex_integration import (
     PROJECT_RULE,
+    _managed_project_block,
     codex_apply,
     codex_plan,
     codex_remove,
@@ -237,6 +238,37 @@ class CodexIntegrationTests(unittest.TestCase):
                 parsed["mcp_servers"]["codebase_atlas"]["command"],
                 str(old_atlas.resolve()),
             )
+
+    def test_project_scope_accepts_equivalent_versioned_python_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, _atlas = self.project_paths(root)
+            environment = root / "environment" / "bin"
+            environment.mkdir(parents=True)
+            atlas = environment / "codebase-atlas"
+            python = environment / "python"
+            atlas.write_text("")
+            python.write_text("")
+            direct = codex_plan(
+                config, scope="project", atlas_executable=atlas
+            )
+            module_args = [
+                "-m", "codebase_atlas.cli", *direct["transport"]["args"]
+            ]
+            target = repository / ".codex/config.toml"
+            target.parent.mkdir()
+            target.write_text(
+                _managed_project_block(
+                    "codebase_atlas", str(python.resolve()), module_args
+                ),
+                encoding="utf-8",
+            )
+
+            equivalent = codex_plan(
+                config, scope="project", atlas_executable=atlas
+            )
+
+            self.assertEqual(equivalent["existing"], "matching")
 
     def test_project_scope_refuses_foreign_or_invalid_atlas_config(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

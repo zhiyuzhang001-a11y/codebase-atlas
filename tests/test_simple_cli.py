@@ -20,6 +20,7 @@ from codebase_atlas.project_lifecycle import (
     publish_lifecycle_state,
 )
 from codebase_atlas.simple_cli import (
+    _external_index_update,
     _external_routing_bundle,
     _enable_runtime_installation,
     _verification_candidate,
@@ -105,6 +106,19 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(result["nested_repositories"]["status"], "complete")
             self.assertEqual(result["nested_repositories"]["repositories"], ["nested"])
 
+    def test_status_prunes_below_depth_boundary_without_false_partial(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository = git_repository(Path(raw))
+            current = repository
+            for index in range(8):
+                current = current / f"level-{index}"
+                current.mkdir()
+            result, code = status_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "not_enabled")
+            self.assertEqual(result["nested_repositories"]["status"], "complete")
+            self.assertEqual(result["nested_repositories"]["repositories"], [])
+
     def test_status_does_not_treat_bogus_git_marker_as_repository(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository = git_repository(Path(raw))
@@ -174,6 +188,46 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(result["codex_config_status"], "configured")
             self.assertEqual(result["current_task_connection"], "unknown")
             self.assertIsNone(result["task_reload_required"])
+
+    def test_status_compares_codex_transport_with_lifecycle_installation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            repository, _config, path = configured_project(Path(raw))
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            installation = SimpleNamespace(
+                atlas_executable=Path(raw) / "install" / "bin" / "atlas"
+            )
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_lifecycle_status",
+                    return_value={
+                        "status": "ready", "ok": True,
+                        "reason": "project_ready", "atlas_version": "0.26.2",
+                    },
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.operational_index_status",
+                    return_value={"status": "fresh", "ok": True, "reason": "current"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.load_versioned_installation",
+                    return_value=installation,
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={
+                        "existing": "matching",
+                        "target": str(repository / ".codex/config.toml"),
+                    },
+                ) as plan,
+            ):
+                result, code = status_project(repository)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(
+                plan.call_args.kwargs["atlas_executable"],
+                installation.atlas_executable,
+            )
 
     def test_verify_stopped_project_does_not_query(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -568,6 +622,103 @@ class SimpleCliTests(unittest.TestCase):
                 _external_routing_bundle(
                     installation, runner=lambda *_args, **_kwargs: completed
                 )
+
+    def test_external_index_update_requires_a_successful_fresh_result(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            installation = VersionedInstallation(
+                "0.26.1", "test", root, root / "python", root / "atlas",
+                root / "provider", "provider-test", "a" * 64, "b" * 64,
+            )
+            config_path = root / ".codebase-atlas.toml"
+            completed = SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"status": "updated", "generation_after": "g2"}),
+                stderr="",
+            )
+            calls = []
+
+            def runner(command, **kwargs):
+                calls.append((command, kwargs))
+                return completed
+
+            result = _external_index_update(
+                installation, config_path, timeout_seconds=12.0, runner=runner
+            )
+            self.assertEqual(result["status"], "updated")
+            self.assertEqual(calls[0][0][1:], [
+                "update", "--config", str(config_path), "--mode", "fast",
+            ])
+            self.assertEqual(calls[0][1]["timeout"], 12.0)
+
+    def test_software_update_refreshes_stale_index_with_current_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository, config, path = configured_project(root)
+            publish_lifecycle_state(
+                config.data_dir,
+                ProjectLifecycleState.initial(
+                    repository, config.project, atlas_version="0.26.1"
+                ),
+            )
+            current = VersionedInstallation(
+                "0.26.1", "test", root / "current", root / "current-python",
+                root / "current-atlas", root / "current-provider",
+                "provider-1", "a" * 64, "b" * 64,
+            )
+            candidate = VersionedInstallation(
+                "0.26.2", "test", root / "candidate", root / "candidate-python",
+                root / "candidate-atlas", root / "candidate-provider",
+                "provider-2", "c" * 64, "d" * 64,
+            )
+            resolution = ProjectResolution("configured", repository, "ready", path)
+            codex_target = repository / ".codex/config.toml"
+            with (
+                patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
+                patch(
+                    "codebase_atlas.simple_cli.operational_index_status",
+                    return_value={"status": "stale", "ok": False},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.load_versioned_installation",
+                    return_value=current,
+                ) as load,
+                patch(
+                    "codebase_atlas.simple_cli._external_index_update",
+                    return_value={"status": "updated", "generation_after": "g2"},
+                ) as refresh,
+                patch(
+                    "codebase_atlas.simple_cli.codex_plan",
+                    return_value={"status": "planned", "target": str(codex_target)},
+                ),
+                patch("codebase_atlas.simple_cli.codex_apply"),
+                patch(
+                    "codebase_atlas.simple_cli._external_doctor",
+                    return_value={"status": "ready"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli.inspect_installation",
+                    return_value={"ok": True},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli._verification_query",
+                    return_value={"symbol": "target", "cross_project_negative": "pass"},
+                ),
+                patch(
+                    "codebase_atlas.simple_cli._external_routing_bundle",
+                    return_value=None,
+                ),
+            ):
+                result, code = update_project(
+                    repository,
+                    release_fetcher=lambda: SimpleNamespace(version="0.26.2"),
+                    installer=lambda _release: (candidate, True),
+                )
+            self.assertEqual(code, 0, result)
+            self.assertEqual(result["status"], "updated")
+            self.assertEqual(result["pre_update_refresh"]["status"], "updated")
+            load.assert_called_once_with("0.26.1")
+            refresh.assert_called_once()
 
     def test_update_switches_installation_and_preserves_custom_skill(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

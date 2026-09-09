@@ -18,6 +18,7 @@ from codebase_atlas.config import AtlasConfig
 from codebase_atlas.index_state import record_index_state, state_path
 from codebase_atlas import refresh_planner as refresh_planner_module
 from codebase_atlas.operations import operational_index_status
+from codebase_atlas.provider_transport import ProviderInitializeTimeout
 from codebase_atlas.python_registration_store import (
     load_registration_index_state,
     registration_index_path,
@@ -400,6 +401,21 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertIn("rollback", result["timings_ms"])
         self.assertEqual(result["duration_ms"], result["timings_ms"]["total"])
 
+    def test_provider_initialize_timeout_is_classified_for_bounded_retry(self) -> None:
+        before = self.hashes()
+        self.transport.exception = ProviderInitializeTimeout(
+            "daemon could not accept this client within 30000 ms"
+        )
+        (self.repository / "sample.py").write_text("value = 2\n")
+
+        result = self.coordinator.refresh()
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error_code"], "provider_startup_timeout")
+        self.assertIn("could not accept this client", result["error"])
+        self.assertTrue(result["previous_generation_preserved"])
+        self.assertEqual(self.hashes(), before)
+
     def test_state_publication_failure_rolls_back_provider_sidecar_and_manifest(self) -> None:
         before = self.hashes()
         (self.repository / "sample.py").write_text("value = 3\n")
@@ -712,6 +728,39 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "refresh_retry_exhausted")
         self.assertEqual(delays, [0.01, 0.02, 0.04])
         self.assertAlmostEqual(result["timings_ms"]["retry_backoff"], 70.0)
+
+    def test_refresh_retry_recovers_from_provider_startup_timeout(self) -> None:
+        class AdmissionCoordinator:
+            def __init__(self):
+                self.calls = 0
+
+            def refresh(self, **_arguments):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "status": "failed",
+                        "error": "Provider MCP initialize failed",
+                        "error_code": "provider_startup_timeout",
+                        "timings_ms": {},
+                    }
+                return {
+                    "status": "refreshed",
+                    "generation_after": "generation-2",
+                    "timings_ms": {},
+                }
+
+        coordinator = AdmissionCoordinator()
+        delays = []
+        with patch(
+            "codebase_atlas.refresh_coordinator.sleep", side_effect=delays.append
+        ):
+            result = refresh_with_retry(
+                coordinator, timeout_ms=1000, max_attempts=2
+            )
+        self.assertEqual(result["status"], "refreshed")
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(delays, [0.01])
+        self.assertAlmostEqual(result["timings_ms"]["retry_backoff"], 10.0)
 
     def test_restart_journal_restores_previous_generation(self) -> None:
         before = self.hashes()

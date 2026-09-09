@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -74,6 +75,84 @@ def wait_for_private_provider_exit(
     "set ATLAS_M38_PROVIDER_BINARY for the isolated managed-Provider proof",
 )
 class ManagedProviderRefreshIntegrationTests(unittest.TestCase):
+    def test_second_project_admits_while_first_project_is_indexing(self) -> None:
+        binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            runtime_temporary, runtime = private_runtime(
+                "m38-active-index-admission."
+            )
+            self.addCleanup(runtime_temporary.cleanup)
+            environment = patch.dict(os.environ, {
+                "CBM_RUNTIME_DIR": str(runtime.resolve()),
+                "XDG_DATA_HOME": str((root / "xdg-data").resolve()),
+            })
+            environment.start()
+            self.addCleanup(environment.stop)
+            repositories = []
+            for index, file_count in enumerate((2500, 1)):
+                repository = root / f"active-repo-{index}"
+                repository.mkdir()
+                git(repository, "init", "-q")
+                git(repository, "config", "user.email", "atlas@example.invalid")
+                git(repository, "config", "user.name", "Atlas Test")
+                for file_index in range(file_count):
+                    (repository / f"module_{file_index:05d}.py").write_text(
+                        f"def symbol_{index}_{file_index}():\n    return {file_index}\n"
+                    )
+                git(repository, "add", ".")
+                git(repository, "commit", "-qm", "initial")
+                repositories.append(repository)
+
+            cache = root / "shared-cache"
+            cache.mkdir(mode=0o700)
+            index_started = threading.Event()
+
+            def observe(event):
+                if (
+                    event.get("event") == "transport_request_write"
+                    and event.get("method") == "tools/call"
+                ):
+                    index_started.set()
+
+            first = CodebaseMemoryMcpTransport(
+                binary, repositories[0], cache,
+                exclusive=False, client_version=__version__, observer=observe,
+            )
+            second = CodebaseMemoryMcpTransport(
+                binary, repositories[1], cache,
+                exclusive=False, client_version=__version__,
+            )
+            result = {}
+
+            def index_first():
+                result["first"] = first.call(
+                    "index_repository",
+                    {
+                        "repo_path": str(repositories[0].resolve()),
+                        "name": provider_project_identity(repositories[0]),
+                        "mode": "full",
+                    },
+                    timeout_ms=300_000,
+                )
+
+            try:
+                first.start(timeout_seconds=30.0)
+                worker = threading.Thread(target=index_first)
+                worker.start()
+                self.assertTrue(index_started.wait(10.0))
+                self.assertTrue(worker.is_alive())
+                started = time.monotonic()
+                second.start(timeout_seconds=45.0)
+                admission_seconds = time.monotonic() - started
+                worker.join(300.0)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(result["first"]["status"], "indexed")
+                self.assertLess(admission_seconds, 45.0)
+            finally:
+                second.close()
+                first.close()
+
     def test_two_projects_refresh_without_foreign_facts_or_lifecycle_coupling(self) -> None:
         binary = Path(os.environ["ATLAS_M38_PROVIDER_BINARY"])
         with tempfile.TemporaryDirectory() as raw:

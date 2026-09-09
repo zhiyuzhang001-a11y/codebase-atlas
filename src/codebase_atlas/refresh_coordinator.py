@@ -18,7 +18,7 @@ from .index_state import record_index_state, repository_snapshot, state_path
 from .maintenance import inspect_provider_database_at
 from .lifecycle import ProjectRefreshLease, ProviderWriteLock
 from .operations import operational_index_status
-from .provider_transport import CodebaseMemoryMcpTransport
+from .provider_transport import CodebaseMemoryMcpTransport, ProviderInitializeTimeout
 from .provider_layout import ensure_managed_provider_cache
 from .python_registration_store import (
     StagedRegistrationIndex,
@@ -610,6 +610,11 @@ class RefreshCoordinator:
                 "provider_inputs_changed": plan.get("provider_inputs_changed", True),
                 "provider_called": provider_called,
                 "error": str(exc),
+                "error_code": (
+                    "provider_startup_timeout"
+                    if isinstance(exc, ProviderInitializeTimeout)
+                    else ""
+                ),
                 "provider_stderr_tail": getattr(self.transport, "stderr_text", "")[-2000:],
                 "rollback_errors": rollback_errors,
                 "previous_generation_preserved": not rollback_errors,
@@ -749,6 +754,13 @@ def refresh_with_retry(
             "snapshot_changed_before_refresh",
             "snapshot_changed_during_refresh",
         }:
+            if (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
+                delay = wait_before_retry()
+                aggregate_timings["retry_backoff"] = (
+                    aggregate_timings.get("retry_backoff", 0.0) + delay * 1000.0
+                )
+            continue
+        elif result.get("error_code") == "provider_startup_timeout":
             if (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
                 delay = wait_before_retry()
                 aggregate_timings["retry_backoff"] = (

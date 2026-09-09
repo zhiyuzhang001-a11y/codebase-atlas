@@ -180,10 +180,21 @@ class CodebaseMemoryMcpTransport:
                     "transport_response_read", request_id,
                     method=method, response_id=response.get("id"),
                 )
+                error = response.get("error")
+                if (
+                    method == "initialize"
+                    and response.get("id") is None
+                    and isinstance(error, dict)
+                    and error.get("code") == -32001
+                ):
+                    message = str(error.get("message") or "Provider admission failed")
+                    raise ProviderInitializeTimeout(
+                        f"Provider MCP initialize failed: {message} (code -32001)"
+                    )
                 if response.get("id") != request_id:
                     raise RuntimeError("Provider MCP response id mismatch")
-                if "error" in response:
-                    raise RuntimeError(f"Provider MCP tool error: {response['error']}")
+                if error is not None:
+                    raise RuntimeError(f"Provider MCP tool error: {error}")
                 result = response.get("result")
                 if not isinstance(result, dict):
                     raise RuntimeError("Provider MCP response lacks an object result")

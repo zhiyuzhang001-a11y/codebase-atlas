@@ -6,6 +6,12 @@
   enable and software update while continuing to fail closed on a modified
   Atlas-managed `AGENTS.md` block. Lifecycle results name every preserved
   routing asset instead of forcing users to overwrite repository guidance.
+- Preserve the Provider's real cross-project admission-timeout diagnostic and
+  retry an explicit refresh within its existing bounded deadline instead of
+  misreporting a response-ID mismatch and stopping after the first attempt.
+- Refresh a stale generation with the currently verified runtime before a
+  software switch, recognize equivalent versioned Codex launchers in status,
+  and treat the documented nested-repository depth as a pruning boundary.
 
 ## 0.26.1 — 2026-09-09
 

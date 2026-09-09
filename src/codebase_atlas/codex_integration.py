@@ -252,6 +252,19 @@ def _project_plan(
     repository, project_root, target = _project_paths(config, codex_project_root)
     command, args = _project_auto_transport(repository, atlas_executable)
     state, original, block = _project_state(target, name, command, args)
+    if state == "managed_different" and atlas_executable is not None:
+        module_args = ["-m", "codebase_atlas.cli", *args]
+        executable_dir = Path(command).parent
+        for python_name in ("python", "python.exe"):
+            python = executable_dir / python_name
+            if not python.is_file():
+                continue
+            alternate, _alternate_original, _alternate_block = _project_state(
+                target, name, str(python.resolve()), module_args
+            )
+            if alternate == "matching":
+                state = "matching"
+                break
     return {
         "schema_version": 1,
         "status": "planned" if state != "conflict" else "blocked",

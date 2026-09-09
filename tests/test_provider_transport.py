@@ -57,6 +57,12 @@ while True:
             time.sleep(0.05)
         elif behavior == "initialize_timeout":
             time.sleep(60)
+        elif behavior == "initialize_admission_timeout":
+            send({"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32001,
+                "message": "daemon could not accept this client within 30000 ms",
+            }})
+            continue
         send({"jsonrpc": "2.0", "id": request_id, "result": {"serverInfo": {"name": "fake"}}})
         continue
     if behavior == "mismatch":
@@ -195,6 +201,18 @@ class ProviderTransportTests(unittest.TestCase):
             transport.start_for_request(
                 lock_timeout_seconds=0.01,
                 initialize_timeout_seconds=0.02,
+            )
+        self.assertIsNone(transport.process)
+
+    def test_initialize_admission_error_preserves_provider_diagnostic(self) -> None:
+        transport = self.transport("initialize_admission_timeout")
+        with self.assertRaisesRegex(
+            ProviderInitializeTimeout,
+            "could not accept this client within 30000 ms",
+        ):
+            transport.start_for_request(
+                lock_timeout_seconds=0.01,
+                initialize_timeout_seconds=1.0,
             )
         self.assertIsNone(transport.process)
 

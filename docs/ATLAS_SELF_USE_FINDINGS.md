@@ -7,6 +7,60 @@ address the observed behavior.
 
 ## Open
 
+None.
+
+## Resolved
+
+### SELF-018: software update could not accept a stale project index
+
+- Observed task: deploy the published 0.26.0 release into the Atlas repository
+  immediately after its release merge changed the repository HEAD.
+- Expected: `atlas update` either refreshes the stale index inside its protected
+  transaction or stops before installation with the exact refresh prerequisite.
+- Actual evidence: the verified 0.26.0 installation was created, then candidate
+  doctor returned incomplete because the preserved index was stale; update
+  rolled project state and configuration back and reported only `updated Atlas
+  doctor did not report ready`.
+- Safe fallback: refresh with the existing runtime's explicit index command,
+  then retry software update; retain the previous version and index throughout.
+- Resolution: software update now detects a stale source generation and asks
+  the currently verified installation to refresh it before switching runtime,
+  Provider, routing, or lifecycle state. The refresh result is included in the
+  update response and a regression proves the old runtime owns this preflight.
+
+### SELF-019: update and status disagreed on equivalent Codex transports
+
+- Observed task: verify the successful 0.25.0-to-0.26.0 project switch.
+- Expected: the Codex block written by update is immediately recognized by
+  `atlas status` and `atlas verify`.
+- Actual evidence: update wrote the 0.26.0 `codebase-atlas mcp-auto` entry and
+  returned `updated`, but status compared it with the same environment's
+  `python -m codebase_atlas.cli mcp-auto` form, reported `outdated`, and made
+  verify INCOMPLETE. A project-scoped plan confirmed the written entry was
+  otherwise valid.
+- Safe fallback: preview and apply the project-scoped canonical Python-module
+  block; only the Atlas-managed block changes.
+- Resolution: status resolves the exact installation recorded by lifecycle
+  state and treats its direct console script and sibling virtual-environment
+  `python -m` launcher as equivalent. The real 0.26.0 project block is now
+  reported `configured` without rewriting it.
+
+### SELF-020: depth pruning made healthy status globally incomplete
+
+- Observed task: run `atlas status` after the 0.26.0 deployment passed doctor,
+  deep inspection, verify, and a real query.
+- Expected: bounded nested-repository discovery prunes paths below its maximum
+  depth without treating an ordinary deep directory as a failed scan.
+- Actual evidence: after visiting only 55 directories, encountering a path
+  deeper than six levels returned `nested_repository_depth_budget_exceeded` and
+  downgraded the otherwise healthy project status to incomplete.
+- Safe fallback: rely on the separately passing verify/deep/query gates and
+  retain the explicit partial discovery warning.
+- Resolution: reaching the documented depth boundary now prunes that subtree
+  and completes the bounded scan; actual time, directory, I/O, and invalid-Git
+  failures remain partial. The real Atlas repository now reports
+  `bounded_scan_complete`, with a deep-tree regression freezing the behavior.
+
 ### SELF-026: cross-project shared daemon blocked an explicit refresh client
 
 - Observed task: refresh the Atlas source repository after committing the
@@ -21,58 +75,12 @@ address the observed behavior.
 - Safe fallback: keep the previous queryable generation, do not kill unrelated
   project sessions or delete either index, and retry after the owning clients
   release the daemon.
-- Planned resolution: reproduce with one long-lived query client plus a second
-  project's explicit refresh, preserve raw request/response identifiers in the
-  failure diagnostic, and add a bounded cross-project admission regression.
-
-### SELF-018: software update could not accept a stale project index
-
-- Observed task: deploy the published 0.26.0 release into the Atlas repository
-  immediately after its release merge changed the repository HEAD.
-- Expected: `atlas update` either refreshes the stale index inside its protected
-  transaction or stops before installation with the exact refresh prerequisite.
-- Actual evidence: the verified 0.26.0 installation was created, then candidate
-  doctor returned incomplete because the preserved index was stale; update
-  rolled project state and configuration back and reported only `updated Atlas
-  doctor did not report ready`.
-- Safe fallback: refresh with the existing runtime's explicit index command,
-  then retry software update; retain the previous version and index throughout.
-- Planned resolution: preflight freshness before installing, or refresh under
-  the update transaction, and include the failed doctor reason and remediation
-  in the structured lifecycle result.
-
-### SELF-019: update and status disagreed on equivalent Codex transports
-
-- Observed task: verify the successful 0.25.0-to-0.26.0 project switch.
-- Expected: the Codex block written by update is immediately recognized by
-  `atlas status` and `atlas verify`.
-- Actual evidence: update wrote the 0.26.0 `codebase-atlas mcp-auto` entry and
-  returned `updated`, but status compared it with the same environment's
-  `python -m codebase_atlas.cli mcp-auto` form, reported `outdated`, and made
-  verify INCOMPLETE. A project-scoped plan confirmed the written entry was
-  otherwise valid.
-- Safe fallback: preview and apply the project-scoped canonical Python-module
-  block; only the Atlas-managed block changes.
-- Planned resolution: use one canonical project transport builder in enable,
-  update, status, and verify, with an installed-release regression requiring
-  status=ready and verify=PASS immediately after update.
-
-### SELF-020: depth pruning made healthy status globally incomplete
-
-- Observed task: run `atlas status` after the 0.26.0 deployment passed doctor,
-  deep inspection, verify, and a real query.
-- Expected: bounded nested-repository discovery prunes paths below its maximum
-  depth without treating an ordinary deep directory as a failed scan.
-- Actual evidence: after visiting only 55 directories, encountering a path
-  deeper than six levels returned `nested_repository_depth_budget_exceeded` and
-  downgraded the otherwise healthy project status to incomplete.
-- Safe fallback: rely on the separately passing verify/deep/query gates and
-  retain the explicit partial discovery warning.
-- Planned resolution: prune traversal at the documented depth boundary and
-  reserve partial for an actually unexamined eligible scope, then cover deep
-  generated/vendor trees without weakening time or directory budgets.
-
-## Resolved
+- Resolution: Atlas now recognizes the Provider's null-ID `-32001` initialize
+  failure as `provider_startup_timeout`, preserves its actionable diagnostic,
+  and retries explicit refresh within the caller's existing bounded deadline.
+  A real isolated regression admitted project B while project A was actively
+  indexing 2,500 files; the original shared daemon later admitted the Atlas
+  project in 1.72 seconds without interrupting its PDF-project client.
 
 ### SELF-025: a project-authored Atlas skill blocked software update
 
