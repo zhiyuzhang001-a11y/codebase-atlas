@@ -204,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     update = commands.add_parser("update", help="safely update a configured structural index")
     update.add_argument("--config", type=Path, default=Path.cwd() / CONFIG_NAME)
     update.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
+    update.add_argument("--timeout-ms", type=int, default=300_000)
     update.add_argument(
         "--force-provider",
         action="store_true",
@@ -917,10 +918,14 @@ def main(argv: list[str] | None = None) -> int:
                 }, indent=2))
                 return 0
         if config.provider_layout == SHARED_PROVIDER_LAYOUT and config.project:
+            refresh_timeout_ms = getattr(args, "timeout_ms", 300_000)
+            if refresh_timeout_ms <= 0:
+                raise ValueError("update timeout_ms must be positive")
             result = _transactional_refresh(
                 config,
                 args.mode,
                 force_provider=(args.command == "index" or args.force_provider),
+                timeout_ms=refresh_timeout_ms,
             )
             if result.get("status") == "refreshed":
                 result["status"] = "indexed" if args.command == "index" else "updated"

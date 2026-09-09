@@ -15,6 +15,7 @@ import zipfile
 
 from codebase_atlas.release_installation import (
     ReleaseAsset,
+    _publish_shared_provider,
     current_platform_target,
     download_asset,
     install_stable_release,
@@ -63,6 +64,64 @@ class Response(io.BytesIO):
 
 
 class ReleaseInstallationTests(unittest.TestCase):
+    def test_provider_publication_reuses_one_machine_path_across_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "extracted" / "linux-x86_64"
+            source.mkdir(parents=True)
+            (source / "codebase-memory-mcp").write_bytes(b"same-provider")
+            (source / "LICENSE").write_text("MIT License", encoding="utf-8")
+            (source / "manifest.json").write_text("{}", encoding="utf-8")
+            installations = root / "installations"
+            installations.mkdir()
+
+            first, first_digest = _publish_shared_provider(
+                source / "codebase-memory-mcp",
+                "provider-1",
+                "linux-x86_64",
+                installations,
+            )
+            second, second_digest = _publish_shared_provider(
+                source / "codebase-memory-mcp",
+                "provider-1",
+                "linux-x86_64",
+                installations,
+            )
+
+            self.assertEqual(first, second)
+            self.assertEqual(first_digest, second_digest)
+            self.assertEqual(
+                first,
+                root.resolve()
+                / "providers/provider-1/linux-x86_64/codebase-memory-mcp",
+            )
+
+    def test_provider_publication_rejects_conflicting_machine_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "extracted" / "linux-x86_64"
+            source.mkdir(parents=True)
+            (source / "codebase-memory-mcp").write_bytes(b"provider-one")
+            (source / "LICENSE").write_text("MIT License", encoding="utf-8")
+            (source / "manifest.json").write_text("{}", encoding="utf-8")
+            installations = root / "installations"
+            installations.mkdir()
+            _publish_shared_provider(
+                source / "codebase-memory-mcp",
+                "provider-1",
+                "linux-x86_64",
+                installations,
+            )
+            (source / "codebase-memory-mcp").write_bytes(b"provider-two")
+
+            with self.assertRaisesRegex(RuntimeError, "conflicts"):
+                _publish_shared_provider(
+                    source / "codebase-memory-mcp",
+                    "provider-1",
+                    "linux-x86_64",
+                    installations,
+                )
+
     def test_version_selector_rejects_receipt_from_another_directory(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             selected = Path(raw) / "1.2.3"
@@ -280,6 +339,14 @@ class ReleaseInstallationTests(unittest.TestCase):
             self.assertEqual(installed, reused)
             self.assertEqual(installed.provider_version, provider_version)
             self.assertTrue(installed.provider_binary.is_file())
+            self.assertFalse(installed.provider_binary.is_relative_to(installed.root))
+            self.assertEqual(
+                installed.provider_binary,
+                (
+                    workspace / "providers" / provider_version / "linux-x86_64"
+                    / "codebase-memory-mcp"
+                ).resolve(),
+            )
             if os.name != "nt":
                 self.assertEqual(
                     installed.atlas_executable.read_bytes().splitlines()[0],

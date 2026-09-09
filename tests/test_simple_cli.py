@@ -626,11 +626,12 @@ class SimpleCliTests(unittest.TestCase):
     def test_external_index_update_requires_a_successful_fresh_result(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
+            _repository, config, config_path = configured_project(root)
+            config.data_dir.mkdir()
             installation = VersionedInstallation(
                 "0.26.1", "test", root, root / "python", root / "atlas",
                 root / "provider", "provider-test", "a" * 64, "b" * 64,
             )
-            config_path = root / ".codebase-atlas.toml"
             completed = SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps({"status": "updated", "generation_after": "g2"}),
@@ -639,19 +640,23 @@ class SimpleCliTests(unittest.TestCase):
             calls = []
 
             def runner(command, **kwargs):
-                calls.append((command, kwargs))
+                temporary_config = AtlasConfig.load(Path(command[3]))
+                calls.append((command, kwargs, temporary_config))
                 return completed
 
             result = _external_index_update(
                 installation, config_path, timeout_seconds=12.0, runner=runner
             )
             self.assertEqual(result["status"], "updated")
-            self.assertEqual(calls[0][0][1:], [
-                "update", "--config", str(config_path), "--mode", "fast",
+            self.assertEqual(calls[0][0][1:3], ["update", "--config"])
+            self.assertNotEqual(calls[0][0][3], str(config_path))
+            self.assertEqual(calls[0][0][4:], [
+                "--mode", "fast", "--timeout-ms", "12000",
             ])
-            self.assertEqual(calls[0][1]["timeout"], 12.0)
+            self.assertEqual(calls[0][1]["timeout"], 27.0)
+            self.assertEqual(calls[0][2].cbm_binary, installation.provider_binary)
 
-    def test_software_update_refreshes_stale_index_with_current_runtime(self) -> None:
+    def test_software_update_refreshes_stale_index_with_verified_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository, config, path = configured_project(root)
@@ -660,11 +665,6 @@ class SimpleCliTests(unittest.TestCase):
                 ProjectLifecycleState.initial(
                     repository, config.project, atlas_version="0.26.1"
                 ),
-            )
-            current = VersionedInstallation(
-                "0.26.1", "test", root / "current", root / "current-python",
-                root / "current-atlas", root / "current-provider",
-                "provider-1", "a" * 64, "b" * 64,
             )
             candidate = VersionedInstallation(
                 "0.26.2", "test", root / "candidate", root / "candidate-python",
@@ -679,10 +679,6 @@ class SimpleCliTests(unittest.TestCase):
                     "codebase_atlas.simple_cli.operational_index_status",
                     return_value={"status": "stale", "ok": False},
                 ),
-                patch(
-                    "codebase_atlas.simple_cli.load_versioned_installation",
-                    return_value=current,
-                ) as load,
                 patch(
                     "codebase_atlas.simple_cli._external_index_update",
                     return_value={"status": "updated", "generation_after": "g2"},
@@ -717,8 +713,9 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(code, 0, result)
             self.assertEqual(result["status"], "updated")
             self.assertEqual(result["pre_update_refresh"]["status"], "updated")
-            load.assert_called_once_with("0.26.1")
             refresh.assert_called_once()
+            self.assertIs(refresh.call_args.args[0], candidate)
+            self.assertEqual(refresh.call_args.kwargs["timeout_seconds"], 75.0)
 
     def test_update_switches_installation_and_preserves_custom_skill(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -9,7 +9,10 @@
 - Preserve the Provider's real cross-project admission-timeout diagnostic and
   retry an explicit refresh within its existing bounded deadline instead of
   misreporting a response-ID mismatch and stopping after the first attempt.
-- Refresh a stale generation with the currently verified runtime before a
+- Reuse one checksum-verified, versioned Provider bundle at one canonical
+  machine path across Atlas frontend upgrades, preventing identical Provider
+  builds launched from copied paths from conflicting over the shared daemon.
+- Refresh a stale generation with the checksum-verified candidate before a
   software switch, recognize equivalent versioned Codex launchers in status,
   and treat the documented nested-repository depth as a pruning boundary.
 

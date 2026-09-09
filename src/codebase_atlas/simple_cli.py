@@ -1447,20 +1447,29 @@ def _external_index_update(
     timeout_seconds: float,
     runner: Any = subprocess.run,
 ) -> dict[str, Any]:
-    completed = runner(
-        [
-            str(installation.atlas_executable),
-            "update",
-            "--config",
-            str(config_path),
-            "--mode",
-            "fast",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-    )
+    configured = AtlasConfig.load(config_path)
+    candidate = replace(configured, cbm_binary=installation.provider_binary)
+    with tempfile.TemporaryDirectory(
+        prefix="pre-update-config-", dir=configured.data_dir
+    ) as temporary:
+        candidate_config = Path(temporary) / CONFIG_NAME
+        candidate.write(candidate_config)
+        completed = runner(
+            [
+                str(installation.atlas_executable),
+                "update",
+                "--config",
+                str(candidate_config),
+                "--mode",
+                "fast",
+                "--timeout-ms",
+                str(int(timeout_seconds * 1000)),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds + 15.0,
+        )
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
@@ -1554,11 +1563,10 @@ def update_project(
             config.data_dir, config.repository, config.cache_dir, config.project
         )
         if index_before.get("status") == "stale":
-            current_installation = load_versioned_installation(current_version)
             pre_update_refresh = _external_index_update(
-                current_installation,
+                installation,
                 config_path,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=max(timeout_seconds, 75.0),
                 runner=runner,
             )
         if not _acquire_refresh(refresh, timeout_seconds=timeout_seconds):

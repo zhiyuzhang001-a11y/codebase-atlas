@@ -24,9 +24,10 @@ None.
 - Safe fallback: refresh with the existing runtime's explicit index command,
   then retry software update; retain the previous version and index throughout.
 - Resolution: software update now detects a stale source generation and asks
-  the currently verified installation to refresh it before switching runtime,
-  Provider, routing, or lifecycle state. The refresh result is included in the
-  update response and a regression proves the old runtime owns this preflight.
+  the downloaded, checksum-verified candidate to refresh it transactionally
+  before switching runtime, Provider, routing, or lifecycle state. The refresh
+  has a 75-second minimum bounded window so one 30-second Provider admission
+  timeout can retry, and its result is included in the update response.
 
 ### SELF-019: update and status disagreed on equivalent Codex transports
 
@@ -75,12 +76,15 @@ None.
 - Safe fallback: keep the previous queryable generation, do not kill unrelated
   project sessions or delete either index, and retry after the owning clients
   release the daemon.
-- Resolution: Atlas now recognizes the Provider's null-ID `-32001` initialize
-  failure as `provider_startup_timeout`, preserves its actionable diagnostic,
-  and retries explicit refresh within the caller's existing bounded deadline.
-  A real isolated regression admitted project B while project A was actively
-  indexing 2,500 files; the original shared daemon later admitted the Atlas
-  project in 1.72 seconds without interrupting its PDF-project client.
+- Resolution: an A/B launch proved that the same Provider bytes connected in
+  1.51 seconds from the canonical machine path but timed out after 30 seconds
+  from a per-Atlas-version copied path. Stable installation receipts now point
+  every Atlas frontend version at one checksum-verified Provider bundle under
+  the canonical machine store. Atlas also preserves the Provider's null-ID
+  `-32001` admission diagnostic as `provider_startup_timeout` and retries it
+  within the caller's bounded deadline. The 0.26.2 candidate refreshed this
+  repository in one attempt and 7.26 seconds while the PDF-project Provider
+  client remained active.
 
 ### SELF-025: a project-authored Atlas skill blocked software update
 

@@ -215,7 +215,9 @@ class CliOperationTests(unittest.TestCase):
                 with redirect_stdout(output):
                     self.assertEqual(main(["update", "--config", str(path)]), 0)
 
-            refresh.assert_called_once_with(shared, "fast", force_provider=False)
+            refresh.assert_called_once_with(
+                shared, "fast", force_provider=False, timeout_ms=300_000
+            )
             result = json.loads(output.getvalue())
             self.assertEqual(result["status"], "updated")
             self.assertEqual(result["generation_after"], "g2")

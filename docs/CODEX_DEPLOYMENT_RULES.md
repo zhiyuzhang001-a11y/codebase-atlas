@@ -27,7 +27,10 @@ tools, or deletion of existing indexes.
 3. Otherwise download only the release wheel, `SHA256SUMS.txt`, and the managed
    Provider archive plus adjacent checksum for the current OS/architecture.
    Verify both checksums before installation or extraction.
-4. Install into versioned user-owned locations. Keep the Provider's manifest
+4. Install Atlas frontends into versioned user-owned locations. Reuse the exact
+   managed Provider build from one checksum-verified canonical machine path
+   across frontend versions; copying identical Provider bytes under each Atlas
+   version can conflict with its shared daemon. Keep the Provider's manifest
    and MIT license with its executable. Do not overwrite an unrelated global
    Provider or remove the previous verified version before acceptance passes.
 5. Validate Python 3.11–3.14, Node.js 18+, the managed Provider and Serena.

@@ -293,6 +293,39 @@ def installation_root() -> Path:
     return atlas_data_root() / "_installations" / "v1"
 
 
+def _provider_store(installations: Path) -> Path:
+    """Return the one machine Provider store shared by Atlas installations."""
+    parent = installations.resolve()
+    if parent.name == "v1" and parent.parent.name == "_installations":
+        return parent.parent.parent / "providers"
+    return parent.parent / "providers"
+
+
+def _provider_binary_name(target: str) -> str:
+    return (
+        "codebase-memory-mcp.exe"
+        if target.startswith("windows-")
+        else "codebase-memory-mcp"
+    )
+
+
+def _safe_store_component(value: str, label: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", value):
+        raise RuntimeError(f"shared Provider {label} is invalid")
+    return value
+
+
+def _shared_provider_path(
+    installations: Path, provider_version: str, target: str
+) -> Path:
+    return (
+        _provider_store(installations)
+        / _safe_store_component(provider_version, "version")
+        / _safe_store_component(target, "target")
+        / _provider_binary_name(target)
+    )
+
+
 def load_versioned_installation(version: str) -> VersionedInstallation:
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise RuntimeError("Atlas installation version is invalid")
@@ -471,7 +504,8 @@ def _installation_from_receipt(root: Path) -> VersionedInstallation:
         if receipt_path.is_symlink() or not receipt_path.is_file():
             raise ValueError("receipt is not a safe regular file")
         value = json.loads(receipt_path.read_text(encoding="utf-8"))
-        if value.get("schema_version") != 1:
+        schema_version = value.get("schema_version")
+        if schema_version not in {1, 2}:
             raise ValueError("receipt schema is invalid")
         fields = {
             name: value[name]
@@ -486,12 +520,46 @@ def _installation_from_receipt(root: Path) -> VersionedInstallation:
         raise RuntimeError("versioned Atlas installation receipt is invalid") from exc
     resolved_root = root.resolve()
     resolved_paths = {}
-    for name in ("python", "atlas_executable", "provider_binary"):
+    for name in ("python", "atlas_executable"):
         relative = _safe_relative(fields[name])
         literal = (resolved_root / relative).absolute()
         if not literal.is_relative_to(resolved_root) or not literal.is_file():
             raise RuntimeError("versioned Atlas installation paths are invalid")
         resolved_paths[name] = literal
+    if schema_version == 1:
+        relative = _safe_relative(fields["provider_binary"])
+        provider_binary = (resolved_root / relative).absolute()
+        if (
+            not provider_binary.is_relative_to(resolved_root)
+            or not provider_binary.is_file()
+        ):
+            raise RuntimeError("versioned Atlas installation paths are invalid")
+    else:
+        provider_binary = Path(fields["provider_binary"]).absolute()
+        expected_provider = _shared_provider_path(
+            resolved_root.parent, fields["provider_version"], fields["target"]
+        ).absolute()
+        provider_store = _provider_store(resolved_root.parent)
+        provider_directories = (
+            provider_store,
+            provider_store / fields["provider_version"],
+            expected_provider.parent,
+        )
+        binary_digest = value.get("provider_binary_sha256")
+        if (
+            provider_binary != expected_provider
+            or not isinstance(binary_digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", binary_digest)
+            or provider_binary.is_symlink()
+            or not provider_binary.is_file()
+            or _sha256(provider_binary) != binary_digest
+            or any(
+                path.is_symlink() or not path.is_dir()
+                for path in provider_directories
+            )
+        ):
+            raise RuntimeError("shared Provider installation path is invalid")
+    resolved_paths["provider_binary"] = provider_binary
     if any(
         path.is_symlink()
         for name, path in resolved_paths.items()
@@ -504,6 +572,62 @@ def _installation_from_receipt(root: Path) -> VersionedInstallation:
         resolved_paths["provider_binary"], fields["provider_version"],
         fields["wheel_sha256"], fields["provider_sha256"],
     )
+
+
+def _publish_shared_provider(
+    source_binary: Path,
+    provider_version: str,
+    target: str,
+    installations: Path,
+) -> tuple[Path, str]:
+    source = source_binary.parent
+    expected_names = {_provider_binary_name(target), "LICENSE", "manifest.json"}
+    source_digests = {path.name: _sha256(path) for path in source.iterdir()}
+    if set(source_digests) != expected_names:
+        raise RuntimeError("Provider bundle inventory changed before publication")
+    store = _provider_store(installations)
+    store.mkdir(parents=True, exist_ok=True)
+    if store.is_symlink() or not store.is_dir():
+        raise RuntimeError("shared Provider store must be a real directory")
+    version_root = store / provider_version
+    version_root.mkdir(exist_ok=True)
+    if version_root.is_symlink() or not version_root.is_dir():
+        raise RuntimeError("shared Provider version root must be a real directory")
+    destination = version_root / target
+
+    def verified_existing() -> Path:
+        if destination.is_symlink() or not destination.is_dir():
+            raise RuntimeError("shared Provider target conflicts with verified bundle")
+        paths = list(destination.iterdir())
+        if (
+            {path.name for path in paths} != expected_names
+            or any(path.is_symlink() or not path.is_file() for path in paths)
+            or {path.name: _sha256(path) for path in paths} != source_digests
+        ):
+            raise RuntimeError("shared Provider target conflicts with verified bundle")
+        return destination / _provider_binary_name(target)
+
+    if os.path.lexists(destination):
+        binary = verified_existing()
+        return binary, source_digests[binary.name]
+    stage = Path(tempfile.mkdtemp(prefix=f".{target}-", dir=version_root))
+    try:
+        for path in source.iterdir():
+            shutil.copyfile(path, stage / path.name)
+        if os.name != "nt":
+            stage.chmod(0o700)
+            for path in stage.iterdir():
+                path.chmod(0o700 if path.name == _provider_binary_name(target) else 0o600)
+        try:
+            os.replace(stage, destination)
+        except OSError:
+            if not destination.exists():
+                raise
+        binary = verified_existing()
+        return binary, source_digests[binary.name]
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
 
 
 def install_stable_release(
@@ -526,8 +650,6 @@ def install_stable_release(
         installed = _installation_from_receipt(destination)
         if installed.version != release.version or installed.target != release.target:
             raise RuntimeError("existing Atlas installation identity does not match release")
-        if installed.version != release.version or installed.target != release.target:
-            raise RuntimeError("existing versioned Atlas installation conflicts")
         return installed, False
     stage = Path(tempfile.mkdtemp(prefix=f".{release.version}-", dir=parent))
     try:
@@ -588,13 +710,17 @@ def install_stable_release(
             raise RuntimeError("installed Atlas version output is invalid") from exc
         if reported.get("version") != release.version:
             raise RuntimeError("installed Atlas version does not match Release")
+        shared_provider, provider_binary_sha256 = _publish_shared_provider(
+            provider_binary, provider_version, release.target, parent
+        )
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2,
             "version": release.version,
             "target": release.target,
             "python": str(python.relative_to(stage)),
             "atlas_executable": str(executable.relative_to(stage)),
-            "provider_binary": str(provider_binary.relative_to(stage)),
+            "provider_binary": str(shared_provider),
+            "provider_binary_sha256": provider_binary_sha256,
             "provider_version": provider_version,
             **hashes,
         }

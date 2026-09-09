@@ -2,9 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.26.1**. This release makes multi-agent Provider
-startup recoverable, defaults new projects to the shared Provider layout, and
-repairs lifecycle identity during legacy-to-shared migration.
+Current stable release: **0.26.2**. This release makes cross-project Provider
+admission recoverable, preserves project-authored Atlas skills during upgrades,
+and reuses one verified Provider path across Atlas frontend versions.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
