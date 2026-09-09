@@ -90,6 +90,36 @@ KNOWN_SKILLS = frozenset({
 })
 
 
+def _known_payload(payload: bytes, known: frozenset[str]) -> bool:
+    if hashlib.sha256(payload).hexdigest() in known:
+        return True
+    if b"\r" not in payload or b"\r" in payload.replace(b"\r\n", b""):
+        return False
+    normalized = payload.replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalized).hexdigest() in known
+
+
+def owned_rule_remainder(
+    body: bytes, known_rules: frozenset[str] = KNOWN_RULES
+) -> bytes | None:
+    """Remove one byte-exact published rule, accepting portable CRLF checkout."""
+    begin, end = BEGIN.encode(), END.encode()
+    if body.count(begin) != 1 or body.count(end) != 1:
+        return None
+    start, finish = body.index(begin), body.index(end) + len(end)
+    if body[start - 2:start] == b"\r\n":
+        start -= 2
+    elif body[start - 1:start] == b"\n":
+        start -= 1
+    if body[finish:finish + 2] == b"\r\n":
+        finish += 2
+    elif body[finish:finish + 1] == b"\n":
+        finish += 1
+    if not _known_payload(body[start:finish], known_rules):
+        return None
+    return body[:start] + body[finish:]
+
+
 def routing_bundle() -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -194,12 +224,16 @@ def plan_routing(
         rule = AssetPlan(path, "conflict", before, before, mode)
     else:
         start, finish = body.index(begin), body.index(end) + len(end)
-        if start > 0 and body[start - 1:start] == b"\n":
+        if body[start - 2:start] == b"\r\n":
+            start -= 2
+        elif body[start - 1:start] == b"\n":
             start -= 1
-        if body[finish:finish + 1] == b"\n":
+        if body[finish:finish + 2] == b"\r\n":
+            finish += 2
+        elif body[finish:finish + 1] == b"\n":
             finish += 1
         block = body[start:finish]
-        owned = hashlib.sha256(block).hexdigest() in known_rules
+        owned = _known_payload(block, known_rules)
         status = "matching" if block == desired_rule else "owned-old" if owned else "conflict"
         replacement = b"" if remove else desired_rule
         after = body[:start] + replacement + body[finish:] if owned else before
@@ -209,7 +243,7 @@ def plan_routing(
         # never infer ownership of the surrounding file from its contents.
         rule = AssetPlan(path, status, before, after, mode)
     path, before, mode = _read(repository, ".agents/skills/codebase-atlas/SKILL.md")
-    owned = before is not None and hashlib.sha256(before).hexdigest() in known_skills
+    owned = before is not None and _known_payload(before, known_skills)
     status = "absent" if before is None else "matching" if before == desired_skill else "owned-old" if owned else "conflict"
     after = before if status == "conflict" else None if remove else desired_skill
     return rule, AssetPlan(path, status, before, after, mode)

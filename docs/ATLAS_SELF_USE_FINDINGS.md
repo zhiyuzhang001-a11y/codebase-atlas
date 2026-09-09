@@ -26,8 +26,10 @@ None.
   withdraw the candidate Release, and do not rewrite its public tag.
 - Resolution: freshness now ignores only a routing insertion or upgrade whose
   bytes match a published Atlas asset and whose non-Atlas remainder exactly
-  matches Git `HEAD`. A companion regression proves a user edit beside the
-  managed block still makes the index stale.
+  matches Git `HEAD` after Git's configured text normalization. Published
+  routing assets also recognize their portable Windows CRLF representation. A
+  companion regression proves a user edit beside the managed block still makes
+  the index stale.
 
 ### SELF-018: software update could not accept a stale project index
 

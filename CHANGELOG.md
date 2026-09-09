@@ -5,7 +5,8 @@
 - Treat only byte-exact, published Atlas routing insertions and upgrades as
   operational metadata during freshness checks, so a software update can add
   its managed `AGENTS.md` block without making its just-refreshed candidate
-  index stale. User edits beside or inside those assets remain source changes.
+  index stale. Published routing assets remain recognizable after a Windows
+  CRLF checkout; user edits beside or inside them remain source changes.
 - Qualify the old-runtime bootstrap path separately: Codex installs the
   checksum-verified candidate first, then asks that candidate to perform the
   transactional project update and canonical Provider switch.

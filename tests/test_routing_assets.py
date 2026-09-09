@@ -19,6 +19,23 @@ class RoutingAssetTests(unittest.TestCase):
         )
         self.assertEqual(SKILL, repository_skill.read_bytes())
 
+    def test_published_routing_assets_accept_portable_crlf_checkout(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            agents = root / "AGENTS.md"
+            skill = root / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            agents.write_bytes(
+                (b"# User guidance\n" + RULE).replace(b"\n", b"\r\n")
+            )
+            skill.write_bytes(SKILL.replace(b"\n", b"\r\n"))
+
+            plans = plan_routing(root)
+
+            self.assertEqual([plan.status for plan in plans], ["owned-old", "owned-old"])
+            self.assertEqual(plans[0].after, b"# User guidance\r\n" + RULE)
+            self.assertEqual(plans[1].after, SKILL)
+
     def test_strict_previous_updater_accepts_repository_skill_from_new_bundle(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

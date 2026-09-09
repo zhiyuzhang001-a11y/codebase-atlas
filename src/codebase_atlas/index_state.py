@@ -18,7 +18,7 @@ import tempfile
 import tomllib
 
 from .cbmignore import CbmIgnore
-from .routing_assets import BEGIN, END, KNOWN_RULES, KNOWN_SKILLS
+from .routing_assets import KNOWN_SKILLS, _known_payload, owned_rule_remainder
 
 
 STATE_SCHEMA_VERSION = 1
@@ -152,20 +152,24 @@ def _is_atlas_project_codex_config(repository: Path, relative: str) -> bool:
         return False
 
 
-def _owned_rule_remainder(payload: bytes) -> bytes | None:
-    begin, end = BEGIN.encode(), END.encode()
-    if payload.count(begin) != 1 or payload.count(end) != 1:
-        return None
-    start = payload.index(begin)
-    finish = payload.index(end, start) + len(end)
-    if start > 0 and payload[start - 1:start] == b"\n":
-        start -= 1
-    if payload[finish:finish + 1] == b"\n":
-        finish += 1
-    block = payload[start:finish]
-    if hashlib.sha256(block).hexdigest() not in KNOWN_RULES:
-        return None
-    return payload[:start] + payload[finish:]
+def _git_clean_equal(
+    repository: Path, relative: str, left: bytes, right: bytes
+) -> bool:
+    hashes = []
+    for payload in (left, right):
+        completed = subprocess.run(
+            [
+                "git", "-C", str(repository), "hash-object", "--stdin",
+                f"--path={relative}",
+            ],
+            input=payload,
+            check=False,
+            capture_output=True,
+        )
+        if completed.returncode != 0:
+            return False
+        hashes.append(completed.stdout.strip())
+    return hashes[0] == hashes[1]
 
 
 def _is_exact_atlas_routing_change(repository: Path, relative: str) -> bool:
@@ -184,20 +188,23 @@ def _is_exact_atlas_routing_change(repository: Path, relative: str) -> bool:
     if current == baseline:
         return False
     if relative.endswith("SKILL.md"):
-        current_owned = hashlib.sha256(current).hexdigest() in KNOWN_SKILLS
+        current_owned = _known_payload(current, KNOWN_SKILLS)
         baseline_owned = (
             baseline is None
-            or hashlib.sha256(baseline).hexdigest() in KNOWN_SKILLS
+            or _known_payload(baseline, KNOWN_SKILLS)
         )
         return current_owned and baseline_owned
-    current_remainder = _owned_rule_remainder(current)
+    current_remainder = owned_rule_remainder(current)
     if current_remainder is None:
         return False
     if baseline is None:
         return current_remainder == b""
-    baseline_remainder = _owned_rule_remainder(baseline)
-    return current_remainder == (
-        baseline if baseline_remainder is None else baseline_remainder
+    baseline_remainder = owned_rule_remainder(baseline)
+    return _git_clean_equal(
+        repository,
+        relative,
+        current_remainder,
+        baseline if baseline_remainder is None else baseline_remainder,
     )
 
 
