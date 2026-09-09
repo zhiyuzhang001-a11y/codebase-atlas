@@ -89,6 +89,23 @@ address the observed behavior.
   on later publication failure, and can repair an already-published affected
   config. The repaired real project passed doctor and four concurrent queries.
 
+### SELF-023: first shared index created its cache before securing it
+
+- Observed task: run the public multi-MCP concurrency gate on clean hosted
+  runners after making the shared Provider cache fail closed.
+- Expected: the first `index` creates the shared Provider root privately and
+  the later MCP clients reuse it.
+- Actual evidence: `index` used a default-permission `mkdir` before the managed
+  Provider setup path ran. On fresh Linux and macOS runners this produced mode
+  `0755`, so Atlas correctly rejected its own new directory as
+  `permissions_too_broad` before concurrency began.
+- Safe fallback: cancel the acceptance run, do not tag the release, and do not
+  weaken Provider root validation.
+- Resolution: direct shared-layout indexing now passes through the same
+  race-safe, fail-closed managed-cache preparation used by MCP startup. Tests
+  prove a fresh shared root is mode `0700`, an existing broad root remains
+  rejected, and legacy project caches retain their prior compatibility.
+
 ### SELF-010: cross-project refreshes raced in the shared Provider daemon
 
 - Observed task: run two real repository refreshes concurrently in the

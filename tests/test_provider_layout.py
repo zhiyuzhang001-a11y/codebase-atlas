@@ -9,6 +9,7 @@ from unittest.mock import patch
 from codebase_atlas.config import AtlasConfig, default_data_dir
 from codebase_atlas.provider_layout import (
     configure_managed_provider_cache,
+    ensure_managed_provider_cache,
     inspect_provider_root,
     provider_environment,
     provider_project_identity,
@@ -17,6 +18,30 @@ from codebase_atlas.provider_layout import (
 
 
 class ProviderLayoutTests(unittest.TestCase):
+    def test_managed_cache_creation_is_private_and_rejects_broad_existing_root(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            cache = root / "account/codebase-atlas/_shared/codebase-memory/v1"
+            self.assertEqual(ensure_managed_provider_cache(cache), cache.resolve())
+            if os.name != "nt":
+                self.assertEqual(cache.stat().st_mode & 0o777, 0o700)
+                cache.chmod(0o755)
+                with self.assertRaisesRegex(RuntimeError, "permissions_too_broad"):
+                    ensure_managed_provider_cache(cache)
+
+    def test_managed_cache_creation_accepts_a_safe_creation_race(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw) / "account"
+            parent.mkdir()
+            cache = parent / "provider"
+
+            def competing_create(*_args, **_kwargs) -> None:
+                os.mkdir(cache, 0o700)
+                raise FileExistsError(cache)
+
+            with patch.object(Path, "mkdir", side_effect=competing_create):
+                self.assertEqual(ensure_managed_provider_cache(cache), cache.resolve())
+
     def test_managed_cache_disables_provider_watchers_without_global_config(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -13,12 +13,13 @@ import threading
 from time import monotonic
 from typing import Any, Callable
 
-from .config import AtlasConfig
+from .config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from .index_state import record_index_state, repository_snapshot, state_path
 from .maintenance import inspect_provider_database_at
 from .lifecycle import ProjectRefreshLease, ProviderWriteLock
 from .operations import operational_index_status
 from .provider_transport import CodebaseMemoryMcpTransport
+from .provider_layout import ensure_managed_provider_cache
 from .python_registration_store import (
     StagedRegistrationIndex,
     load_registration_index_state,
@@ -442,8 +443,11 @@ class RefreshCoordinator:
             # can switch resolve() between an 8.3 prefix and its long spelling
             # even though the underlying directory identity is unchanged.
             cache_dir = self.config.cache_dir
+            if self.config.provider_layout == SHARED_PROVIDER_LAYOUT:
+                cache_dir = ensure_managed_provider_cache(cache_dir)
+            else:
+                cache_dir.mkdir(parents=True, exist_ok=True)
             database = _provider_database_path(cache_dir, self.config.project)
-            database.parent.mkdir(parents=True, exist_ok=True)
             state_before = _snapshot_file(state_path(self.config.data_dir))
             manifest_before = _snapshot_file(manifest_path(self.config.data_dir))
             recovery = RefreshRecoveryJournal.begin(

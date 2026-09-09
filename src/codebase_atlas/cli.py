@@ -48,7 +48,7 @@ from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .providers import CodebaseMemoryImpactProvider, SerenaSemanticProvider, TypeScriptTestProvider
 from .project_discovery import resolve_project
 from .reloadable_mcp import ReloadingMcpServer
-from .provider_layout import provider_environment
+from .provider_layout import ensure_managed_provider_cache, provider_environment
 from .provider_transport import CodebaseMemoryMcpTransport
 from .project_lifecycle import (
     load_lifecycle_state,
@@ -1431,13 +1431,17 @@ def _apply_project_config(args) -> None:
 
 
 def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
-    config.cache_dir.mkdir(parents=True, exist_ok=True)
-    environment = provider_environment(config.cache_dir, config.repository)
+    if config.provider_layout == SHARED_PROVIDER_LAYOUT:
+        cache_dir = ensure_managed_provider_cache(config.cache_dir)
+    else:
+        config.cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir = config.cache_dir
+    environment = provider_environment(cache_dir, config.repository)
     # Own the daemon when indexing starts it, so a one-shot index/repair does
     # not leave a background Provider behind. A pre-existing daemon remains
     # unowned and is deliberately not stopped.
     with _provider_lifecycle(
-        config.cbm_binary, config.repository, config.cache_dir, config.provider_layout
+        config.cbm_binary, config.repository, cache_dir, config.provider_layout
     ):
         command = [
             str(config.cbm_binary), "cli", "--json", "index_repository",
