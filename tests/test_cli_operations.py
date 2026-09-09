@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 from io import StringIO
 import json
+import os
 import signal
 import subprocess
 import tempfile
@@ -12,12 +13,14 @@ from unittest.mock import patch
 from pathlib import Path
 
 from codebase_atlas.cli import (
+    _index_repository,
     _run_mcp_with_graceful_termination,
     _transactional_refresh,
     main,
 )
 from codebase_atlas.config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from codebase_atlas.index_state import record_index_state, state_path
+from codebase_atlas.provider_layout import inspect_provider_root
 from codebase_atlas.python_registration_store import registration_index_path
 from codebase_atlas.project_lifecycle import (
     ProjectLifecycleState,
@@ -26,6 +29,64 @@ from codebase_atlas.project_lifecycle import (
 
 
 class CliOperationTests(unittest.TestCase):
+    def test_first_shared_index_creates_private_provider_root(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            legacy, _path = self.config(root)
+            shared = replace(
+                legacy,
+                project=legacy.shared_project,
+                provider_layout=SHARED_PROVIDER_LAYOUT,
+            )
+            completed = subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({
+                    "structuredContent": {
+                        "project": shared.project,
+                        "status": "indexed",
+                    }
+                }), stderr="",
+            )
+            with patch.dict(
+                "os.environ", {"XDG_DATA_HOME": str(root / "xdg-data")}, clear=False
+            ):
+                shared = replace(shared, project=shared.shared_project)
+                self.assertFalse((root / "xdg-data").exists())
+                self.assertFalse(shared.cache_dir.exists())
+                prior_umask = os.umask(0o022)
+                try:
+                    with patch("codebase_atlas.cli._provider_lifecycle"), patch(
+                        "codebase_atlas.cli.run_provider_command", return_value=completed
+                    ):
+                        result = _index_repository(shared, "fast")
+                finally:
+                    os.umask(prior_umask)
+                self.assertEqual(result["status"], "indexed")
+                self.assertEqual(inspect_provider_root(shared.cache_dir).status, "ready")
+                if os.name != "nt":
+                    self.assertEqual(shared.cache_dir.stat().st_mode & 0o777, 0o700)
+
+    def test_legacy_index_preserves_compatible_existing_cache_permissions(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX permission compatibility")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config, _path = self.config(root)
+            config.cache_dir.mkdir(parents=True, mode=0o755)
+            config.cache_dir.chmod(0o755)
+            completed = subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({
+                    "structuredContent": {
+                        "project": config.project,
+                        "status": "indexed",
+                    }
+                }), stderr="",
+            )
+            with patch("codebase_atlas.cli._provider_lifecycle"), patch(
+                "codebase_atlas.cli.run_provider_command", return_value=completed
+            ):
+                self.assertEqual(_index_repository(config, "fast")["status"], "indexed")
+            self.assertEqual(config.cache_dir.stat().st_mode & 0o777, 0o755)
+
     def test_mcp_sigterm_unwinds_and_restores_handler(self) -> None:
         previous = signal.getsignal(signal.SIGTERM)
 

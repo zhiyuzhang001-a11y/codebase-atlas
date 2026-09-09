@@ -57,17 +57,7 @@ def configure_managed_provider_cache(
     runner: Callable[..., Any] = subprocess.run,
 ) -> None:
     """Disable autonomous indexing in Atlas-owned Provider state."""
-    cache = cache_dir.absolute()
-    before = inspect_provider_root(cache)
-    if before.status == "missing":
-        try:
-            cache.mkdir(parents=True, mode=0o700, exist_ok=False)
-        except FileExistsError:
-            pass
-    after = inspect_provider_root(cache)
-    if after.status != "ready":
-        raise RuntimeError(f"unsafe managed Provider cache: {after.status}")
-    cache = after.path
+    cache = ensure_managed_provider_cache(cache_dir)
     environment = provider_environment(cache, repository)
     for key in ("auto_watch", "watcher_enabled"):
         command = [str(binary.resolve()), "config", "set", key, "false"]
@@ -90,6 +80,21 @@ def configure_managed_provider_cache(
             raise RuntimeError(
                 f"failed to configure Atlas-managed Provider cache: {key}: {detail}"
             )
+
+
+def ensure_managed_provider_cache(cache_dir: Path) -> Path:
+    """Create a private Provider root or reject an unsafe existing root."""
+    cache = cache_dir.absolute()
+    before = inspect_provider_root(cache)
+    if before.status == "missing":
+        try:
+            cache.mkdir(parents=True, mode=0o700, exist_ok=False)
+        except FileExistsError:
+            pass
+    after = inspect_provider_root(cache)
+    if after.status != "ready":
+        raise RuntimeError(f"unsafe managed Provider cache: {after.status}")
+    return after.path
 
 
 @dataclass(frozen=True)
