@@ -106,6 +106,23 @@ address the observed behavior.
   prove a fresh shared root is mode `0700`, an existing broad root remains
   rejected, and legacy project caches retain their prior compatibility.
 
+### SELF-024: old readable snapshots caused cross-process retry busy-spins
+
+- Observed task: run the eight-client, 600-file contention profile on the
+  release candidate after the ordinary multi-client matrix passed.
+- Expected: clients waiting behind the project refresh owner poll at a bounded
+  rate until a new generation is published or their deadline expires.
+- Actual evidence: macOS ARM64 returned the still-readable old generation
+  immediately, causing one waiter to retry 479,463 times in 60 seconds. The
+  polling load starved the owner and ended as `refresh_owned_elsewhere`.
+- Safe fallback: fail the release gate and retain the previous published
+  version; do not relabel the result as transient runner noise.
+- Resolution: unchanged-generation and snapshot-race retries now use a
+  deadline-bounded 10–100 ms exponential backoff. Owner waits include the
+  delay in `wait_for_owner` timing, snapshot races expose `retry_backoff`, and
+  deterministic tests cap retry attempts while preserving deadline and
+  coalescing behavior.
+
 ### SELF-010: cross-project refreshes raced in the shared Provider daemon
 
 - Observed task: run two real repository refreshes concurrently in the

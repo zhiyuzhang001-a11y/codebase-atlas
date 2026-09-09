@@ -658,6 +658,61 @@ class RefreshCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(coordinator.calls, 2)
 
+    def test_refresh_retry_bounds_polling_when_only_old_generation_is_visible(self) -> None:
+        class WaitingCoordinator:
+            def __init__(self):
+                self.calls = 0
+                self.index_status = {"generation_id": "generation-1"}
+
+            def refresh(self, **_arguments):
+                self.calls += 1
+                return {"status": "refresh_owned_elsewhere", "timings_ms": {}}
+
+            @contextmanager
+            def query_snapshot(self, *, timeout_ms):
+                yield {
+                    "status": "fresh",
+                    "ok": True,
+                    "generation_id": "generation-1",
+                }
+
+        coordinator = WaitingCoordinator()
+        delays = []
+        with patch(
+            "codebase_atlas.refresh_coordinator.sleep", side_effect=delays.append
+        ):
+            result = refresh_with_retry(
+                coordinator, timeout_ms=1000, max_attempts=5
+            )
+        self.assertEqual(result["status"], "refresh_retry_exhausted")
+        self.assertEqual(result["attempts"], 5)
+        self.assertEqual(delays, [0.01, 0.02, 0.04, 0.08])
+
+    def test_refresh_retry_backs_off_snapshot_races(self) -> None:
+        class RacingCoordinator:
+            def __init__(self):
+                self.calls = 0
+
+            def refresh(self, **_arguments):
+                self.calls += 1
+                return {
+                    "status": "failed",
+                    "error": "snapshot_changed_during_refresh",
+                    "timings_ms": {},
+                }
+
+        coordinator = RacingCoordinator()
+        delays = []
+        with patch(
+            "codebase_atlas.refresh_coordinator.sleep", side_effect=delays.append
+        ):
+            result = refresh_with_retry(
+                coordinator, timeout_ms=1000, max_attempts=4
+            )
+        self.assertEqual(result["status"], "refresh_retry_exhausted")
+        self.assertEqual(delays, [0.01, 0.02, 0.04])
+        self.assertAlmostEqual(result["timings_ms"]["retry_backoff"], 70.0)
+
     def test_restart_journal_restores_previous_generation(self) -> None:
         before = self.hashes()
         journal = RefreshRecoveryJournal.begin(self.config, "generation-1")
