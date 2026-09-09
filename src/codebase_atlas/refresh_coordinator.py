@@ -10,7 +10,7 @@ import secrets
 import stat
 import tempfile
 import threading
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Callable
 
 from .config import AtlasConfig, SHARED_PROVIDER_LAYOUT
@@ -650,6 +650,17 @@ def refresh_with_retry(
     aggregate_timings: dict[str, float] = {}
     attempt = 0
     last_result: dict[str, Any] = {}
+
+    retry_backoff_seconds = 0.01
+
+    def wait_before_retry() -> float:
+        nonlocal retry_backoff_seconds
+        delay = min(retry_backoff_seconds, max(0.0, deadline - monotonic()))
+        if delay > 0:
+            sleep(delay)
+        retry_backoff_seconds = min(retry_backoff_seconds * 2.0, 0.1)
+        return delay
+
     while monotonic() < deadline and (max_attempts is None or attempt < max_attempts):
         attempt += 1
         coordinator_status = getattr(coordinator, "index_status", {})
@@ -693,16 +704,16 @@ def refresh_with_retry(
                     "duration_ms": total,
                     "timings_ms": {**aggregate_timings, "total": total},
                 }
-            aggregate_timings["wait_for_owner"] = (
-                aggregate_timings.get("wait_for_owner", 0.0)
-                + (monotonic() - wait_started) * 1000.0
-            )
             published_generation = published.get("generation_id")
             if (
                 published.get("ok")
                 and published_generation
                 and published_generation != generation_before_attempt
             ):
+                aggregate_timings["wait_for_owner"] = (
+                    aggregate_timings.get("wait_for_owner", 0.0)
+                    + (monotonic() - wait_started) * 1000.0
+                )
                 total = (monotonic() - started) * 1000.0
                 return {
                     "schema_version": 1,
@@ -720,11 +731,29 @@ def refresh_with_retry(
                     "next_action": "continue querying the published generation",
                 }
             if (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
+                # A readable old generation does not block in query_snapshot.
+                # Bound polling so waiting MCP clients do not busy-spin and
+                # starve the process that owns the cross-process refresh lease.
+                wait_before_retry()
+                aggregate_timings["wait_for_owner"] = (
+                    aggregate_timings.get("wait_for_owner", 0.0)
+                    + (monotonic() - wait_started) * 1000.0
+                )
                 continue
+            aggregate_timings["wait_for_owner"] = (
+                aggregate_timings.get("wait_for_owner", 0.0)
+                + (monotonic() - wait_started) * 1000.0
+            )
+            continue
         elif result.get("error") in {
             "snapshot_changed_before_refresh",
             "snapshot_changed_during_refresh",
-        } and (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
+        }:
+            if (max_attempts is None or attempt < max_attempts) and monotonic() < deadline:
+                delay = wait_before_retry()
+                aggregate_timings["retry_backoff"] = (
+                    aggregate_timings.get("retry_backoff", 0.0) + delay * 1000.0
+                )
             continue
         total = (monotonic() - started) * 1000.0
         result["duration_ms"] = total
