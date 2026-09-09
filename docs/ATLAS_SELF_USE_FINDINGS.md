@@ -7,6 +7,24 @@ address the observed behavior.
 
 ## Open
 
+### SELF-026: cross-project shared daemon blocked an explicit refresh client
+
+- Observed task: refresh the Atlas source repository after committing the
+  routing-conflict fix while long-lived PDF-project MCP clients shared the same
+  Provider daemon.
+- Expected: the distinct-project refresh waits for the bounded mutation slot,
+  connects to the shared daemon and publishes its own isolated generation.
+- Actual evidence: both the 0.26.0 and 0.26.1 frontends waited about 35 seconds,
+  then returned `Provider MCP response id mismatch`; Provider stderr reported
+  that the active daemon could not accept the client within 30 seconds. Both
+  attempts retained the exact previous generation with no rollback error.
+- Safe fallback: keep the previous queryable generation, do not kill unrelated
+  project sessions or delete either index, and retry after the owning clients
+  release the daemon.
+- Planned resolution: reproduce with one long-lived query client plus a second
+  project's explicit refresh, preserve raw request/response identifiers in the
+  failure diagnostic, and add a bounded cross-project admission regression.
+
 ### SELF-018: software update could not accept a stale project index
 
 - Observed task: deploy the published 0.26.0 release into the Atlas repository
