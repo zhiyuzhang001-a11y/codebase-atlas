@@ -132,3 +132,27 @@ class RoutingTransactionTests(unittest.TestCase):
                 transaction.apply()
             self.assertFalse((root / "AGENTS.md").exists())
             self.assertEqual(skill.read_bytes(), b"user skill")
+
+    def test_custom_skill_can_be_preserved_without_weakening_rule_ownership(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            skill = root / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b"project-owned skill")
+            transaction = RoutingTransaction(root, preserve_custom_skill=True)
+            self.assertEqual(transaction.preserved_conflicts, (str(skill.resolve()),))
+            transaction.apply()
+            self.assertTrue((root / "AGENTS.md").is_file())
+            self.assertEqual(skill.read_bytes(), b"project-owned skill")
+            self.assertEqual(transaction.rollback(), [])
+            self.assertFalse((root / "AGENTS.md").exists())
+            self.assertEqual(skill.read_bytes(), b"project-owned skill")
+
+            (root / "AGENTS.md").write_text(
+                "<!-- codebase-atlas managed routing v1 begin -->\n"
+                "modified\n"
+                "<!-- codebase-atlas managed routing v1 end -->\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "AGENTS.md"):
+                RoutingTransaction(root, preserve_custom_skill=True)

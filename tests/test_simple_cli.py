@@ -58,21 +58,24 @@ def configured_project(root: Path) -> tuple[Path, AtlasConfig, Path]:
 
 
 class SimpleCliTests(unittest.TestCase):
-    def test_enable_rejects_foreign_skill_before_restoration_or_onboarding(self):
+    def test_enable_preserves_custom_skill_during_routing_preflight(self):
         with tempfile.TemporaryDirectory() as raw:
             repository = git_repository(Path(raw))
             skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
             skill.parent.mkdir(parents=True)
             skill.write_bytes(b"manually installed skill")
             with (
-                patch("codebase_atlas.simple_cli.build_plan") as onboarding,
+                patch(
+                    "codebase_atlas.simple_cli.build_plan",
+                    return_value=({"status": "blocked", "error": "planned stop"}, None),
+                ) as onboarding,
                 patch("codebase_atlas.simple_cli._restore_removed_project") as restore,
             ):
                 result, code = enable_project(repository)
             self.assertEqual(code, 2)
-            self.assertEqual(result["reason_code"], "routing_preflight_failed")
+            self.assertEqual(result["error"], "planned stop")
             self.assertFalse(result["mutates"])
-            onboarding.assert_not_called()
+            onboarding.assert_called_once()
             restore.assert_not_called()
             self.assertEqual(skill.read_bytes(), b"manually installed skill")
 
@@ -356,9 +359,12 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(restored.status, "ready")
             self.assertEqual(restored.atlas_version, "0.25.2")
 
-    def test_enable_composes_existing_onboarding_codex_and_acceptance(self) -> None:
+    def test_enable_composes_acceptance_and_preserves_custom_skill(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             repository, config, path = configured_project(Path(raw))
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b"project-owned skill")
             resolution = ProjectResolution(
                 "configured", repository, "ready", path
             )
@@ -413,7 +419,11 @@ class SimpleCliTests(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             self.assertEqual(result["connection_status"], "configured_task_start_required")
             self.assertTrue((repository / "AGENTS.md").is_file())
-            self.assertTrue((repository / ".agents/skills/codebase-atlas/SKILL.md").is_file())
+            self.assertEqual(skill.read_bytes(), b"project-owned skill")
+            self.assertEqual(result["routing_status"], "custom_preserved")
+            self.assertEqual(
+                result["preserved_routing_assets"], [str(skill.resolve())]
+            )
             self.assertTrue(result["mutates"])
             self.assertEqual(
                 load_lifecycle_state(
@@ -559,7 +569,7 @@ class SimpleCliTests(unittest.TestCase):
                     installation, runner=lambda *_args, **_kwargs: completed
                 )
 
-    def test_update_switches_verified_installation_and_preserves_ready_state(self) -> None:
+    def test_update_switches_installation_and_preserves_custom_skill(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             repository, config, path = configured_project(root)
@@ -580,6 +590,9 @@ class SimpleCliTests(unittest.TestCase):
             )
             resolution = ProjectResolution("configured", repository, "ready", path)
             codex_target = repository / ".codex/config.toml"
+            skill = repository / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(b"project-owned skill")
             with (
                 patch("codebase_atlas.simple_cli.resolve_project", return_value=resolution),
                 patch(
@@ -611,6 +624,11 @@ class SimpleCliTests(unittest.TestCase):
                 )
             self.assertEqual(code, 0, result)
             self.assertEqual(result["status"], "updated")
+            self.assertEqual(result["routing_status"], "custom_preserved")
+            self.assertEqual(
+                result["preserved_routing_assets"], [str(skill.resolve())]
+            )
+            self.assertEqual(skill.read_bytes(), b"project-owned skill")
             self.assertEqual(AtlasConfig.load(path).cbm_binary, installation.provider_binary)
             state = load_lifecycle_state(
                 config.data_dir, config.repository, config.project

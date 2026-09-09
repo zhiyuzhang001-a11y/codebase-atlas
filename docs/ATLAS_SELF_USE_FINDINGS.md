@@ -56,6 +56,23 @@ address the observed behavior.
 
 ## Resolved
 
+### SELF-025: a project-authored Atlas skill blocked software update
+
+- Observed task: run the published `atlas update` from 0.26.0 to 0.26.1 in the
+  Atlas source repository, whose tracked project skill intentionally contains
+  richer development guidance than the installed routing template.
+- Expected: preserve the repository-owned skill and upgrade the verified
+  runtime, Provider and project MCP transport without changing source.
+- Actual evidence: update installed the verified 0.26.1 candidate, classified
+  `.agents/skills/codebase-atlas/SKILL.md` as a fatal routing conflict, rolled
+  back the project switch and left the stale launcher unchanged.
+- Safe fallback: retain 0.26.0 and its fresh index; never overwrite or remove
+  the tracked project skill to force an update.
+- Resolution: enable and update explicitly preserve a custom colliding skill,
+  report it in structured results, and continue to reject modified
+  Atlas-managed `AGENTS.md` blocks. Transaction and lifecycle regressions prove
+  the custom bytes survive success and rollback boundaries.
+
 ### SELF-021: one Provider admission conflict poisoned the whole MCP session
 
 - Observed task: start two fresh Codex validation tasks concurrently against

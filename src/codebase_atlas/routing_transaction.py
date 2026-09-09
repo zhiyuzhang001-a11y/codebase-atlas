@@ -23,6 +23,7 @@ class RoutingTransaction:
     def __init__(
         self, repository: Path, *, remove: bool = False, bundle=None,
         remove_created_rule_file: bool = False,
+        preserve_custom_skill: bool = False,
     ):
         self.repository = repository.resolve(strict=True)
         self.plans = plan_routing(
@@ -30,8 +31,19 @@ class RoutingTransaction:
             remove_created_rule_file=remove_created_rule_file,
         )
         self.conflicts = tuple(str(p.path) for p in self.plans if p.status == "conflict")
-        if self.conflicts and not remove:
-            raise RuntimeError("foreign or modified routing assets: " + ", ".join(self.conflicts))
+        custom_skill = self.repository / ".agents/skills/codebase-atlas/SKILL.md"
+        self.preserved_conflicts = tuple(
+            str(p.path) for p in self.plans
+            if p.status == "conflict" and preserve_custom_skill and p.path == custom_skill
+        )
+        blocking_conflicts = tuple(
+            conflict for conflict in self.conflicts
+            if conflict not in self.preserved_conflicts
+        )
+        if blocking_conflicts and not remove:
+            raise RuntimeError(
+                "foreign or modified routing assets: " + ", ".join(blocking_conflicts)
+            )
         self._applied: list[AssetPlan] = []
         self._directories: list[Path] = []
         self._started = False
@@ -53,6 +65,7 @@ class RoutingTransaction:
         instance = cls.__new__(cls)
         instance.repository = repository.resolve(strict=True)
         instance.conflicts = ()
+        instance.preserved_conflicts = ()
         instance._applied = []
         instance._directories = []
         instance._started = False

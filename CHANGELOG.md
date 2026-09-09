@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.26.2 — 2026-09-09
+
+- Preserve a project-authored `.agents/skills/codebase-atlas/SKILL.md` during
+  enable and software update while continuing to fail closed on a modified
+  Atlas-managed `AGENTS.md` block. Lifecycle results name every preserved
+  routing asset instead of forcing users to overwrite repository guidance.
+
 ## 0.26.1 — 2026-09-09
 
 - Default new projects to the identity-isolated shared Provider layout so

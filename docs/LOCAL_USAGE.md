@@ -57,6 +57,11 @@ protected paths are not covered. Random absent-symbol
 checks do not establish cross-repository isolation; that requires the separate
 two-repository acceptance suite.
 
+Project-authored `.agents/skills/codebase-atlas/SKILL.md` files are preserved
+during `enable` and `update` and are listed in `preserved_routing_assets` with
+`routing_status=custom_preserved`. Atlas still rejects a modified block carrying
+its managed `AGENTS.md` markers, and it never overwrites either kind of conflict.
+
 The first MCP registration requires one new Codex task. The 0.25 `mcp-auto`
 bootstrap then rechecks exact project identity, lifecycle state and selected
 version at every request boundary, so later stop, resume and update operations

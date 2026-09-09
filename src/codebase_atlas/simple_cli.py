@@ -61,7 +61,7 @@ from .release_installation import (
 )
 from .version_check import _version_tuple
 from .verification_state import protected_snapshot
-from .routing_assets import decode_routing_bundle, plan_routing, routing_bundle
+from .routing_assets import decode_routing_bundle, routing_bundle
 from .routing_transaction import RoutingTransaction
 from .routing_state import load_routing_state, publish_routing_state
 from .enable_transaction import EnableTransaction
@@ -754,10 +754,7 @@ def enable_project(
         return recovery_failure
     root, resolution = _repository_root(root)
     try:
-        routes = plan_routing(root)
-        conflicts = [str(asset.path) for asset in routes if asset.status == "conflict"]
-        if conflicts:
-            raise RuntimeError("foreign or modified Atlas routing assets: " + ", ".join(conflicts))
+        RoutingTransaction(root, preserve_custom_skill=True)
     except (OSError, RuntimeError, ValueError) as exc:
         return _result(
             "enable", "blocked", root, mutates=False,
@@ -844,7 +841,7 @@ def enable_project(
         if not _acquire_refresh(refresh, timeout_seconds=30):
             raise RuntimeError("timed out waiting for the active project refresh")
         transaction = EnableTransaction(candidate, selected_config)
-        routing = RoutingTransaction(root)
+        routing = RoutingTransaction(root, preserve_custom_skill=True)
         durable = LifecycleRecoveryJournal.begin(
             candidate, selected_config, operation="enable",
             operation_id=operation_id, routing=routing,
@@ -936,7 +933,10 @@ def enable_project(
             config=str(selected_config), project=configured.project,
             verification=verification,
             current_session_refresh_required=True,
-            routing_status="installed",
+            routing_status=(
+                "custom_preserved" if routing.preserved_conflicts else "installed"
+            ),
+            preserved_routing_assets=list(routing.preserved_conflicts),
             backup_cleanup="complete" if backup_cleaned and durable_cleaned else "pending",
         ), 0
     except BaseException as exc:
@@ -1508,7 +1508,9 @@ def update_project(
         config_identity, _ = _regular_snapshot(config_path)
         transaction = EnableTransaction(config, config_path)
         target_bundle = _external_routing_bundle(installation, runner=runner)
-        routing = RoutingTransaction(root, bundle=target_bundle)
+        routing = RoutingTransaction(
+            root, bundle=target_bundle, preserve_custom_skill=True
+        )
         durable = LifecycleRecoveryJournal.begin(
             config, config_path, operation="update", operation_id=operation_id,
             routing=routing,
@@ -1567,7 +1569,10 @@ def update_project(
             installation_reused=not installation_mutated,
             doctor=doctor.get("status"), verification=verification,
             current_session_refresh_required=True,
-            routing_status="updated",
+            routing_status=(
+                "custom_preserved" if routing.preserved_conflicts else "updated"
+            ),
+            preserved_routing_assets=list(routing.preserved_conflicts),
             backup_cleanup="complete" if backup_cleaned and durable_cleaned else "pending",
         ), 0
     except BaseException as exc:

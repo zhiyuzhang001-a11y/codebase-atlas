@@ -5,12 +5,43 @@ import unittest
 from unittest.mock import patch
 
 from codebase_atlas.routing_assets import (
-    RULE, SKILL, decode_routing_bundle, plan_routing, routing_bundle,
+    PREVIOUS_SKILL, RULE, SKILL, decode_routing_bundle, plan_routing,
+    routing_bundle,
 )
 from codebase_atlas.routing_transaction import RoutingTransaction
 
 
 class RoutingAssetTests(unittest.TestCase):
+    def test_packaged_skill_matches_repository_skill(self):
+        repository_skill = (
+            Path(__file__).resolve().parents[1]
+            / ".agents/skills/codebase-atlas/SKILL.md"
+        )
+        self.assertEqual(SKILL, repository_skill.read_bytes())
+
+    def test_strict_previous_updater_accepts_repository_skill_from_new_bundle(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            skill = root / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(SKILL)
+            transaction = RoutingTransaction(
+                root, bundle=decode_routing_bundle(routing_bundle())
+            )
+            self.assertEqual(transaction.conflicts, ())
+            transaction.apply()
+            self.assertEqual(skill.read_bytes(), SKILL)
+
+    def test_previous_managed_skill_upgrades_to_current_skill(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            skill = root / ".agents/skills/codebase-atlas/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_bytes(PREVIOUS_SKILL)
+            plan = plan_routing(root)[1]
+            self.assertEqual(plan.status, "owned-old")
+            self.assertEqual(plan.after, SKILL)
+
     def test_versioned_bundle_round_trip_and_validation(self):
         bundle = routing_bundle()
         decoded = decode_routing_bundle(bundle)
@@ -29,7 +60,9 @@ class RoutingAssetTests(unittest.TestCase):
             root = Path(raw)
             RoutingTransaction(root).apply()
             new_rule = RULE.replace(b"Known single-file", b"Localized single-file")
-            new_skill = SKILL.replace(b"Call project_status", b"Always call project_status")
+            new_skill = SKILL.replace(
+                b"Start with `project_status`", b"Always start with `project_status`"
+            )
             target = decode_routing_bundle({
                 "schema_version": 1,
                 "rule": base64.b64encode(new_rule).decode(),
@@ -40,6 +73,7 @@ class RoutingAssetTests(unittest.TestCase):
             plans = plan_routing(root, bundle=target)
             self.assertEqual([p.status for p in plans], ["owned-old", "owned-old"])
             self.assertEqual([p.after for p in plans], [new_rule, new_skill])
+
     def test_replacement_between_stat_and_open_is_rejected(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -45,7 +45,11 @@ tools, or deletion of existing indexes.
 4. Preview `codebase-atlas codex plan --scope project`, then apply the exact
    project-scoped plan. Do not select `global-auto` unless the user separately
    asks for an account-wide automatic entry.
-5. Do not commit machine-local `.codebase-atlas.toml` or `.codex/config.toml`
+5. Preserve and report a project-authored
+   `.agents/skills/codebase-atlas/SKILL.md`; it is valid repository guidance,
+   not an Atlas runtime prerequisite. A modified block carrying Atlas's managed
+   `AGENTS.md` markers remains a blocking ownership conflict.
+6. Do not commit machine-local `.codebase-atlas.toml` or `.codex/config.toml`
    unless the user explicitly approves and the paths are portable.
 
 ## 4. Acceptance gate
