@@ -300,7 +300,15 @@ def apply_plan(plan: dict[str, object], config: AtlasConfig | None, *, indexer: 
                 if staged_registrations is not None:
                     staged_registrations.close()
                 return plan | {"status": "failed", "mode": "applied", "config_created": created, "error": "config changed while indexing; rerun onboard"}, 2
-            indexed = config.with_project(str(payload["project"]))
+            provider_project = str(payload["project"])
+            if config.provider_layout == "shared-v1":
+                if provider_project != config.project:
+                    raise RuntimeError(
+                        "Provider returned a different shared project identity"
+                    )
+                indexed = config
+            else:
+                indexed = config.with_project(provider_project)
             if config.language == "python" and after.fingerprint:
                 if staged_registrations is None:
                     staged_registrations = stage_registration_index(

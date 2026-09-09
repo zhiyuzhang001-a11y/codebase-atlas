@@ -152,8 +152,10 @@ class AtlasConfig:
         return cls(
             repo, selected_language, discovered_node, discovered_cbm,
             discovered_serena, (data_dir or default_data_dir(repo)).resolve(),
+            project=provider_project_identity(repo),
             node_bin_dir=node_bin_dir or discovered_node.parent,
             tsconfig=tsconfig,
+            provider_layout=SHARED_PROVIDER_LAYOUT,
         )
 
     @classmethod

@@ -57,10 +57,17 @@ def configure_managed_provider_cache(
     runner: Callable[..., Any] = subprocess.run,
 ) -> None:
     """Disable autonomous indexing in Atlas-owned Provider state."""
-    cache = cache_dir.resolve()
-    cache.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        cache.chmod(0o700)
+    cache = cache_dir.absolute()
+    before = inspect_provider_root(cache)
+    if before.status == "missing":
+        try:
+            cache.mkdir(parents=True, mode=0o700, exist_ok=False)
+        except FileExistsError:
+            pass
+    after = inspect_provider_root(cache)
+    if after.status != "ready":
+        raise RuntimeError(f"unsafe managed Provider cache: {after.status}")
+    cache = after.path
     environment = provider_environment(cache, repository)
     for key in ("auto_watch", "watcher_enabled"):
         command = [str(binary.resolve()), "config", "set", key, "false"]

@@ -230,7 +230,7 @@ class OnboardingTests(unittest.TestCase):
                 changed_paths=0, reason="test_snapshot",
             )
             with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.repository_snapshot", return_value=resumed_snapshot), patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
-                result, exit_code = apply_plan(resumed_plan, resumed_config, indexer=lambda _config, _mode: {"project": "indexed"}, mode="fast")  # type: ignore[arg-type]
+                result, exit_code = apply_plan(resumed_plan, resumed_config, indexer=lambda selected, _mode: {"project": selected.project}, mode="fast")  # type: ignore[arg-type]
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["status"], "ready")
             self.assertTrue(state.is_file())
@@ -368,7 +368,7 @@ class OnboardingTests(unittest.TestCase):
                 result, exit_code = apply_plan(
                     plan,
                     config,
-                    indexer=lambda _config, _mode: {"project": "indexed"},
+                    indexer=lambda selected, _mode: {"project": selected.project},
                     mode="fast",
                 )
 
@@ -376,7 +376,7 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertIn("state publication failed", str(result["error"]))
             self.assertEqual(config_path.read_bytes(), expected_config_bytes)
-            self.assertEqual(AtlasConfig.load(config_path).project, "")
+            self.assertEqual(AtlasConfig.load(config_path).project, config.project)
             self.assertFalse(registration_index_path(config.data_dir).exists())
 
     def test_python_apply_reaches_ready_and_emits_guidance(self) -> None:
@@ -385,7 +385,7 @@ class OnboardingTests(unittest.TestCase):
             plan, config = self.planned(root)
             snapshot = SimpleNamespace(kind="plain", fingerprint="same")
             with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.repository_snapshot", return_value=snapshot), patch("codebase_atlas.onboarding.record_index_state"), patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
-                result, exit_code = apply_plan(plan, config, indexer=lambda _config, _mode: {"project": "indexed"}, mode="fast")
+                result, exit_code = apply_plan(plan, config, indexer=lambda selected, _mode: {"project": selected.project}, mode="fast")
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["status"], "ready")
             self.assertTrue(Path(str(plan["config"])).exists())
@@ -410,7 +410,7 @@ class OnboardingTests(unittest.TestCase):
             after_index = SimpleNamespace(kind="git", fingerprint="before")
             after_publication = SimpleNamespace(kind="git", fingerprint="before")
             with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.repository_snapshot", side_effect=[before, after_index, after_publication]), patch("codebase_atlas.onboarding.record_index_state") as record_state, patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
-                result, exit_code = apply_plan(plan, discovered, indexer=lambda _config, _mode: {"project": "indexed"}, mode="fast")
+                result, exit_code = apply_plan(plan, discovered, indexer=lambda selected, _mode: {"project": selected.project}, mode="fast")
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["status"], "ready")
             self.assertEqual(record_state.call_args.kwargs["snapshot"], after_publication)
@@ -436,7 +436,7 @@ class OnboardingTests(unittest.TestCase):
             indexed_source = SimpleNamespace(kind="git", fingerprint="indexed-source")
             late_source_change = SimpleNamespace(kind="git", fingerprint="unindexed-late-change")
             with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.repository_snapshot", side_effect=[indexed_source, indexed_source, late_source_change]), patch("codebase_atlas.onboarding.record_index_state") as record_state, patch("codebase_atlas.onboarding.diagnose", return_value=self.ready_checks()):
-                result, exit_code = apply_plan(plan, discovered, indexer=lambda _config, _mode: {"project": "indexed"}, mode="fast")
+                result, exit_code = apply_plan(plan, discovered, indexer=lambda selected, _mode: {"project": selected.project}, mode="fast")
             self.assertEqual(exit_code, 2)
             self.assertEqual(result["status"], "failed")
             self.assertIn("repository changed while publishing", str(result["error"]))
@@ -449,7 +449,7 @@ class OnboardingTests(unittest.TestCase):
             snapshot = SimpleNamespace(kind="plain", fingerprint="same")
             incomplete = [{"name": "provider", "ok": False, "required": True, "path": "", "version": "", "detail": "not ready", "remediation": "repair"}]
             with patch("codebase_atlas.onboarding.index_freshness", return_value={"status": "missing"}), patch("codebase_atlas.onboarding.provider_database_health", return_value={"ok": False}), patch("codebase_atlas.onboarding.repository_snapshot", return_value=snapshot), patch("codebase_atlas.onboarding.record_index_state"), patch("codebase_atlas.onboarding.diagnose", return_value=incomplete):
-                result, exit_code = apply_plan(plan, config, indexer=lambda _config, _mode: {"project": "indexed"}, mode="fast")
+                result, exit_code = apply_plan(plan, config, indexer=lambda selected, _mode: {"project": selected.project}, mode="fast")
             self.assertEqual(result["status"], "incomplete")
             self.assertEqual(exit_code, 2)
 

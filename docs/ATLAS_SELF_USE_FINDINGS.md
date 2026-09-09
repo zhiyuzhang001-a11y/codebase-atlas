@@ -56,6 +56,39 @@ address the observed behavior.
 
 ## Resolved
 
+### SELF-021: one Provider admission conflict poisoned the whole MCP session
+
+- Observed task: start two fresh Codex validation tasks concurrently against
+  one Atlas project.
+- Expected: concurrent read/query clients wait for startup admission or expose
+  bounded transient backpressure and recover on their next request.
+- Actual evidence: one client returned `provider_busy`; `AtlasService` cached
+  that startup result permanently, so only archiving the extra task and opening
+  a new MCP session appeared to recover it.
+- Safe fallback: keep one validation owner and retry after it finishes; do not
+  count a replacement session as proof that the failed session recovered.
+- Resolution: shared-layout clients wait under the caller's query budget and a
+  session retries Provider startup after `provider_busy` or
+  `provider_startup_timeout`. Two unit regressions cover both lifecycle APIs;
+  four simultaneous real queries all returned the exact target definition.
+
+### SELF-022: Provider migration did not migrate lifecycle identity
+
+- Observed task: migrate this repository from the legacy Provider layout before
+  repeating the multi-client query proof.
+- Expected: config, Provider database, generation metadata, index state, and
+  lifecycle state publish one consistent shared project identity.
+- Actual evidence: migration published the shared config and database but left
+  `lifecycle-state.json` on the legacy project identity. Doctor and every query
+  then failed closed with `lifecycle_state_invalid`.
+- Safe fallback: reject the migration result and use an identity-aware repair;
+  never edit the lifecycle file ad hoc or report the shared database alone as
+  success.
+- Resolution: migration now recognizes a valid legacy lifecycle identity,
+  rebinds it to the deterministic shared identity, rolls it back with the config
+  on later publication failure, and can repair an already-published affected
+  config. The repaired real project passed doctor and four concurrent queries.
+
 ### SELF-010: cross-project refreshes raced in the shared Provider daemon
 
 - Observed task: run two real repository refreshes concurrently in the

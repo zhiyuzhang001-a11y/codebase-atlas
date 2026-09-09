@@ -99,12 +99,15 @@ Run `codebase-atlas doctor` after installation or configuration changes. Atlas i
 read-only: it should leave repository source and global editor/MCP settings
 unchanged, and Provider processes should stop with the session.
 
-The Provider daemon is account-global, but shared-layout Atlas sessions retain
+New Atlas projects use the shared Provider layout by default. The Provider
+daemon is account-global, but shared-layout Atlas sessions retain
 exact per-project identity and can remain active for different repositories.
 Same-project writes still serialize. Daily indexes use bounded adaptive slots;
 large indexes queue in one exclusive index lane while queries remain available.
-Legacy-layout sessions can still report `provider_busy` until explicitly
-migrated.
+Projects created by older Atlas releases can still use the legacy layout and
+report `provider_busy` until explicitly migrated. Concurrent agents may query;
+give explicit lifecycle, migration, index, or refresh mutation to one owner and
+let other agents wait/retry instead of recreating their tasks.
 
 ## Connect Codex safely
 

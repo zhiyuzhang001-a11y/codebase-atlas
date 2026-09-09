@@ -28,3 +28,5 @@ Start with `project_status`. If it is not ready, follow its `next_action` and do
 - Use the narrower definition, caller, callee, reference, impact, or related-test tools only when the Change Brief is unnecessary or reports a specific evidence gap.
 
 Treat `partial`, truncation, timeout, skipped, and not-run fields as missing evidence, not as proof that no dependency or test exists. Fill important gaps with a bounded follow-up query or direct source search. Keep source provenance and index generation in conclusions where stale or cross-worktree facts would be risky.
+
+Multiple agents may issue read/query calls concurrently. Give lifecycle, migration, index, and explicit refresh mutations one owning agent while other agents wait. Treat `provider_busy` and `provider_startup_timeout` as transient backpressure: retry within the remaining task budget after the owner finishes, and do not archive or recreate a task merely to recover.

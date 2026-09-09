@@ -9,6 +9,11 @@ from typing import Callable, Any
 
 from .config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from .maintenance import inspect_provider_database_at
+from .project_lifecycle import (
+    ProjectLifecycleState,
+    lifecycle_state_path,
+    load_lifecycle_state,
+)
 from .provider_layout import inspect_provider_root
 
 
@@ -77,14 +82,27 @@ def plan_provider_migration(
         "detail": disk_error,
     }
 
-    if (
+    lifecycle_action = _lifecycle_identity_action(config)
+
+    if lifecycle_action == "blocked":
+        status, action, writes, reason = (
+            "blocked", "repair_lifecycle_state", False,
+            "lifecycle_state_identity_unrecognized",
+        )
+    elif (
         config.provider_layout == SHARED_PROVIDER_LAYOUT
         and config.project == config.shared_project
         and shared["status"] == "healthy"
     ):
-        status, action, writes, reason = (
-            "ready", "already_active", False, "shared_layout_already_active"
-        )
+        if lifecycle_action == "migrate":
+            status, action, writes, reason = (
+                "planned", "repair_lifecycle_identity", True,
+                "shared_layout_has_legacy_lifecycle_identity",
+            )
+        else:
+            status, action, writes, reason = (
+                "ready", "already_active", False, "shared_layout_already_active"
+            )
     elif not root.ready:
         status, action, writes, reason = (
             "blocked", "repair_shared_root", False, f"shared_root_{root.status}"
@@ -144,6 +162,36 @@ def plan_provider_migration(
         staging_residue=staging,
         reason=reason,
     )
+
+
+def _lifecycle_identity_action(config: AtlasConfig) -> str:
+    """Classify a durable lifecycle state without changing it."""
+    if not lifecycle_state_path(config.data_dir).exists():
+        return "none"
+    try:
+        load_lifecycle_state(config.data_dir, config.repository, config.project)
+        return "none"
+    except ValueError:
+        legacy_project = config.legacy_project or config.project
+        if legacy_project == config.project:
+            return "blocked"
+        try:
+            load_lifecycle_state(config.data_dir, config.repository, legacy_project)
+        except ValueError:
+            return "blocked"
+        return "migrate"
+
+
+def migrated_lifecycle_state(config: AtlasConfig) -> ProjectLifecycleState | None:
+    """Return the legacy lifecycle state rebound to the shared project identity."""
+    if _lifecycle_identity_action(config) != "migrate":
+        return None
+    previous = load_lifecycle_state(
+        config.data_dir,
+        config.repository,
+        config.legacy_project or config.project,
+    )
+    return replace(previous, project=config.shared_project)
 
 
 def shared_provider_config(config: AtlasConfig) -> AtlasConfig:

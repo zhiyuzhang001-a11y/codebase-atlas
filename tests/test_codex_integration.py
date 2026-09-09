@@ -55,6 +55,9 @@ class CodexIntegrationTests(unittest.TestCase):
         self.assertIn("on-query", PROJECT_RULE)
         self.assertIn("creating, modifying, renaming, or deleting", PROJECT_RULE)
         self.assertIn("automatically", PROJECT_RULE)
+        self.assertIn("multiple agents may run concurrently", PROJECT_RULE)
+        self.assertIn("provider_busy", PROJECT_RULE)
+        self.assertIn("do not archive or recreate", PROJECT_RULE)
 
     def paths(self, root: Path):
         config = root / ".codebase-atlas.toml"
