@@ -2,9 +2,9 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.26.0**. This release adds compact status and verify
-diagnostics, transactionally managed Codex routing, durable lifecycle recovery,
-nested-repository discovery, and cross-platform multi-client qualification.
+Current stable release: **0.26.1**. This release makes multi-agent Provider
+startup recoverable, defaults new projects to the shared Provider layout, and
+repairs lifecycle identity during legacy-to-shared migration.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,
