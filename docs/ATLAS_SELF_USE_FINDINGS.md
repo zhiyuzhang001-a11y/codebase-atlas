@@ -11,6 +11,24 @@ None.
 
 ## Resolved
 
+### SELF-027: managed routing publication invalidated update acceptance
+
+- Observed task: bootstrap the published candidate with its verified installer,
+  then update this repository from the 0.26.0 lifecycle state.
+- Expected: after the candidate refreshes the exact source generation, its
+  managed routing publication remains operational metadata and doctor stays
+  ready.
+- Actual evidence: Provider refresh succeeded through the canonical path, but
+  appending the byte-exact managed `AGENTS.md` block changed the repository
+  fingerprint; candidate doctor reported stale and the update rolled back with
+  no rollback errors.
+- Safe fallback: retain the ready 0.26.0 lifecycle and freshly queryable index,
+  withdraw the candidate Release, and do not rewrite its public tag.
+- Resolution: freshness now ignores only a routing insertion or upgrade whose
+  bytes match a published Atlas asset and whose non-Atlas remainder exactly
+  matches Git `HEAD`. A companion regression proves a user edit beside the
+  managed block still makes the index stale.
+
 ### SELF-018: software update could not accept a stale project index
 
 - Observed task: deploy the published 0.26.0 release into the Atlas repository

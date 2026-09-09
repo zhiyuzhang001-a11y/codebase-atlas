@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.26.3 — 2026-09-09
+
+- Treat only byte-exact, published Atlas routing insertions and upgrades as
+  operational metadata during freshness checks, so a software update can add
+  its managed `AGENTS.md` block without making its just-refreshed candidate
+  index stale. User edits beside or inside those assets remain source changes.
+- Qualify the old-runtime bootstrap path separately: Codex installs the
+  checksum-verified candidate first, then asks that candidate to perform the
+  transactional project update and canonical Provider switch.
+
 ## 0.26.2 — 2026-09-09
 
 - Preserve a project-authored `.agents/skills/codebase-atlas/SKILL.md` during

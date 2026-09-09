@@ -2,9 +2,10 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.26.2**. This release makes cross-project Provider
-admission recoverable, preserves project-authored Atlas skills during upgrades,
-and reuses one verified Provider path across Atlas frontend versions.
+Current stable release: **0.26.3**. This release makes cross-project Provider
+admission recoverable, reuses one verified Provider path across Atlas frontend
+versions, and keeps exact Atlas-managed routing changes from invalidating an
+otherwise current source index during upgrade.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

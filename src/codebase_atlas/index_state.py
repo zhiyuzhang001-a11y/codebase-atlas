@@ -18,6 +18,7 @@ import tempfile
 import tomllib
 
 from .cbmignore import CbmIgnore
+from .routing_assets import BEGIN, END, KNOWN_RULES, KNOWN_SKILLS
 
 
 STATE_SCHEMA_VERSION = 1
@@ -151,6 +152,55 @@ def _is_atlas_project_codex_config(repository: Path, relative: str) -> bool:
         return False
 
 
+def _owned_rule_remainder(payload: bytes) -> bytes | None:
+    begin, end = BEGIN.encode(), END.encode()
+    if payload.count(begin) != 1 or payload.count(end) != 1:
+        return None
+    start = payload.index(begin)
+    finish = payload.index(end, start) + len(end)
+    if start > 0 and payload[start - 1:start] == b"\n":
+        start -= 1
+    if payload[finish:finish + 1] == b"\n":
+        finish += 1
+    block = payload[start:finish]
+    if hashlib.sha256(block).hexdigest() not in KNOWN_RULES:
+        return None
+    return payload[:start] + payload[finish:]
+
+
+def _is_exact_atlas_routing_change(repository: Path, relative: str) -> bool:
+    """Ignore only a byte-exact managed routing insertion or upgrade."""
+    if relative not in {"AGENTS.md", ".agents/skills/codebase-atlas/SKILL.md"}:
+        return False
+    path = repository / relative
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+        current = path.read_bytes()
+    except OSError:
+        return False
+    baseline_result = _git(repository, "show", f"HEAD:{relative}")
+    baseline = baseline_result.stdout if baseline_result.returncode == 0 else None
+    if current == baseline:
+        return False
+    if relative.endswith("SKILL.md"):
+        current_owned = hashlib.sha256(current).hexdigest() in KNOWN_SKILLS
+        baseline_owned = (
+            baseline is None
+            or hashlib.sha256(baseline).hexdigest() in KNOWN_SKILLS
+        )
+        return current_owned and baseline_owned
+    current_remainder = _owned_rule_remainder(current)
+    if current_remainder is None:
+        return False
+    if baseline is None:
+        return current_remainder == b""
+    baseline_remainder = _owned_rule_remainder(baseline)
+    return current_remainder == (
+        baseline if baseline_remainder is None else baseline_remainder
+    )
+
+
 def _hash_path(digest: "hashlib._Hash", repository: Path, relative: str) -> None:
     digest.update(relative.encode("utf-8", errors="surrogateescape"))
     digest.update(b"\0")
@@ -202,6 +252,7 @@ def repository_snapshot(repository: Path) -> RepositorySnapshot:
         for path in set(_paths(tracked.stdout) + _paths(untracked.stdout))
         if not _is_atlas_runtime_config(repository, path)
         and not _is_atlas_project_codex_config(repository, path)
+        and not _is_exact_atlas_routing_change(repository, path)
         and (
             Path(path).as_posix() == ".cbmignore"
             or not cbmignore.ignores(Path(path).as_posix())

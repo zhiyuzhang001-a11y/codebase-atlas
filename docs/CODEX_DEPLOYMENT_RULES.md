@@ -76,6 +76,11 @@ already-open task hot-reloaded the new MCP entry.
 
 - Update only from a newer stable Release, repeat checksum verification and
   retain the previous verified version until health and query checks pass.
+- When the active frontend predates the requested stable Release, bootstrap the
+  checksum-verified candidate wheel first and run the project update with that
+  candidate. Do not let an older frontend choose the candidate's Provider
+  layout; this remains one user-requested update operation even though Codex
+  performs the verified bootstrap internally.
 - Use Atlas migration/repair preview before applying recovery. Never delete an
   index merely to change Provider versions.
 - If GitHub, a checksum, a prerequisite, repository identity, health or the

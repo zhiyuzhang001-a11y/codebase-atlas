@@ -15,6 +15,7 @@ from codebase_atlas.index_state import (
     repository_snapshot,
     state_path,
 )
+from codebase_atlas.routing_transaction import RoutingTransaction
 
 
 def git(repository: Path, *args: str) -> None:
@@ -115,6 +116,36 @@ class IndexStateTests(unittest.TestCase):
             target.write_text('model = "custom"\n', encoding="utf-8")
             after = repository_snapshot(repository)
             self.assertNotEqual(after.fingerprint, before.fingerprint)
+
+    def test_exact_managed_routing_change_is_operational_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            agents = repository / "AGENTS.md"
+            agents.write_text("# Project guidance\n", encoding="utf-8")
+            git(repository, "add", "AGENTS.md")
+            git(repository, "commit", "-qm", "guidance")
+            before = repository_snapshot(repository)
+
+            RoutingTransaction(repository).apply()
+            after = repository_snapshot(repository)
+
+            self.assertEqual(after.fingerprint, before.fingerprint)
+            self.assertEqual(after.changed_paths, before.changed_paths)
+
+    def test_user_edit_beside_managed_routing_remains_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = self.make_repository(root)
+            before = repository_snapshot(repository)
+            RoutingTransaction(repository).apply()
+            agents = repository / "AGENTS.md"
+            agents.write_bytes(agents.read_bytes() + b"user change\n")
+
+            after = repository_snapshot(repository)
+
+            self.assertNotEqual(after.fingerprint, before.fingerprint)
+            self.assertEqual(after.changed_paths, 1)
 
     def test_cbmignore_excludes_generated_artifacts_but_tracks_control_file(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
