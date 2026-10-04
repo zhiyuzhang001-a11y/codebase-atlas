@@ -11,10 +11,12 @@ from unittest import mock
 
 from scripts.build_rust_syntax_scanner import (
     SCANNER,
+    ROOT,
     SOURCE_FILES,
     TARGETS,
     build_once,
     reproducibility_flags,
+    run,
     source_identity,
     write_tar,
     write_zip,
@@ -30,6 +32,15 @@ def sha256(path: Path) -> str:
 
 
 class RustSyntaxBundleTests(unittest.TestCase):
+    def test_scanner_checkout_preserves_bytes_with_windows_autocrlf(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            destination = Path(raw)
+            paths = [(SCANNER / name).relative_to(ROOT).as_posix() for name in SOURCE_FILES]
+            run(["git", "-c", "core.autocrlf=true", "checkout-index",
+                 f"--prefix={destination.as_posix()}/", "--", *paths], cwd=ROOT)
+            for name, path in zip(SOURCE_FILES, paths):
+                self.assertEqual(sha256(destination / path), sha256(SCANNER / name))
+
     def test_windows_reproducibility_controls(self) -> None:
         flags = reproducibility_flags(Path("source with spaces"), Path("first build"), windows=True)
         self.assertIn("-Clink-arg=/Brepro", flags)

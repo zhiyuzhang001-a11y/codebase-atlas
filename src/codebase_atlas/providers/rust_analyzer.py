@@ -14,7 +14,8 @@ import threading
 import tomllib
 from time import monotonic, sleep
 from typing import Any, BinaryIO, Callable
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from ..contracts import EvidenceProvenance, Node, SourceRange, repository_path
 from ..index_state import repository_snapshot
@@ -430,7 +431,11 @@ class RustAnalyzerProvider:
         parsed = urlparse(value)
         if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
             raise RustAnalyzerError("rust-analyzer result URI is outside the repository")
-        candidate = Path(unquote(parsed.path)).resolve(strict=True)
+        try:
+            # file:///C:/... is not a native Windows path until URI conversion.
+            candidate = Path(url2pathname(parsed.path)).resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise RustAnalyzerError("rust-analyzer result path is unavailable") from exc
         try:
             relative = candidate.relative_to(self.repository).as_posix()
         except ValueError as exc:

@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - '.gitattributes'
       - .github/workflows/rust-syntax-scanner.yml
       - native/rust-syntax-scanner/**
       - scripts/build_rust_syntax_scanner.py

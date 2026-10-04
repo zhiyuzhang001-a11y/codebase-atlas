@@ -103,6 +103,7 @@ while True:
 class RustAnalyzerProviderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.repository = self.root / "repo"
         (self.repository / "src").mkdir(parents=True)
@@ -132,11 +133,8 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             created_at="generation:generation-1",
         )
 
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
-
     def provider(self) -> RustAnalyzerProvider:
-        return RustAnalyzerProvider(
+        provider = RustAnalyzerProvider(
             Path(sys.executable),
             self.repository,
             "rust-project",
@@ -144,6 +142,19 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             arguments=(str(self.analyzer),),
             readiness_seconds=1,
         )
+        self.addCleanup(provider.close)
+        return provider
+
+    def test_result_uri_round_trips_native_path(self) -> None:
+        provider = self.provider()
+        self.assertEqual(
+            provider._relative_uri((self.repository / "src/lib.rs").as_uri()),
+            "src/lib.rs",
+        )
+        with self.assertRaisesRegex(RustAnalyzerError, "outside the repository"):
+            provider._relative_uri("file://foreign.invalid/src/lib.rs")
+        with self.assertRaisesRegex(RustAnalyzerError, "unavailable"):
+            provider._relative_uri((self.repository / "src/missing.rs").as_uri())
 
     def test_lsp_reader_accumulates_fragmented_payload(self) -> None:
         class FragmentedStream(BytesIO):
