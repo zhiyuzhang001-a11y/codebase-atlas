@@ -39,3 +39,16 @@ macOS arm64、Windows x86_64 和 Windows arm64，不恢复 macOS Intel。aggrega
 - 获得单独的 Rust 产品启用授权。
 
 这些门完成前，Rust 公共入口保持关闭。
+
+## 2026-10-05 跨平台资格复核
+
+候选 commit `db9db9b2ce0ed31960e4f684b02fde4748c24012` 已通过 GitHub Actions：
+
+- Rust Syntax Scanner Bundles run `37216808777`：五平台独立可复现构建及 aggregate
+  source/checksum/license 校验全部通过；
+- CI run `37216810772`：12 个 OS/Python 组合及 package lifecycle 全部通过；
+- 本机完整回归：535 项，18 项环境条件跳过，无失败。
+
+这些证据关闭原候选的远端构建门，不等同于逐平台 installed-wheel 语义验收。
+0.27.0 可发布已验证的内部实现，但 Rust 公共入口继续关闭，scanner 不上传公开 Release。
+最终版本与合并 commit 的发布检查须另行通过；本记录不豁免该步骤。

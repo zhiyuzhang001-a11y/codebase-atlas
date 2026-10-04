@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from codebase_atlas import __version__
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.project_discovery import ProjectResolution
 from codebase_atlas.project_lifecycle import (
@@ -333,7 +334,7 @@ class SimpleCliTests(unittest.TestCase):
             patch("codebase_atlas.simple_cli.install_stable_release") as installer,
         ):
             self.assertEqual(_enable_runtime_installation(), installation)
-        fallback.assert_called_once_with("0.26.4")
+        fallback.assert_called_once_with(__version__)
         installer.assert_not_called()
 
     def test_verification_skips_hidden_sources_and_accepts_location_schema(self) -> None:

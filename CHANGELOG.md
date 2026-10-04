@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.27.0 — 2026-10-05
+
+- Add an internal Rust source-scope, native syntax, and position-based
+  rust-analyzer definition/reference pipeline bound to one content-verified
+  repository generation, with transactional refresh and recovery. Rust remains
+  excluded from public language choices; unsupported deep relationships fail
+  closed. No public Rust enablement is implied by this release.
+- Qualify the native Rust syntax scanner with two byte-identical independent
+  builds on Linux x86_64/ARM64, macOS ARM64, and Windows x86_64/ARM64. Scanner
+  bundles remain qualification artifacts, not public installation assets.
+- Correct Windows analyzer test launching, file-URI conversion, owned-process
+  tree cleanup, and scanner reproducibility/source-identity handling. Retain
+  strict body-size security checks with portable HTTP boundary tests.
+- Preserve the existing public Python/TypeScript routes and exact-source
+  managed Provider version `0.10.8-atlas.2+e088a41b`.
+
 ## 0.26.4 — 2026-09-09
 
 - Freeze macOS Intel (`macos-x86_64`) after the existing historical releases:
