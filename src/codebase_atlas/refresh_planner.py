@@ -13,15 +13,19 @@ import tempfile
 from typing import Any, Mapping
 
 from .index_state import repository_snapshot, state_path
+from .languages import all_language_ids, get_language
 from .providers.python_inventory import SourceInventoryError, supported_source_files
+from .rust_scope import (
+    RUST_BUILD_CONTEXT,
+    RustScopeError,
+    build_rust_source_scope,
+    validate_rust_build_context,
+    validate_rust_source_scope,
+)
 
 
 MANIFEST_SCHEMA_VERSION = 2
 MANIFEST_NAME = "generation-manifest-v2.json"
-LANGUAGE_EXTENSIONS = {
-    "python": frozenset({".py"}),
-    "typescript": frozenset({".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"}),
-}
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -155,7 +159,10 @@ def _content_sha256(path: Path) -> str:
 
 
 def _language_for(path: Path) -> str:
-    return "python" if path.suffix == ".py" else "typescript"
+    for language in all_language_ids():
+        if path.suffix in get_language(language).source_extensions:
+            return language
+    raise RefreshPlanError(f"unsupported source extension: {path.suffix}")
 
 
 def _safe_relative(value: Any) -> str:
@@ -207,8 +214,12 @@ def validate_generation_manifest(
         size = raw.get("size")
         if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
             raise RefreshPlanError("generation manifest content identity is invalid")
-        if language not in LANGUAGE_EXTENSIONS:
+        try:
+            get_language(language)
+        except ValueError as exc:
             raise RefreshPlanError("generation manifest file language is invalid")
+        if value.get("language") is not None and language != value["language"]:
+            raise RefreshPlanError("generation manifest contains cross-language source")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise RefreshPlanError("generation manifest file size is invalid")
         if raw.get("source_state") != "present":
@@ -221,7 +232,32 @@ def validate_generation_manifest(
             "size": size,
             "source_state": "present",
         })
-    return {
+    manifest_language = value.get("language")
+    if manifest_language is not None:
+        if not isinstance(manifest_language, str):
+            raise RefreshPlanError("generation manifest language is invalid")
+        try:
+            get_language(manifest_language)
+        except ValueError as exc:
+            raise RefreshPlanError("generation manifest language is invalid") from exc
+    source_scope = value.get("source_scope")
+    build_context = value.get("build_context")
+    if manifest_language == "rust":
+        try:
+            source_scope = validate_rust_source_scope(source_scope)
+        except RustScopeError as exc:
+            raise RefreshPlanError(str(exc)) from exc
+        if source_scope["source_paths"] != sorted(entry["path"] for entry in files):
+            raise RefreshPlanError("Rust source scope and generation files differ")
+        try:
+            build_context = validate_rust_build_context(build_context)
+        except RustScopeError as exc:
+            raise RefreshPlanError(str(exc)) from exc
+    elif source_scope is not None:
+        raise RefreshPlanError("source_scope is supported only for Rust generations")
+    elif build_context is not None:
+        raise RefreshPlanError("build_context is supported only for Rust generations")
+    result = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "repository": str(root),
         "project": project,
@@ -234,6 +270,13 @@ def validate_generation_manifest(
         "sidecar_identity": _identity(value.get("sidecar_identity"), "sidecar_identity"),
         "created_at": value["created_at"],
     }
+    if manifest_language is not None:
+        result["language"] = manifest_language
+    if source_scope is not None:
+        result["source_scope"] = source_scope
+    if build_context is not None:
+        result["build_context"] = build_context
+    return result
 
 
 def build_generation_manifest(
@@ -247,17 +290,24 @@ def build_generation_manifest(
     created_at: str,
 ) -> dict[str, Any]:
     """Build but never publish a content-addressed candidate manifest."""
-    if language not in LANGUAGE_EXTENSIONS:
-        raise RefreshPlanError(f"unsupported project language: {language}")
+    try:
+        language_spec = get_language(language)
+    except ValueError as exc:
+        raise RefreshPlanError(f"unsupported project language: {language}") from exc
     root = repository.resolve()
     before = repository_snapshot(root)
     if before.kind != "git" or not before.fingerprint:
         raise RefreshPlanError("repository snapshot is unavailable")
+    source_scope = None
     try:
-        sources = supported_source_files(
-            root, LANGUAGE_EXTENSIONS[language], reject_unsafe=True
-        )
-    except SourceInventoryError as exc:
+        if language == "rust":
+            source_scope = build_rust_source_scope(root)
+            sources = tuple(root / path for path in source_scope["source_paths"])
+        else:
+            sources = supported_source_files(
+                root, language_spec.source_extensions, reject_unsafe=True
+            )
+    except (SourceInventoryError, RustScopeError) as exc:
         raise RefreshPlanError(str(exc)) from exc
     files = []
     for path in sources:
@@ -281,10 +331,11 @@ def build_generation_manifest(
         or after.head != before.head
     ):
         raise RefreshPlanError("snapshot_changed_during_plan")
-    return validate_generation_manifest({
+    candidate = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "repository": str(root),
         "project": project,
+        "language": language,
         "generation_id": generation_id,
         "source_kind": after.kind,
         "source_fingerprint": after.fingerprint,
@@ -293,7 +344,11 @@ def build_generation_manifest(
         "provider_identity": dict(provider_identity),
         "sidecar_identity": dict(sidecar_identity),
         "created_at": created_at,
-    }, root, project)
+    }
+    if source_scope is not None:
+        candidate["source_scope"] = source_scope
+        candidate["build_context"] = dict(RUST_BUILD_CONTEXT)
+    return validate_generation_manifest(candidate, root, project)
 
 
 def load_generation_manifest(
@@ -350,13 +405,18 @@ def plan_refresh(
             "dirty_paths": [],
             "provider_inputs_changed": True,
         }
+    base_language = base.get("language")
+    if base_language is not None and base_language != language:
+        raise RefreshPlanError("generation manifest language identity mismatch")
+    if language == "rust" and base_language != "rust":
+        raise RefreshPlanError("Rust generation manifest language identity is missing")
     snapshot = repository_snapshot(root)
     if (
         snapshot.kind == "git"
         and snapshot.fingerprint == base["source_fingerprint"]
         and snapshot.head == base["source_head"]
     ):
-        return {
+        result = {
             "schema_version": 1,
             "status": "planned",
             "mode": "read_only",
@@ -376,6 +436,11 @@ def plan_refresh(
             "reasons": [],
             "full_fallback_reason": "",
         }
+        if language == "rust":
+            result["language"] = "rust"
+            result["source_scope"] = base["source_scope"]
+            result["build_context"] = base["build_context"]
+        return result
     current = build_generation_manifest(
         root,
         project,
@@ -411,7 +476,7 @@ def plan_refresh(
         + [{"path": path, "reason": "modified"} for path in modified]
         + [{"path": path, "reason": "deleted"} for path in deleted]
     )
-    return {
+    result = {
         "schema_version": 1,
         "status": "planned",
         "mode": "read_only",
@@ -436,3 +501,8 @@ def plan_refresh(
         "reasons": sorted(reasons, key=lambda item: (item["path"], item["reason"])),
         "full_fallback_reason": "",
     }
+    if language == "rust":
+        result["language"] = "rust"
+        result["source_scope"] = current["source_scope"]
+        result["build_context"] = current["build_context"]
+    return result

@@ -45,6 +45,29 @@ class FakeBackend:
 
 
 class ReloadingMcpTests(unittest.TestCase):
+    def test_internal_rust_config_never_starts_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            config_path = root / ".codebase-atlas.toml"
+            AtlasConfig(
+                root, "rust", root / "node", root / "cbm", root / "python",
+                root / "data", "project",
+            ).write(config_path)
+            resolution = ProjectResolution(
+                "configured", root, "project_config_and_index_ready", config_path
+            )
+            factory = unittest.mock.Mock()
+            server = ReloadingMcpServer(
+                root, resolver=lambda _root: resolution, backend_factory=factory
+            )
+            response = server.handle(call(1))
+            self.assertTrue(response["result"]["isError"])
+            self.assertEqual(
+                response["result"]["structuredContent"]["code"],
+                "language_not_product_enabled",
+            )
+            factory.assert_not_called()
+
     def test_live_subprocess_backend_is_replaced_at_request_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw).resolve()

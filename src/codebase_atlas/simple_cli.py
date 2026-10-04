@@ -36,6 +36,7 @@ from .lifecycle import (
     ProjectRefreshLease,
     default_project_operation_dir,
 )
+from .languages import public_language_choices
 from .maintenance import inspect_installation
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .operations import operational_index_status
@@ -2028,7 +2029,7 @@ def main(argv: list[str] | None = None) -> int:
     enable = commands.add_parser("enable", help="enable Atlas for one exact Git repository")
     enable.add_argument("--repo", type=Path, default=Path.cwd())
     enable.add_argument("--config", type=Path)
-    enable.add_argument("--language", choices=("python", "typescript"))
+    enable.add_argument("--language", choices=public_language_choices())
     enable.add_argument("--node", type=Path)
     enable.add_argument("--cbm-binary", type=Path)
     enable.add_argument("--serena-python", type=Path)

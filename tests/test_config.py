@@ -14,6 +14,25 @@ from codebase_atlas.index_state import record_index_state
 
 
 class ConfigTests(unittest.TestCase):
+    def test_language_registry_validates_config_and_keeps_rust_internal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repository = root / "repo"
+            repository.mkdir()
+            values = (
+                repository, "unknown", root / "node", root / "provider",
+                root / "serena", root / "data",
+            )
+            with self.assertRaisesRegex(ValueError, "unsupported project language"):
+                AtlasConfig(*values)
+            rust = AtlasConfig(
+                repository, "rust", root / "node", root / "provider",
+                root / "serena", root / "rust-data",
+            )
+            path = root / "rust.toml"
+            rust.write(path)
+            self.assertEqual(AtlasConfig.load(path), rust)
+
     def test_discovery_defaults_new_projects_to_shared_provider_layout(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -2,8 +2,14 @@
 
 - 计划日期：2026-09-22
 - 产品基线：Codebase Atlas 0.26.4
-- 状态：`PLAN_ONLY / NOT_AUTHORIZED_FOR_IMPLEMENTATION`
+- 状态：`SCIP_ONLY_STAGE0_FAILED / LAYERED_EVALUATION_AUTHORIZED`
 - 目标：在不削弱现有 Python、TypeScript/JavaScript 正确性、隔离、事务和资源边界的前提下，为 Rust 建立可验证、可分阶段发布的语言适配能力。
+
+> 2026-09-22 修订：本文件保留最初 SCIP-first 计划和失败纪律作为历史依据。
+> 第一次正式 Stage 0 证明 rust-analyzer 1.98.0 的 SCIP 输出不能满足本计划冻结的
+> implementation、lint 和 offline-completeness 门，结论为 `KEEP_EVALUATION_ONLY`。
+> 后续已获授权的评估由 `docs/RUST_LAYERED_SUPPORT_PROTOCOL.md` 管理；若两份文件冲突，
+> 新协议仅对新的分层评估生效，不重写或豁免旧失败。
 
 ## 1. 执行结论
 

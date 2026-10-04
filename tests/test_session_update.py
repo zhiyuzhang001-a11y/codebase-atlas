@@ -11,6 +11,22 @@ from codebase_atlas.session_update import _graceful_run, session_start_update
 
 
 class SessionUpdateTests(unittest.TestCase):
+    def test_internal_rust_config_does_not_inspect_or_spawn(self) -> None:
+        def runner(*_args, **_kwargs):
+            raise AssertionError("disabled Rust must not spawn an update")
+
+        with (
+            patch(
+                "codebase_atlas.session_update.AtlasConfig.load",
+                return_value=self.configured(language="rust"),
+            ),
+            patch("codebase_atlas.session_update.index_freshness") as freshness,
+        ):
+            result = session_start_update(Path("config.toml"), runner=runner)
+        self.assertEqual(result["status"], "language_not_product_enabled")
+        self.assertFalse(result["ok"])
+        freshness.assert_not_called()
+
     def test_timeout_requests_graceful_termination_before_kill(self) -> None:
         process = unittest.mock.Mock()
         process.communicate.side_effect = [

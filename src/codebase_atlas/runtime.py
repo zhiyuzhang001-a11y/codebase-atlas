@@ -11,6 +11,7 @@ import sys
 from typing import Callable, Any
 
 from .config import _asset
+from .languages import get_language
 
 
 Runner = Callable[..., Any]
@@ -77,13 +78,7 @@ def runtime_checks(
 ) -> list[dict[str, object]]:
     """Inspect required runtimes without installing software or changing config."""
     repo = repository.resolve()
-    node_path = _candidate(node, "ATLAS_NODE", "node")
-    cbm_path = _candidate(cbm_binary, "ATLAS_CBM_BINARY", "codebase-memory-mcp")
-    serena_path = serena_python or (
-        Path(os.environ["ATLAS_SERENA_PYTHON"]).absolute()
-        if os.environ.get("ATLAS_SERENA_PYTHON")
-        else None
-    )
+    language_spec = get_language(language)
     checks: list[dict[str, object]] = []
 
     host_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
@@ -98,6 +93,24 @@ def runtime_checks(
         detail="repository directory is accessible" if repo.is_dir() else "repository directory is missing",
         remediation=f"create or select an existing repository: codebase-atlas setup --repo {repo}",
     ))
+
+    if not language_spec.public_enabled:
+        checks.append(_check(
+            "language_feature",
+            False,
+            detail=f"{language} is registered internally but is not product-enabled",
+            remediation="complete the language qualification and product enablement gates",
+            required=True,
+        ))
+        return checks
+
+    node_path = _candidate(node, "ATLAS_NODE", "node")
+    cbm_path = _candidate(cbm_binary, "ATLAS_CBM_BINARY", "codebase-memory-mcp")
+    serena_path = serena_python or (
+        Path(os.environ["ATLAS_SERENA_PYTHON"]).absolute()
+        if os.environ.get("ATLAS_SERENA_PYTHON")
+        else None
+    )
 
     node_ok = False
     node_version = ""

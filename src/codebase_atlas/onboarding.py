@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from .config import AtlasConfig, default_data_dir, diagnose
 from .index_state import index_freshness, provider_database_health, record_index_state, repository_snapshot
+from .languages import default_language
 from .python_registration_store import (
     registration_index_health,
     stage_registration_index,
@@ -146,7 +147,7 @@ def build_plan(inputs: OnboardingInputs) -> tuple[dict[str, object], AtlasConfig
         node, cbm, serena = configured.node, configured.cbm_binary, configured.serena_python
         node_bin, tsconfig, data_dir = configured.node_bin_dir, configured.tsconfig, configured.data_dir
     else:
-        language = inputs.language or ("typescript" if inputs.tsconfig or (repo / "tsconfig.json").is_file() else "python")
+        language = inputs.language or default_language(repo, tsconfig=inputs.tsconfig)
         node, cbm, serena = inputs.node, inputs.cbm_binary, inputs.serena_python
         node_bin, tsconfig, data_dir = inputs.node_bin_dir, inputs.tsconfig, inputs.data_dir
     resolved_data_dir = data_dir or default_data_dir(repo)

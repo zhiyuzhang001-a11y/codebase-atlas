@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +12,7 @@ import threading
 from typing import Any
 from urllib.parse import urlsplit
 
+from .contracts import contract_dict
 from .operations import attach_operational_status, stale_policy_error
 from .service import AtlasService, QueryRequest
 
@@ -27,19 +27,24 @@ ASSETS = {
 
 
 def _payload(response, index_status: dict[str, Any], stale_policy: str) -> dict[str, Any]:
-    return attach_operational_status({
+    payload = {
         "schema_version": 1,
         "query_type": response.query_type,
-        "nodes": [asdict(node) for node in response.nodes],
-        "edges": [asdict(edge) for edge in response.edges],
+        "nodes": [contract_dict(node) for node in response.nodes],
+        "edges": [contract_dict(edge) for edge in response.edges],
         "depths": response.depths,
         "paths": {
-            node_id: [asdict(edge) for edge in path]
+            node_id: [contract_dict(edge) for edge in path]
             for node_id, path in response.paths.items()
         },
         "truncated": response.truncated,
         "truncation": response.truncation,
-    }, index_status, stale_policy)
+    }
+    if response.status is not None:
+        payload["status"] = response.status
+    if response.completeness is not None:
+        payload["completeness"] = response.completeness
+    return attach_operational_status(payload, index_status, stale_policy)
 
 
 class LocalUiServer:

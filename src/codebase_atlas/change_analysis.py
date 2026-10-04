@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from time import monotonic
 from typing import Any
 
 from .operations import attach_operational_status
+from .contracts import contract_dict
 from .service import AtlasService, QueryRequest, QueryResponse
 
 
@@ -28,17 +28,22 @@ SUBQUERIES = (
 
 
 def _response(response: QueryResponse) -> dict[str, Any]:
-    return {
-        "nodes": [asdict(node) for node in response.nodes],
-        "edges": [asdict(edge) for edge in response.edges],
+    payload = {
+        "nodes": [contract_dict(node) for node in response.nodes],
+        "edges": [contract_dict(edge) for edge in response.edges],
         "depths": response.depths,
         "paths": {
-            node_id: [asdict(edge) for edge in path]
+            node_id: [contract_dict(edge) for edge in path]
             for node_id, path in response.paths.items()
         },
         "truncated": response.truncated,
         "truncation": response.truncation,
     }
+    if response.status is not None:
+        payload["status"] = response.status
+    if response.completeness is not None:
+        payload["completeness"] = response.completeness
+    return payload
 
 
 def _completion(response: QueryResponse) -> dict[str, Any]:
@@ -248,7 +253,7 @@ def analyze_change(
     elif len(definition.nodes) != 1:
         status = "needs_disambiguation"
     else:
-        target = asdict(definition.nodes[0])
+        target = contract_dict(definition.nodes[0])
         target["resolution"] = "exact"
         exact_location = target.get("location") or {}
         exact_path = str(exact_location.get("path", "")) or target_path

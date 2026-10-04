@@ -75,8 +75,34 @@ actively supported, separately licensed managed Provider bundles/checksums. The
 Provider bundles are not embedded in the wheel and do not replace an unrelated
 global installation.
 
+## Rust scanner qualification (product-disabled)
+
+Rust remains outside the public language choices. Its native T1 scanner is not
+embedded in the universal wheel. Candidate Rust qualification uses the separate
+`Rust Syntax Scanner Bundles` workflow, which builds two byte-identical binaries
+per runner for Linux x86_64/arm64, macOS arm64, and Windows x86_64/arm64. Each
+archive carries the Apache-2.0 product license, third-party notices, a
+content-bound source manifest, and an adjacent SHA-256 file.
+
+Before any future Rust enablement, download the aggregate workflow artifact and
+run:
+
+```bash
+python scripts/verify_rust_syntax_bundles.py rust-syntax-assets
+python scripts/rust_candidate_acceptance.py \
+  --wheel dist/codebase_atlas-*.whl \
+  --scanner /verified/path/to/atlas-rust-syntax \
+  --analyzer /verified/path/to/rust-analyzer
+```
+
+These assets are a qualification gate only while Rust is product-disabled; they
+must not be uploaded as public release assets or treated as product support
+without a separate enablement decision.
+
 ## License boundary
 
 The Apache License 2.0 product license, TypeScript runtime license, and third-party
-notices are distributed with the wheel. Serena and Codebase Memory remain
-separately installed and separately licensed.
+notices are distributed with the wheel. A Rust scanner candidate carries the
+product license and scanner-specific third-party notices in its own archive.
+Serena, Codebase Memory, and rust-analyzer remain separately installed and
+separately licensed.

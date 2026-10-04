@@ -1,0 +1,75 @@
+name: Rust Syntax Scanner Bundles
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/rust-syntax-scanner.yml
+      - native/rust-syntax-scanner/**
+      - scripts/build_rust_syntax_scanner.py
+      - scripts/verify_rust_syntax_bundles.py
+      - tests/test_rust_syntax_bundles.py
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-14
+            target: macos-arm64
+          - runner: windows-latest
+            target: windows-x86_64
+          - runner: windows-11-arm
+            target: windows-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal && rustup default 1.98.0
+      - name: Fetch locked scanner dependencies
+        shell: bash
+        run: cargo fetch --locked --manifest-path native/rust-syntax-scanner/Cargo.toml
+      - name: Build reproducible native bundle
+        shell: bash
+        run: python scripts/build_rust_syntax_scanner.py --target ${{ matrix.target }} --output dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-syntax-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: rust-syntax-*
+          path: dist
+          merge-multiple: true
+      - name: Verify complete scanner release set
+        run: python scripts/verify_rust_syntax_bundles.py dist
+      - name: Write aggregate checksums
+        run: cd dist && sha256sum codebase-atlas-rust-syntax-*.* > RUST_SYNTAX_SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-syntax-release-assets
+          path: dist/*
+          if-no-files-found: error
