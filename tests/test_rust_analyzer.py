@@ -5,11 +5,12 @@ from io import BytesIO
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from codebase_atlas.providers.rust_analyzer import (
     PROVIDER_NAME,
@@ -136,10 +137,11 @@ class RustAnalyzerProviderTests(unittest.TestCase):
 
     def provider(self) -> RustAnalyzerProvider:
         return RustAnalyzerProvider(
-            self.analyzer,
+            Path(sys.executable),
             self.repository,
             "rust-project",
             self.generation,
+            arguments=(str(self.analyzer),),
             readiness_seconds=1,
         )
 
@@ -237,6 +239,22 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(RustAnalyzerError, "version mismatch"):
             provider.start(timeout_seconds=1)
         self.assertFalse(provider.running)
+
+    def test_windows_timeout_cleanup_targets_owned_process_tree(self) -> None:
+        provider = self.provider()
+        process = Mock(pid=12345, stdin=None, stdout=None, stderr=None)
+        process.poll.return_value = None
+        provider._process = process
+        with patch("codebase_atlas.providers.rust_analyzer.os.name", "nt"), patch(
+            "codebase_atlas.providers.rust_analyzer.subprocess.run"
+        ) as kill_tree:
+            provider._terminate()
+        kill_tree.assert_called_once_with(
+            ["taskkill", "/PID", "12345", "/T", "/F"],
+            check=False, capture_output=True, timeout=3,
+        )
+        process.wait.assert_called_once_with(timeout=3)
+        self.assertIsNone(provider._process)
 
 
 if __name__ == "__main__":

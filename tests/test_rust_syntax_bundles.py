@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,8 @@ from scripts.build_rust_syntax_scanner import (
     SCANNER,
     SOURCE_FILES,
     TARGETS,
+    build_once,
+    reproducibility_flags,
     source_identity,
     write_tar,
     write_zip,
@@ -27,6 +30,36 @@ def sha256(path: Path) -> str:
 
 
 class RustSyntaxBundleTests(unittest.TestCase):
+    def test_windows_reproducibility_controls(self) -> None:
+        flags = reproducibility_flags(Path("source with spaces"), Path("first build"), windows=True)
+        self.assertIn("-Clink-arg=/Brepro", flags)
+        self.assertIn("-Clink-arg=/DEBUG:NONE", flags)
+        self.assertIn("-Clink-arg=/INCREMENTAL:NO", flags)
+        self.assertIn("--remap-path-prefix=first build=/atlas-build", flags)
+        unix_flags = reproducibility_flags(Path("source"), Path("second build"), windows=False)
+        self.assertFalse(any("link-arg" in flag for flag in unix_flags))
+
+    def test_build_passes_encoded_flags_without_shell_splitting(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="atlas build ") as raw:
+            target = Path(raw)
+            binary = target / "release" / ("atlas-rust-syntax.exe" if os.name == "nt" else "atlas-rust-syntax")
+            binary.parent.mkdir()
+            binary.touch()
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                "scripts.build_rust_syntax_scanner.run"
+            ) as runner:
+                self.assertEqual(build_once(SCANNER, target, "cargo", 123), binary)
+            env = runner.call_args.kwargs["env"]
+            self.assertEqual(env["SOURCE_DATE_EPOCH"], "123")
+            self.assertEqual(env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"),
+                             reproducibility_flags(SCANNER, target, windows=os.name == "nt"))
+
+    def test_build_refuses_ambient_compiler_flags(self) -> None:
+        for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: "-g"}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "ambient"):
+                    build_once(SCANNER, Path("unused"), "cargo", 123)
+
     def make_release_set(self, directory: Path) -> None:
         epoch = 1_788_068_456
         source = source_identity(SCANNER)

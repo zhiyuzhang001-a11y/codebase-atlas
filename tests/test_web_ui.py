@@ -96,9 +96,24 @@ class WebUiTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 400)
         response, _ = self.request(
-            "POST", "/api/query", headers=common, body=b"x" * (64 * 1024 + 1)
+            "POST", "/api/query",
+            headers={**common, "Content-Length": str(64 * 1024 + 1)}, body=b"",
         )
         self.assertEqual(response.status, 413)
+        self.assertEqual(self.service.requests, [])
+
+    def test_accepts_request_at_body_size_limit(self) -> None:
+        body = json.dumps({
+            "query_type": "callers", "symbol": "Sample.run", "parameters": {},
+        }).encode()
+        body += b" " * (64 * 1024 - len(body))
+        response, _ = self.request(
+            "POST", "/api/query", body=body,
+            headers={"Content-Type": "application/json",
+                     "X-Atlas-Token": self.server.token, "Origin": self.server.origin},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(self.service.requests), 1)
 
     def test_status_lists_all_visible_query_capabilities(self) -> None:
         response, body = self.request(

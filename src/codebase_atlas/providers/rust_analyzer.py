@@ -104,6 +104,7 @@ class RustAnalyzerProvider:
         project: str,
         generation: dict[str, Any],
         *,
+        arguments: tuple[str, ...] = (),
         version_runner: VersionRunner = subprocess.run,
         readiness_seconds: float = DEFAULT_READINESS_SECONDS,
     ) -> None:
@@ -115,6 +116,7 @@ class RustAnalyzerProvider:
         self.project = project
         self.generation = dict(generation)
         self.version_runner = version_runner
+        self.arguments = tuple(arguments)
         if not 0 < readiness_seconds <= DEFAULT_READINESS_SECONDS:
             raise ValueError("Rust analyzer readiness timeout must be between 0 and 60 seconds")
         self.readiness_seconds = readiness_seconds
@@ -281,7 +283,7 @@ class RustAnalyzerProvider:
             if not stat.S_ISREG(metadata.st_mode):
                 raise RustAnalyzerError("rust-analyzer binary is unsafe")
             version = self.version_runner(
-                [str(self.analyzer), "--version"],
+                [str(self.analyzer), *self.arguments, "--version"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -293,7 +295,7 @@ class RustAnalyzerProvider:
             ):
                 raise RustAnalyzerError("rust-analyzer version mismatch")
             process = subprocess.Popen(
-                [str(self.analyzer)],
+                [str(self.analyzer), *self.arguments],
                 cwd=self.repository,
                 env=self._environment(),
                 stdin=subprocess.PIPE,
@@ -592,6 +594,15 @@ class RustAnalyzerProvider:
                 except ProcessLookupError:
                     pass
             else:
+                # Terminating only the parent leaves analyzer-owned workers alive.
+                # Kill the tree while its parent PID still identifies that tree.
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        check=False, capture_output=True, timeout=3,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
                 process.terminate()
             try:
                 process.wait(timeout=3)

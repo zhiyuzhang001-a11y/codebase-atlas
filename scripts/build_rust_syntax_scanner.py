@@ -100,9 +100,26 @@ def write_zip(bundle: Path, destination: Path, epoch: int) -> None:
             archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 
+def reproducibility_flags(source: Path, target_dir: Path, *, windows: bool) -> list[str]:
+    flags = [
+        f"--remap-path-prefix={source}=/atlas-rust-syntax",
+        f"--remap-path-prefix={target_dir}=/atlas-build",
+    ]
+    if windows:
+        # PE timestamps and PDB paths otherwise vary across independent builds.
+        flags.extend(["-Clink-arg=/Brepro", "-Clink-arg=/INCREMENTAL:NO",
+                      "-Clink-arg=/DEBUG:NONE"])
+    return flags
+
+
 def build_once(source: Path, target_dir: Path, cargo: str, epoch: int) -> Path:
     environment = os.environ.copy()
+    if environment.get("RUSTFLAGS") or environment.get("CARGO_ENCODED_RUSTFLAGS"):
+        raise RuntimeError("release build refuses ambient Rust compiler flags")
     environment.update({"CARGO_TARGET_DIR": str(target_dir), "SOURCE_DATE_EPOCH": str(epoch)})
+    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
+        reproducibility_flags(source, target_dir, windows=os.name == "nt")
+    )
     run([cargo, "build", "--locked", "--offline", "--release"], cwd=source, env=environment)
     binary = target_dir / "release" / ("atlas-rust-syntax.exe" if os.name == "nt" else "atlas-rust-syntax")
     if not binary.is_file():
@@ -153,6 +170,9 @@ def main() -> int:
                 "source_date_epoch": epoch,
                 "command": "cargo build --locked --offline --release",
                 "independent_builds": 2,
+                "rustflags": reproducibility_flags(
+                    Path("<source>"), Path("<target-dir>"), windows=expected_system == "Windows"
+                ),
                 "reproducible": True,
                 "platform_arch": args.target,
                 "scanner_version": version,
