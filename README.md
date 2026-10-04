@@ -2,11 +2,11 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Current stable release: **0.26.4**. This release makes cross-project Provider
-admission recoverable, reuses one verified Provider path across Atlas frontend
-versions, keeps exact Atlas-managed routing changes from invalidating an
-otherwise current source index during upgrade, and freezes macOS Intel while
-preserving existing historical assets and installations.
+Version: **0.27.0**. This release adds an internal, generation-bound Rust
+T0/T1/T2 implementation and qualifies its native scanner on five platforms.
+Rust remains experimental and excluded from public language choices; the public
+product continues to support Python and TypeScript/JavaScript. Existing Provider
+isolation, recovery, and the macOS Intel freeze remain unchanged.
 
 Codebase Memory supplies broad structural graph facts, Serena supplies exact
 definitions and references, and this repository owns normalized contracts,

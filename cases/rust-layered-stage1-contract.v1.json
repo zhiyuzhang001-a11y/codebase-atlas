@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "contract": "rust-layered-stage1",
+  "status": "CONTRACT_FROZEN_S4_SESSION_CORE_DEV_VALIDATED_PRODUCT_DISABLED",
+  "language": "rust",
+  "prerequisite": "LAYERED_STAGE0B_QUALIFIED",
+  "product_enablement": false,
+  "capabilities": {
+    "source_scope": {
+      "tier": "T0",
+      "admission": "required",
+      "result_status": "complete_exact"
+    },
+    "syntax_map": {
+      "tier": "T1",
+      "admission": "required",
+      "result_status": "syntactic_candidates"
+    },
+    "definition": {
+      "tier": "T2",
+      "admission": "required",
+      "result_status": "complete_exact_or_explicit_partial"
+    },
+    "references": {
+      "tier": "T2",
+      "admission": "required",
+      "result_status": "complete_exact_or_explicit_partial"
+    },
+    "implementations": {
+      "tier": "T3",
+      "admission": "unsupported"
+    },
+    "callers": {
+      "tier": "T3",
+      "admission": "unsupported"
+    },
+    "callees": {
+      "tier": "T3",
+      "admission": "unsupported"
+    },
+    "related_tests": {
+      "tier": "T3",
+      "admission": "unsupported"
+    },
+    "impact": {
+      "tier": "T3",
+      "admission": "unsupported"
+    },
+    "scip": {
+      "tier": "T4",
+      "admission": "evaluation_only"
+    }
+  },
+  "result_statuses": [
+    "complete_exact",
+    "exact_hits_partial_scope",
+    "syntactic_candidates",
+    "unsupported",
+    "unavailable",
+    "stale"
+  ],
+  "provenance_required": [
+    "repository_identity",
+    "generation_id",
+    "fact_tier",
+    "provider",
+    "provider_version",
+    "source_range",
+    "completeness"
+  ],
+  "identity_key": [
+    "repository",
+    "package_or_crate",
+    "path",
+    "range",
+    "owner",
+    "provider_identity"
+  ],
+  "query_contract": {
+    "definition": {
+      "exact_requires": ["source_path", "source_line", "source_column"],
+      "without_position": "syntactic_candidates",
+      "ambiguous_position": "exact_hits_partial_scope"
+    },
+    "references": {
+      "exact_requires": ["symbol", "target_path", "target_range"],
+      "ambiguous_target": "exact_hits_partial_scope"
+    },
+    "empty_result_rule": "An empty result means no match only when required scope is complete; otherwise return partial, unsupported, unavailable, or stale."
+  },
+  "source_scope_contract": {
+    "inventory": "git_aware_cargo_module_scope",
+    "extension": ".rs",
+    "manifest_inputs": ["Cargo.toml", "Cargo.lock"],
+    "non_compilable_rs_policy": "explicit_exclusion_with_reason_or_partial_scope",
+    "forbidden_shortcut": "extension_only_completeness"
+  },
+  "providers": {
+    "t1": {
+      "name": "rust-native-syntax",
+      "tree_sitter": "0.27.0",
+      "tree_sitter_rust": "0.24.2",
+      "execution": "source_parse_only",
+      "repository_local_cache": false
+    },
+    "t2": {
+      "name": "rust-analyzer-lsp",
+      "rust_analyzer": "1.98.0",
+      "cargo_no_deps": true,
+      "cargo_offline": true,
+      "build_scripts": false,
+      "proc_macros": false,
+      "readiness_retry": {
+        "errors": ["ContentModified", "preload_file_not_found"],
+        "bounded_seconds": 60
+      }
+    }
+  },
+  "safety": {
+    "network_during_query": false,
+    "run_build_scripts": false,
+    "run_proc_macros": false,
+    "run_application": false,
+    "run_tests": false,
+    "dependency_prepare_separate": true,
+    "owned_process_tree": true,
+    "timeout_cleanup_required": true,
+    "t1_peak_rss_kib_max": 524288,
+    "t2_peak_rss_kib_max": 1572864
+  },
+  "compatibility": {
+    "python_behavior_change": false,
+    "typescript_behavior_change": false,
+    "existing_query_parameters_remain_valid": true,
+    "new_position_parameters_optional_for_existing_languages": true,
+    "unknown_language_fails_closed": true
+  },
+  "implementation_slices": [
+    {
+      "id": "S1-language-registry-and-contract-types",
+      "files": [
+        "src/codebase_atlas/contracts.py",
+        "src/codebase_atlas/config.py",
+        "src/codebase_atlas/cli.py",
+        "src/codebase_atlas/onboarding.py",
+        "src/codebase_atlas/runtime.py"
+      ]
+    },
+    {
+      "id": "S2-rust-source-scope-and-generation",
+      "files": [
+        "src/codebase_atlas/refresh_planner.py",
+        "src/codebase_atlas/simple_cli.py",
+        "src/codebase_atlas/refresh_coordinator.py",
+        "src/codebase_atlas/index_state.py"
+      ]
+    },
+    {
+      "id": "S3-rust-t1-provider",
+      "files": [
+        "src/codebase_atlas/providers/__init__.py",
+        "src/codebase_atlas/providers/rust_syntax.py",
+        "src/codebase_atlas/service.py"
+      ]
+    },
+    {
+      "id": "S4-rust-t2-session-and-query-routing",
+      "files": [
+        "src/codebase_atlas/providers/rust_analyzer.py",
+        "src/codebase_atlas/service.py",
+        "src/codebase_atlas/mcp.py",
+        "src/codebase_atlas/cli.py"
+      ]
+    },
+    {
+      "id": "S5-lifecycle-packaging-and-acceptance",
+      "files": [
+        "src/codebase_atlas/release_installation.py",
+        "src/codebase_atlas/maintenance.py",
+        "tests"
+      ]
+    }
+  ],
+  "required_test_domains": [
+    "language_registry",
+    "config_round_trip_and_unknown_language",
+    "git_aware_cargo_source_scope",
+    "non_compilable_rs_exclusion",
+    "t1_truth_and_identity_isolation",
+    "t1_determinism_and_resource_limit",
+    "t2_definition_position_contract",
+    "t2_reference_identity_contract",
+    "t2_readiness_retry_and_timeout_cleanup",
+    "build_script_and_proc_macro_non_execution",
+    "response_provenance_and_completeness",
+    "unsupported_t3_t4_fail_closed",
+    "python_typescript_regression",
+    "rollback_and_generation_isolation"
+  ],
+  "rollback": {
+    "unit": "rust_capability_registration_and_rust_generation",
+    "preserve": [
+      "python_generation",
+      "typescript_generation",
+      "previous_valid_rust_generation",
+      "project_configuration"
+    ],
+    "trigger": [
+      "provider_identity_mismatch",
+      "source_snapshot_changed",
+      "resource_limit_exceeded",
+      "forbidden_process_observed",
+      "provider_timeout_or_crash",
+      "generation_validation_failure"
+    ]
+  },
+  "release_gates": [
+    "stage1_contract_tests_pass",
+    "stage2_provider_implementation_passes_development_corpus",
+    "sealed_holdout_passes_without_threshold_changes",
+    "cross_platform_installation_passes",
+    "new_task_mcp_acceptance_passes",
+    "explicit_product_enablement_authorization"
+  ]
+}

@@ -14,6 +14,7 @@ from typing import Any, Callable, Protocol
 
 from . import __version__
 from .config import AtlasConfig
+from .languages import get_language
 from .mcp import McpServer
 from .project_discovery import ProjectResolution, resolve_project
 from .project_lifecycle import operational_lifecycle_status
@@ -221,6 +222,14 @@ class ReloadingMcpServer:
             if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
                 raise ValueError("bootstrap config must remain a regular non-symlink file")
             config = AtlasConfig.load(resolution.config)
+            if not get_language(config.language).public_enabled:
+                status = resolution.operational_status() | {
+                    "status": "language_not_product_enabled",
+                    "ok": False,
+                    "reason": "language_not_product_enabled",
+                    "language": config.language,
+                }
+                return resolution, None, status, None
             after = os.lstat(resolution.config)
             if not stat.S_ISREG(after.st_mode) or stat.S_ISLNK(after.st_mode):
                 raise ValueError("bootstrap config changed to an unsafe file")

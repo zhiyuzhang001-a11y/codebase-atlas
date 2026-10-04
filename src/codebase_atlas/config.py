@@ -17,6 +17,7 @@ from .provider_layout import (
     provider_project_identity,
     shared_provider_root,
 )
+from .languages import default_language, get_language
 
 
 CONFIG_NAME = ".codebase-atlas.toml"
@@ -65,6 +66,7 @@ class AtlasConfig:
     legacy_project: str = ""
 
     def __post_init__(self) -> None:
+        get_language(self.language)
         for name in ("repository", "data_dir"):
             object.__setattr__(self, name, getattr(self, name).resolve())
         # Preserve virtualenv interpreter symlinks; resolving them bypasses
@@ -131,9 +133,8 @@ class AtlasConfig:
         data_dir: Path | None = None,
     ) -> "AtlasConfig":
         repo = repository.resolve()
-        selected_language = language or (
-            "typescript" if tsconfig is not None or (repo / "tsconfig.json").is_file() else "python"
-        )
+        selected_language = language or default_language(repo, tsconfig=tsconfig)
+        get_language(selected_language)
         discovered_node = node or _which("node", "ATLAS_NODE")
         discovered_cbm = cbm_binary or _which("codebase-memory-mcp", "ATLAS_CBM_BINARY")
         discovered_serena = serena_python or (

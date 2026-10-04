@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import asdict
 import json
 from pathlib import Path
 import shlex
@@ -27,6 +26,7 @@ from .config import (
     _asset,
     diagnose,
 )
+from .contracts import contract_dict
 from .index_state import (
     index_freshness,
     provider_database_health,
@@ -34,6 +34,7 @@ from .index_state import (
     repository_snapshot,
 )
 from .lifecycle import CodebaseMemoryDaemon, SharedCodebaseMemorySession
+from .languages import default_language, get_language, public_language_choices
 from .provider_process import run_provider_command
 from .maintenance import apply_cleanup, cleanup_plan, inspect_installation, repair_plan
 from .mcp import McpServer, run_stdio
@@ -83,6 +84,9 @@ from .version_check import VersionNotifier
 from .web_ui import LocalUiServer
 
 
+PUBLIC_LANGUAGE_CHOICES = public_language_choices()
+
+
 @contextmanager
 def _graceful_termination():
     """Turn SIGTERM into normal unwinding so Provider ownership is released."""
@@ -113,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     initialize = commands.add_parser("init", help="create a project-local Atlas configuration")
     initialize.add_argument("--repo", type=Path, default=Path.cwd())
     initialize.add_argument("--config", type=Path)
-    initialize.add_argument("--language", choices=("python", "typescript"))
+    initialize.add_argument("--language", choices=PUBLIC_LANGUAGE_CHOICES)
     initialize.add_argument("--node", type=Path)
     initialize.add_argument("--cbm-binary", type=Path)
     initialize.add_argument("--serena-python", type=Path)
@@ -125,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     setup.add_argument("--repo", type=Path, default=Path.cwd())
     setup.add_argument("--config", type=Path)
-    setup.add_argument("--language", choices=("python", "typescript"))
+    setup.add_argument("--language", choices=PUBLIC_LANGUAGE_CHOICES)
     setup.add_argument("--node", type=Path)
     setup.add_argument("--cbm-binary", type=Path)
     setup.add_argument("--serena-python", type=Path)
@@ -134,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     onboard = commands.add_parser("onboard", help="plan or explicitly apply a guided local onboarding flow")
     onboard.add_argument("--repo", type=Path, default=Path.cwd())
     onboard.add_argument("--config", type=Path)
-    onboard.add_argument("--language", choices=("python", "typescript"))
+    onboard.add_argument("--language", choices=PUBLIC_LANGUAGE_CHOICES)
     onboard.add_argument("--node", type=Path)
     onboard.add_argument("--cbm-binary", type=Path)
     onboard.add_argument("--serena-python", type=Path)
@@ -256,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     mcp.add_argument("--serena-home", type=Path)
     mcp.add_argument("--metadata-root", type=Path)
-    mcp.add_argument("--language", choices=("python", "typescript"))
+    mcp.add_argument("--language", choices=PUBLIC_LANGUAGE_CHOICES)
     mcp.add_argument("--node-bin-dir", type=Path)
     mcp.add_argument("--tsconfig", type=Path)
     mcp.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
@@ -287,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     ui.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     ui.add_argument("--serena-home", type=Path)
     ui.add_argument("--metadata-root", type=Path)
-    ui.add_argument("--language", choices=("python", "typescript"))
+    ui.add_argument("--language", choices=PUBLIC_LANGUAGE_CHOICES)
     ui.add_argument("--node-bin-dir", type=Path)
     ui.add_argument("--tsconfig", type=Path)
     ui.add_argument("--stale-policy", choices=STALE_POLICIES, default="warn")
@@ -307,11 +311,18 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--serena-runner", type=Path, default=_asset("serena_runner.py"))
     query.add_argument("--serena-home", type=Path)
     query.add_argument("--metadata-root", type=Path)
-    query.add_argument("--language", choices=("python", "typescript"))
+    query.add_argument("--language", choices=PUBLIC_LANGUAGE_CHOICES)
     query.add_argument("--node-bin-dir", type=Path)
     query.add_argument("--tsconfig", type=Path)
     query.add_argument("--target-path", default="")
     query.add_argument("--target-owner", default="")
+    query.add_argument("--source-path")
+    query.add_argument("--source-line", type=int)
+    query.add_argument("--source-column", type=int)
+    query.add_argument("--target-start-line", type=int)
+    query.add_argument("--target-end-line", type=int)
+    query.add_argument("--target-start-column", type=int)
+    query.add_argument("--target-end-column", type=int)
     query.add_argument("--relation", choices=("registers",), default="")
     query.add_argument("--direction", choices=("upstream", "downstream"), default="upstream")
     query.add_argument("--depth", type=int, default=1)
@@ -326,7 +337,12 @@ def main(argv: list[str] | None = None) -> int:
     analyze.add_argument("--intent", choices=CHANGE_INTENTS, default="change_behavior")
     analyze.add_argument("--response-mode", choices=RESPONSE_MODES, default="full")
     for action in query._actions:
-        if action.dest in {"help", "query_type", "symbol", "relation"}:
+        if action.dest in {
+            "help", "query_type", "symbol", "relation",
+            "source_path", "source_line", "source_column",
+            "target_start_line", "target_end_line",
+            "target_start_column", "target_end_column",
+        }:
             continue
         kwargs = {
             "dest": action.dest,
@@ -348,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
     for action in query._actions:
         if action.dest in {
             "help", "query_type", "symbol", "target_path", "target_owner", "relation", "direction", "depth",
+            "source_path", "source_line", "source_column",
+            "target_start_line", "target_end_line",
+            "target_start_column", "target_end_column",
             "max_nodes", "max_edges", "timeout_ms",
         }:
             continue
@@ -420,10 +439,8 @@ def main(argv: list[str] | None = None) -> int:
             tsconfig = configured.tsconfig
         else:
             repository = args.repo
-            language = args.language or (
-                "typescript"
-                if args.tsconfig is not None or (repository / "tsconfig.json").is_file()
-                else "python"
+            language = args.language or default_language(
+                repository, tsconfig=args.tsconfig
             )
             node = args.node
             cbm_binary = args.cbm_binary
@@ -480,6 +497,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report["ok"] else 2
     if args.command == "plan-refresh":
         config = AtlasConfig.load(args.config)
+        if not get_language(config.language).public_enabled:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "blocked",
+                "code": "language_not_product_enabled",
+                "language": config.language,
+            }, ensure_ascii=False, indent=2))
+            return 2
         try:
             result = plan_refresh(
                 config.data_dir,
@@ -501,6 +526,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "migrate-provider":
         config = AtlasConfig.load(args.config)
+        if not get_language(config.language).public_enabled:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "blocked",
+                "code": "language_not_product_enabled",
+                "language": config.language,
+            }, ensure_ascii=False, indent=2))
+            return 2
         plan = plan_provider_migration(config)
         apply_command = (
             "codebase-atlas migrate-provider --config "
@@ -659,6 +692,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "repair":
         config = AtlasConfig.load(args.config)
+        if not get_language(config.language).public_enabled:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "blocked",
+                "code": "language_not_product_enabled",
+                "language": config.language,
+            }, ensure_ascii=False, indent=2))
+            return 2
         before = inspect_installation(config)
         plan = repair_plan(before)
         if not args.apply or not plan["applicable"]:
@@ -841,6 +882,14 @@ def main(argv: list[str] | None = None) -> int:
                 "checks": checks,
             }, indent=2))
             return 0 if ok else 2
+        if not get_language(config.language).public_enabled:
+            print(json.dumps({
+                "status": "blocked",
+                "code": "language_not_product_enabled",
+                "language": config.language,
+                "message": f"{config.language} is registered internally but is not product-enabled",
+            }, ensure_ascii=False, indent=2))
+            return 2
         config_identity, config_bytes = _config_publication_snapshot(args.config)
         if args.command == "update" and not args.force_provider:
             freshness = index_freshness(config.data_dir, config.repository, config.project)
@@ -1061,7 +1110,7 @@ def main(argv: list[str] | None = None) -> int:
                     "schema_version": 1,
                     "provider": provider.name,
                     "results": [
-                        {"node": asdict(node), "edge": asdict(edge)}
+                        {"node": contract_dict(node), "edge": contract_dict(edge)}
                         for node, edge in results
                     ],
                 },
@@ -1099,9 +1148,9 @@ def main(argv: list[str] | None = None) -> int:
                     "provider": provider.name,
                     "results": [
                         {
-                            "node": asdict(hit.node),
+                            "node": contract_dict(hit.node),
                             "depth": hit.depth,
-                            "path": [asdict(edge) for edge in hit.path],
+                            "path": [contract_dict(edge) for edge in hit.path],
                         }
                         for hit in hits
                     ],
@@ -1129,6 +1178,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.auto_update_timeout <= 0 or args.auto_update_timeout > 300:
                 raise SystemExit("--auto-update-timeout must be between 0 and 300 seconds")
         _apply_project_config(args)
+        if not get_language(args.language).public_enabled:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "unsupported",
+                "code": "language_not_product_enabled",
+                "language": args.language,
+                "message": f"{args.language} is registered internally but is not product-enabled",
+            }, ensure_ascii=False, indent=2))
+            return 2
         if args.command in {"query", "analyze-change"}:
             scope_reason = target_language_scope_reason(
                 args.language, str(args.target_path)
@@ -1286,6 +1344,31 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
             elif args.command == "query":
+                source_position = (
+                    {
+                        "source_path": args.source_path,
+                        "source_line": args.source_line,
+                        "source_column": args.source_column,
+                    }
+                    if any(value is not None for value in (
+                        args.source_path, args.source_line, args.source_column
+                    ))
+                    else {}
+                )
+                target_range_values = {
+                    "start_line": args.target_start_line,
+                    "end_line": args.target_end_line,
+                    "start_column": args.target_start_column,
+                    "end_column": args.target_end_column,
+                }
+                target_range = (
+                    {"target_range": {
+                        key: value for key, value in target_range_values.items()
+                        if value is not None
+                    }}
+                    if any(value is not None for value in target_range_values.values())
+                    else {}
+                )
                 response = service.query(
                     QueryRequest(
                         args.query_type,
@@ -1299,6 +1382,8 @@ def main(argv: list[str] | None = None) -> int:
                             "max_nodes": args.max_nodes,
                             "max_edges": args.max_edges,
                             "timeout_ms": args.timeout_ms,
+                            **source_position,
+                            **target_range,
                         },
                     )
                 )
@@ -1358,19 +1443,24 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _response_payload(response, index_status=None, stale_policy: str = "ignore") -> dict:
-    return attach_operational_status({
+    payload = {
         "schema_version": 1,
         "query_type": response.query_type,
-        "nodes": [asdict(node) for node in response.nodes],
-        "edges": [asdict(edge) for edge in response.edges],
+        "nodes": [contract_dict(node) for node in response.nodes],
+        "edges": [contract_dict(edge) for edge in response.edges],
         "depths": response.depths,
         "paths": {
-            node_id: [asdict(edge) for edge in path]
+            node_id: [contract_dict(edge) for edge in path]
             for node_id, path in response.paths.items()
         },
         "truncated": response.truncated,
         "truncation": response.truncation,
-    }, index_status, stale_policy)
+    }
+    if response.status is not None:
+        payload["status"] = response.status
+    if response.completeness is not None:
+        payload["completeness"] = response.completeness
+    return attach_operational_status(payload, index_status, stale_policy)
 
 
 def _config_publication_snapshot(path: Path) -> tuple[tuple[int, int], bytes]:

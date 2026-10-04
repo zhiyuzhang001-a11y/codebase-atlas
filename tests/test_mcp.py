@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 import unittest
 
-from codebase_atlas.contracts import Node, SourceRange
-from codebase_atlas.mcp import McpServer, PROTOCOL_VERSION, run_stdio
+from codebase_atlas.contracts import EvidenceProvenance, Node, SourceRange
+from codebase_atlas.mcp import McpServer, PROTOCOL_VERSION, _structured, run_stdio
 from codebase_atlas.service import QueryResponse
 
 
@@ -97,6 +97,11 @@ class McpTests(unittest.TestCase):
         self.assertNotIn("relation", schemas["definition"])
         self.assertEqual(schemas["references"]["continuation"]["maxLength"], 512)
         self.assertNotIn("continuation", schemas["definition"])
+        self.assertIn("source_path", schemas["definition"])
+        self.assertIn("source_line", schemas["definition"])
+        self.assertIn("source_column", schemas["definition"])
+        self.assertNotIn("target_range", schemas["definition"])
+        self.assertIn("target_range", schemas["references"])
         self.assertIn("fix_bug", schemas["analyze_change"]["intent"]["enum"])
         self.assertEqual(
             schemas["analyze_change"]["response_mode"]["enum"],
@@ -107,6 +112,23 @@ class McpTests(unittest.TestCase):
         refresh = next(tool for tool in listed["result"]["tools"] if tool["name"] == "refresh_index")
         self.assertFalse(refresh["annotations"]["readOnlyHint"])
         self.assertEqual(refresh["inputSchema"]["properties"]["timeout_ms"]["maximum"], 300000)
+
+    def test_rust_contract_metadata_is_additive_and_explicit(self) -> None:
+        provenance = EvidenceProvenance(
+            "repo-id", "generation-1", "T2", "rust-analyzer-lsp", "1.98.0",
+            "complete_exact",
+        )
+        node = Node(
+            "rust:run", "definition", "run", SourceRange("src/main.rs", 3, 3),
+            "rust-analyzer-lsp", 1.0, "e" * 64, provenance=provenance,
+        )
+        payload = _structured(QueryResponse(
+            "definition", (node,), (), status="complete_exact",
+            completeness={"required_scope": "workspace", "complete": True},
+        ))
+        self.assertEqual(payload["status"], "complete_exact")
+        self.assertTrue(payload["completeness"]["complete"])
+        self.assertEqual(payload["nodes"][0]["provenance"]["fact_tier"], "T2")
 
     def test_plan_and_refresh_route_to_injected_coordinator(self) -> None:
         coordinator = FakeRefreshCoordinator()
@@ -445,6 +467,31 @@ class McpTests(unittest.TestCase):
         )
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(response["result"]["structuredContent"]["nodes"][0]["name"], "target")
+        self.assertNotIn(
+            "provenance", response["result"]["structuredContent"]["nodes"][0]
+        )
+
+    def test_forwards_definition_position_and_reference_range(self) -> None:
+        definition = self.server.handle({
+            "jsonrpc": "2.0", "id": 31, "method": "tools/call",
+            "params": {"name": "definition", "arguments": {
+                "symbol": "run", "source_path": "src/main.rs",
+                "source_line": 7, "source_column": 12,
+            }},
+        })
+        self.assertFalse(definition["result"]["isError"])
+        self.assertEqual(self.service.last_request.parameters["source_line"], 7)
+        references = self.server.handle({
+            "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+            "params": {"name": "references", "arguments": {
+                "symbol": "run", "target_path": "src/main.rs",
+                "target_range": {"start_line": 3, "end_line": 3},
+            }},
+        })
+        self.assertFalse(references["result"]["isError"])
+        self.assertEqual(
+            self.service.last_request.parameters["target_range"]["start_line"], 3
+        )
 
     def test_forwards_path_and_owner_for_ambiguous_members(self) -> None:
         response = self.server.handle(

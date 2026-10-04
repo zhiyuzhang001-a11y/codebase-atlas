@@ -11,6 +11,7 @@ from typing import Any, Callable
 from .config import AtlasConfig, SHARED_PROVIDER_LAYOUT
 from .index_state import index_freshness, provider_database_health
 from .lifecycle import GlobalCbmLock
+from .languages import get_language
 from .python_registration_store import registration_index_health
 from .refresh_planner import RefreshPlanError, plan_refresh
 
@@ -50,6 +51,13 @@ def session_start_update(
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     configured = AtlasConfig.load(config)
+    if not get_language(configured.language).public_enabled:
+        return {
+            "status": "language_not_product_enabled",
+            "ok": False,
+            "language": configured.language,
+            "updated": False,
+        }
     freshness = index_freshness(
         configured.data_dir, configured.repository, configured.project
     )

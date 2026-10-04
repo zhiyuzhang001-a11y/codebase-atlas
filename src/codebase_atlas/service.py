@@ -16,7 +16,7 @@ import sys
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
-from .contracts import Edge, Node, repository_path
+from .contracts import COMPLETENESS_STATUSES, Edge, Node, repository_path
 from .graph import ImpactHit, ImpactTraversal
 from .index_state import repository_snapshot
 from .provider_transport import ProviderInitializeTimeout
@@ -27,6 +27,7 @@ from .providers.python_registrations import RegistrationIndex
 if TYPE_CHECKING:
     from .lifecycle import CodebaseMemoryDaemon
     from .providers.cbm_impact import CodebaseMemoryImpactProvider
+    from .providers.rust_analyzer import RustAnalyzerProvider
     from .providers.serena import SerenaSemanticProvider
     from .providers.ts_tests import TypeScriptTestProvider
 
@@ -74,6 +75,36 @@ class QueryRequest:
             value = self.parameters.get(name, "")
             if not isinstance(value, str):
                 raise ValueError(f"{name} must be a string")
+        source_fields = ("source_path", "source_line", "source_column")
+        supplied_source = [name for name in source_fields if name in self.parameters]
+        if supplied_source:
+            if self.query_type != "definition" or len(supplied_source) != len(source_fields):
+                raise ValueError(
+                    "source_path, source_line, and source_column are required together "
+                    "for definition queries"
+                )
+            source_path = self.parameters["source_path"]
+            if not isinstance(source_path, str) or not source_path:
+                raise ValueError("source_path must be a non-empty string")
+            repository_path(source_path)
+            for name in ("source_line", "source_column"):
+                value = self.parameters[name]
+                if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                    raise ValueError(f"{name} must be a positive integer")
+        if "target_range" in self.parameters:
+            if self.query_type != "references":
+                raise ValueError("target_range is supported only for references")
+            target_range = self.parameters["target_range"]
+            if not isinstance(target_range, Mapping):
+                raise ValueError("target_range must be an object")
+            allowed = {"start_line", "end_line", "start_column", "end_column"}
+            if set(target_range) - allowed or not {"start_line", "end_line"} <= set(target_range):
+                raise ValueError("target_range fields are invalid")
+            for name, value in target_range.items():
+                if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                    raise ValueError(f"target_range {name} must be a positive integer")
+            if target_range["end_line"] < target_range["start_line"]:
+                raise ValueError("target_range lines must be ordered")
         relation = self.parameters.get("relation", "")
         if not isinstance(relation, str) or relation not in {"", "registers"}:
             raise ValueError("relation must be empty or 'registers'")
@@ -114,12 +145,22 @@ class QueryResponse:
     paths: dict[str, tuple[Edge, ...]] = field(default_factory=dict)
     truncated: bool = False
     truncation: dict[str, Any] = field(default_factory=dict)
+    status: str | None = None
+    completeness: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is not None and self.status not in COMPLETENESS_STATUSES:
+            raise ValueError(f"unsupported query response status: {self.status}")
+        if self.completeness is not None and not isinstance(self.completeness, dict):
+            raise ValueError("query response completeness must be an object")
 
 
 def target_language_scope_reason(
     indexed_language: str | None, target_path: str
 ) -> str:
     suffix = Path(target_path).suffix.lower() if target_path else ""
+    if indexed_language == "rust" and target_path and suffix != ".rs":
+        return "target_outside_indexed_language_scope"
     if indexed_language == "typescript" and suffix == ".py":
         return "target_outside_indexed_language_scope"
     if indexed_language == "python" and suffix in {
@@ -140,6 +181,7 @@ class AtlasService:
         impact_provider: CodebaseMemoryImpactProvider | None = None,
         lifecycle: CodebaseMemoryDaemon | None = None,
         registration_index: RegistrationIndex | None = None,
+        rust_provider: RustAnalyzerProvider | None = None,
         session_continuations: bool = False,
         indexed_language: str | None = None,
     ) -> None:
@@ -150,11 +192,13 @@ class AtlasService:
         self.impact_provider = impact_provider
         self.lifecycle = lifecycle
         self.registration_index = registration_index
+        self.rust_provider = rust_provider
         self.session_continuations = session_continuations
         self.indexed_language = indexed_language
         self.started = False
         self._structural_started = False
         self._semantic_started = False
+        self._rust_started = False
         self._python_reference_cache: OrderedDict[
             tuple[Path, str, str], tuple[Node, ...]
         ] = OrderedDict()
@@ -221,18 +265,36 @@ class AtlasService:
         self._semantic_started = True
         return True
 
+    def _ensure_rust(self, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> bool:
+        if self._rust_started:
+            return True
+        if self.rust_provider is None:
+            return False
+        try:
+            self.rust_provider.start(timeout_seconds=timeout_ms / 1000.0)
+        except TimeoutError:
+            self.rust_provider.close()
+            return False
+        self._rust_started = True
+        return True
+
     def close(self) -> None:
         if not self.started:
             return
         try:
             try:
-                if self._semantic_started and self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
-                    self.semantic_provider.close()
+                try:
+                    if self._rust_started and self.rust_provider is not None:
+                        self.rust_provider.close()
+                finally:
+                    if self._semantic_started and self.semantic_provider is not None and hasattr(self.semantic_provider, "close"):
+                        self.semantic_provider.close()
             finally:
                 if self._structural_started and self.lifecycle is not None:
                     self.lifecycle.close()
         finally:
             self._semantic_started = False
+            self._rust_started = False
             self._structural_started = False
             self._structural_unavailable_reason = ""
             self._python_reference_cache.clear()
@@ -293,6 +355,76 @@ class AtlasService:
             timeout_ms=remaining_timeout_ms,
         )
 
+    def _query_rust(
+        self,
+        request: QueryRequest,
+        limits: dict[str, int],
+        started: float,
+    ) -> QueryResponse:
+        if request.query_type not in {"definition", "references"}:
+            return self._time_budget_response(
+                request.query_type, limits, started,
+                reason="query_not_supported_for_language",
+            )
+        if self.rust_provider is None:
+            return self._time_budget_response(
+                request.query_type, limits, started,
+                reason="rust_provider_unavailable",
+            )
+        if request.query_type == "definition":
+            source_path = request.parameters.get("source_path")
+            source_line = request.parameters.get("source_line")
+            source_column = request.parameters.get("source_column")
+        else:
+            source_path = request.parameters.get("target_path")
+            target_range = request.parameters.get("target_range")
+            source_line = (
+                target_range.get("start_line")
+                if isinstance(target_range, Mapping) else None
+            )
+            source_column = (
+                target_range.get("start_column", 1)
+                if isinstance(target_range, Mapping) else None
+            )
+        if (
+            not isinstance(source_path, str) or not source_path
+            or not isinstance(source_line, int) or isinstance(source_line, bool)
+            or not isinstance(source_column, int) or isinstance(source_column, bool)
+            or source_line < 1 or source_column < 1
+        ):
+            return self._time_budget_response(
+                request.query_type, limits, started,
+                reason="rust_source_position_required",
+            )
+        remaining_timeout = self._remaining_timeout(limits, started)
+        if remaining_timeout is None or not self._ensure_rust(remaining_timeout):
+            return self._partial_time_response(
+                request.query_type, (), (), limits, started
+            )
+        remaining_timeout = self._remaining_timeout(limits, started)
+        if remaining_timeout is None:
+            return self._partial_time_response(
+                request.query_type, (), (), limits, started
+            )
+        try:
+            nodes = tuple(self.rust_provider.query(
+                request.query_type,
+                request.symbol,
+                source_path=source_path,
+                source_line=source_line,
+                source_column=source_column,
+                timeout_ms=remaining_timeout,
+            ))
+        except TimeoutError:
+            self.rust_provider.close()
+            self._rust_started = False
+            return self._partial_time_response(
+                request.query_type, (), (), limits, started
+            )
+        return self._bounded_response(
+            request.query_type, nodes, (), limits, started
+        )
+
     def query(self, request: QueryRequest) -> QueryResponse:
         if not self.started:
             raise RuntimeError("AtlasService.start() must be called before query()")
@@ -304,6 +436,8 @@ class AtlasService:
                 request.query_type, limits, started,
                 reason="target_outside_indexed_language_scope",
             )
+        if self.indexed_language == "rust":
+            return self._query_rust(request, limits, started)
         if request.parameters.get("relation") == "registers":
             if self.registration_index is None:
                 return self._impact_response(

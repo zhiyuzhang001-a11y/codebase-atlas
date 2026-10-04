@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
 
 SCHEMA_VERSION = 1
+FACT_TIERS = frozenset({"T0", "T1", "T2", "T3", "T4"})
+COMPLETENESS_STATUSES = frozenset({
+    "complete_exact",
+    "exact_hits_partial_scope",
+    "syntactic_candidates",
+    "unsupported",
+    "unavailable",
+    "stale",
+})
 
 
 def repository_path(value: str) -> str:
@@ -37,6 +46,29 @@ class SourceRange:
 
 
 @dataclass(frozen=True)
+class EvidenceProvenance:
+    repository_identity: str
+    generation_id: str
+    fact_tier: str
+    provider: str
+    provider_version: str
+    completeness: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "repository_identity", "generation_id", "provider", "provider_version"
+        ):
+            if not getattr(self, name):
+                raise ValueError(f"provenance {name} is required")
+        if self.fact_tier not in FACT_TIERS:
+            raise ValueError(f"unsupported fact tier: {self.fact_tier}")
+        if self.completeness not in COMPLETENESS_STATUSES:
+            raise ValueError(
+                f"unsupported completeness status: {self.completeness}"
+            )
+
+
+@dataclass(frozen=True)
 class Node:
     id: str
     kind: str
@@ -46,6 +78,7 @@ class Node:
     confidence: float
     evidence_hash: str
     attributes: dict[str, Any] = field(default_factory=dict)
+    provenance: EvidenceProvenance | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.kind or not self.name or not self.provider:
@@ -54,6 +87,8 @@ class Node:
             raise ValueError("confidence must be between 0 and 1")
         if len(self.evidence_hash) != 64:
             raise ValueError("evidence_hash must be a SHA-256 hex digest")
+        if self.provenance is not None and self.provenance.provider != self.provider:
+            raise ValueError("node and provenance providers must match")
 
 
 @dataclass(frozen=True)
@@ -76,3 +111,11 @@ class Edge:
             raise ValueError("evidence_hash must be a SHA-256 hex digest")
         if self.resolution not in {"exact", "heuristic", "unresolved"}:
             raise ValueError(f"unsupported resolution: {self.resolution}")
+
+
+def contract_dict(value: Node | Edge) -> dict[str, Any]:
+    """Serialize contract values without changing legacy Node response bytes."""
+    payload = asdict(value)
+    if isinstance(value, Node) and value.provenance is None:
+        payload.pop("provenance", None)
+    return payload

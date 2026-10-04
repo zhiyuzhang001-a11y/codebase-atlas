@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import sys
 from contextlib import nullcontext
@@ -10,6 +9,7 @@ from typing import Any, Callable, TextIO
 
 from . import __version__
 from .change_analysis import CHANGE_INTENTS, RESPONSE_MODES, analyze_change
+from .contracts import contract_dict
 from .operations import (
     attach_operational_status,
     stale_policy_error,
@@ -27,19 +27,24 @@ LOCATE_FILES_NEXT_ACTION = (
 
 
 def _structured(response: QueryResponse) -> dict[str, Any]:
-    return {
+    structured = {
         "schema_version": 1,
         "query_type": response.query_type,
-        "nodes": [asdict(node) for node in response.nodes],
-        "edges": [asdict(edge) for edge in response.edges],
+        "nodes": [contract_dict(node) for node in response.nodes],
+        "edges": [contract_dict(edge) for edge in response.edges],
         "depths": response.depths,
         "paths": {
-            node_id: [asdict(edge) for edge in path]
+            node_id: [contract_dict(edge) for edge in path]
             for node_id, path in response.paths.items()
         },
         "truncated": response.truncated,
         "truncation": response.truncation,
     }
+    if response.status is not None:
+        structured["status"] = response.status
+    if response.completeness is not None:
+        structured["completeness"] = response.completeness
+    return structured
 
 
 def _tool_result(
@@ -295,6 +300,27 @@ for _tool in TOOLS:
             "maxLength": 512,
             "description": "Opaque next-page token from this MCP session.",
         }
+        _tool["inputSchema"]["properties"]["target_range"] = {
+            "type": "object",
+            "properties": {
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1},
+                "start_column": {"type": "integer", "minimum": 1},
+                "end_column": {"type": "integer", "minimum": 1},
+            },
+            "required": ["start_line", "end_line"],
+            "additionalProperties": False,
+            "description": "Exact declaration range used to disambiguate semantic references.",
+        }
+    if _tool["name"] == "definition":
+        _tool["inputSchema"]["properties"].update({
+            "source_path": {
+                "type": "string",
+                "description": "Repository-relative file containing the source occurrence.",
+            },
+            "source_line": {"type": "integer", "minimum": 1},
+            "source_column": {"type": "integer", "minimum": 1},
+        })
 
 
 class McpServer:
@@ -731,6 +757,14 @@ class McpServer:
                         "relation": relation,
                         **budget,
                         **continuation,
+                        **({
+                            key: arguments[key]
+                            for key in ("source_path", "source_line", "source_column")
+                            if key in arguments
+                        } if name == "definition" else {}),
+                        **({"target_range": arguments["target_range"]}
+                           if name == "references" and "target_range" in arguments
+                           else {}),
                     }
                 )
             elif name == "related_tests":

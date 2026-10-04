@@ -12,7 +12,7 @@ from codebase_atlas.index_state import RepositorySnapshot
 from codebase_atlas.provider_transport import ProviderInitializeTimeout
 from codebase_atlas.providers.python_references import PythonExactReferenceProvider
 from codebase_atlas.providers.python_registrations import PythonRegistrationProvider
-from codebase_atlas.service import AtlasService, QueryRequest
+from codebase_atlas.service import AtlasService, QueryRequest, QueryResponse
 
 
 HASH = "c" * 64
@@ -70,6 +70,32 @@ class FakeImpactProvider:
         return (ImpactHit(caller, min(max_depth, 1), (edge,)),)
 
 
+class FakeRustProvider:
+    def __init__(self, *, timeout: bool = False) -> None:
+        self.timeout = timeout
+        self.starts = 0
+        self.closes = 0
+        self.calls = []
+
+    def start(self, *, timeout_seconds: float) -> None:
+        self.starts += 1
+
+    def close(self) -> None:
+        self.closes += 1
+
+    def query(self, query_type, symbol, **parameters):
+        self.calls.append((query_type, symbol, parameters))
+        if self.timeout:
+            raise TimeoutError("budget")
+        return (Node(
+            f"rust:{query_type}", query_type, symbol,
+            SourceRange(parameters["source_path"], parameters["source_line"],
+                        parameters["source_line"], parameters["source_column"],
+                        parameters["source_column"] + 1),
+            "rust-analyzer-lsp", 1.0, HASH,
+        ),)
+
+
 class LanguageScopeTests(unittest.TestCase):
     def test_typescript_index_rejects_python_target_without_starting_provider(self):
         service = AtlasService(
@@ -98,6 +124,97 @@ class LanguageScopeTests(unittest.TestCase):
             ))
         self.assertTrue(response.truncated)
         self.assertIn("target_outside_indexed_language_scope", response.truncation["reasons"])
+
+    def test_internal_rust_service_owns_session_and_routes_position_queries(self):
+        provider = FakeRustProvider()
+        service = AtlasService(indexed_language="rust", rust_provider=provider)
+        with service:
+            definition = service.query(QueryRequest("definition", "run", {
+                "source_path": "src/lib.rs", "source_line": 7, "source_column": 4,
+            }))
+            references = service.query(QueryRequest("references", "run", {
+                "target_path": "src/lib.rs",
+                "target_range": {"start_line": 7, "end_line": 7, "start_column": 4},
+            }))
+        self.assertEqual((len(definition.nodes), len(references.nodes)), (1, 1))
+        self.assertEqual(provider.starts, 1)
+        self.assertEqual(provider.closes, 1)
+        self.assertEqual(
+            [call[0] for call in provider.calls], ["definition", "references"]
+        )
+        self.assertEqual(provider.calls[1][2]["source_path"], "src/lib.rs")
+
+    def test_internal_rust_service_fails_closed_without_position_or_t3_route(self):
+        provider = FakeRustProvider()
+        service = AtlasService(indexed_language="rust", rust_provider=provider)
+        with service:
+            missing = service.query(QueryRequest("definition", "run"))
+            unsupported = service.query(QueryRequest("impact", "run"))
+        self.assertEqual(
+            missing.truncation["reasons"], ("rust_source_position_required",)
+        )
+        self.assertEqual(
+            unsupported.truncation["reasons"],
+            ("query_not_supported_for_language",),
+        )
+        self.assertEqual((provider.starts, provider.closes, provider.calls), (0, 0, []))
+
+    def test_internal_rust_timeout_is_partial_and_session_is_not_reused(self):
+        provider = FakeRustProvider(timeout=True)
+        service = AtlasService(indexed_language="rust", rust_provider=provider)
+        with service:
+            response = service.query(QueryRequest("definition", "run", {
+                "source_path": "src/lib.rs", "source_line": 1, "source_column": 1,
+            }))
+        self.assertTrue(response.truncated)
+        self.assertIn("time_budget_exceeded", response.truncation["reasons"])
+        self.assertEqual(provider.starts, 1)
+        self.assertEqual(provider.closes, 1)
+
+
+class QueryContractTests(unittest.TestCase):
+    def test_definition_position_is_optional_but_atomic(self) -> None:
+        request = QueryRequest("definition", "run", {
+            "source_path": "src/main.rs", "source_line": 7, "source_column": 12,
+        })
+        self.assertEqual(request.parameters["source_path"], "src/main.rs")
+        for parameters in (
+            {"source_path": "src/main.rs"},
+            {"source_path": "../main.rs", "source_line": 1, "source_column": 1},
+            {"source_path": "src/main.rs", "source_line": 0, "source_column": 1},
+        ):
+            with self.subTest(parameters=parameters), self.assertRaises(ValueError):
+                QueryRequest("definition", "run", parameters)
+        with self.assertRaisesRegex(ValueError, "definition queries"):
+            QueryRequest("references", "run", {
+                "source_path": "src/main.rs", "source_line": 1, "source_column": 1,
+            })
+
+    def test_reference_target_range_is_validated(self) -> None:
+        request = QueryRequest("references", "run", {
+            "target_path": "src/main.rs",
+            "target_range": {"start_line": 4, "end_line": 4, "start_column": 8},
+        })
+        self.assertEqual(request.parameters["target_range"]["start_line"], 4)
+        with self.assertRaisesRegex(ValueError, "ordered"):
+            QueryRequest("references", "run", {
+                "target_range": {"start_line": 5, "end_line": 4},
+            })
+        with self.assertRaisesRegex(ValueError, "only for references"):
+            QueryRequest("definition", "run", {
+                "target_range": {"start_line": 4, "end_line": 4},
+            })
+
+    def test_query_response_status_is_optional_and_fail_closed(self) -> None:
+        legacy = QueryResponse("definition", (), ())
+        self.assertIsNone(legacy.status)
+        exact = QueryResponse(
+            "definition", (), (), status="complete_exact",
+            completeness={"required_scope": "workspace"},
+        )
+        self.assertEqual(exact.status, "complete_exact")
+        with self.assertRaisesRegex(ValueError, "query response status"):
+            QueryResponse("definition", (), (), status="looks_good")
 
 
 class FakeSemanticProvider:
