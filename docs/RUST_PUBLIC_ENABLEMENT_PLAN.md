@@ -394,3 +394,8 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   操作的原始报告。CI 必须匹配精确干净源码、对应 scanner commit 和本机平台，
   Windows 使用 zip，其他平台使用 tar.gz。五平台真实结果仍待运行与审核；
   该门不替代 installed-wheel、fresh stdio、OS 禁网和完整子进程 argv 验收。
+- 五平台 source-API 生命周期原始报告已核对通过，包括八项操作、刷新前后
+  冻结跨文件定义、项目执行哨兵未触发和 owned analyzer 清理。本机继续加入
+  危险 wrapper 的 enable、doctor、冷查询、refresh 拒绝观察，保留配置与原
+  generation，完成后再跑正常流程。观察者只覆盖 Python API，不能证明 OS 级
+  禁网或所有原生子进程参数；新增正常入口负例仍须五平台真实运行后审核。

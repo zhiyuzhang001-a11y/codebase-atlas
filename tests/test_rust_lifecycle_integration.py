@@ -3,13 +3,56 @@ import shutil
 import tempfile
 import unittest
 import json
-from unittest.mock import patch
+import subprocess
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch, MagicMock
 
-from scripts.rust_lifecycle_integration import install_execution_sentinels, execution_sentinel_state
+# Import before patching rust_project._load_index; otherwise the coordinator's
+# module-level import can retain a mock and contaminate later full-suite tests.
+from codebase_atlas import rust_mcp_refresh
+
+from scripts.rust_lifecycle_integration import install_execution_sentinels, execution_sentinel_state, hostile_hook_check
 from scripts import rust_lifecycle_qualification as qualification
 
 
 class RustExecutionSentinelTests(unittest.TestCase):
+    def test_hostile_hooks_record_rejection_and_detect_forbidden_attempt(self):
+        for forbidden in (False, True):
+            with self.subTest(forbidden=forbidden), tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary).resolve()
+                repository = work / "project"
+                repository.mkdir()
+                config_path = repository / ".codebase-atlas.toml"
+                config_path.write_text("fixture")
+                service = MagicMock()
+                service.query.return_value = SimpleNamespace(status="unavailable", nodes=(), completeness={})
+                coordinator = MagicMock()
+                coordinator.refresh.return_value = {"status": "failed", "previous_generation_preserved": True}
+                def enable(*args, **kwargs):
+                    if forbidden:
+                        subprocess.run([sys.executable, "-c", "raise SystemExit('must not execute')"], check=True)
+                    return {"status": "blocked"}, 2
+                with patch("codebase_atlas.config.AtlasConfig.load", return_value=SimpleNamespace(data_dir=work, repository=repository, project="fixture")), \
+                        patch("codebase_atlas.rust_project.load_rust_service", return_value=service), \
+                        patch("codebase_atlas.rust_project._load_index", return_value=({"generation_id":"frozen"}, None)), \
+                        patch("codebase_atlas.rust_mcp_refresh.RustMcpRefreshCoordinator", return_value=coordinator), \
+                        patch("codebase_atlas.config.diagnose", return_value=[{"name":"rust_toolchain","ok":False}]), \
+                        patch("scripts.rust_lifecycle_integration.enable_project", side_effect=enable):
+                    if forbidden:
+                        with self.assertRaisesRegex(RuntimeError, "forbidden Python"):
+                            hostile_hook_check(repository, work)
+                    else:
+                        result, code = hostile_hook_check(repository, work)
+                        self.assertEqual(code, 0)
+                        self.assertEqual([h["hook"] for h in result["hooks"]],
+                                         ["enable", "doctor", "cold_query", "refresh"])
+                service.close.assert_called_once()
+                document = json.loads((work / "hostile-hooks.json").read_text())
+                self.assertEqual(bool(document["forbidden_events"]), forbidden)
+                self.assertTrue(document["config_unchanged"])
+                self.assertFalse(document["wrapper_executed"])
+
     def test_fixture_has_real_build_script_and_proc_macro_without_executing_them(self):
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary).resolve()

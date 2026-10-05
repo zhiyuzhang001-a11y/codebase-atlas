@@ -14,6 +14,81 @@ import time
 from types import MappingProxyType
 from unittest.mock import patch
 import argparse
+import sys
+
+
+def hostile_hook_check(repository: Path, work: Path):
+    """Real normal hooks with hostile env; Python audit only, NOT OS tracing."""
+    from codebase_atlas.config import AtlasConfig, diagnose
+    from codebase_atlas.rust_project import load_rust_service, _load_index
+    from codebase_atlas.rust_mcp_refresh import RustMcpRefreshCoordinator
+    from codebase_atlas.service import QueryRequest
+    config_path = repository / ".codebase-atlas.toml"
+    config = AtlasConfig.load(config_path)
+    service = load_rust_service(config)  # Cold, verified but no analyzer startup.
+    service.start()  # Lazy frontend state only; T2 has not spawned.
+    coordinator = RustMcpRefreshCoordinator(config, service, {}, config_path=config_path)
+    marker = work / "forbidden-wrapper"
+    wrapper = work / ("wrapper.cmd" if os.name == "nt" else "wrapper")
+    wrapper.write_text((f'@echo executed>"{marker}"\r\n' if os.name == "nt"
+                        else f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text("executed")\n'),
+                       encoding="utf-8")
+    if os.name != "nt":
+        wrapper.chmod(0o700)
+    observer = {"active": False, "forbidden": [], "git_argv": []}
+    git = shutil.which("git")
+    def audit(event, args):
+        if not observer["active"]:
+            return
+        if event == "subprocess.Popen":
+            executable, argv = args[:2]
+            if str(executable) in {"git", git}:
+                observer["git_argv"].append(list(argv))
+                return
+        elif not (event in {"os.system", "os.exec", "os.posix_spawn", "socket.connect", "socket.getaddrinfo"}
+                  or event.startswith("os.spawn")):
+            return
+        observer["forbidden"].append(event)
+        raise RuntimeError("forbidden Python execution/network attempt in hostile hook")
+    sys.addaudithook(audit)
+    original_config = config_path.read_bytes()
+    original_generation = _load_index(config.data_dir, config.repository, config.project)[0]["generation_id"]
+    rows = []
+    try:
+        with patch.dict(os.environ, {"RUSTC_WRAPPER": str(wrapper)}):
+            observer["active"] = True
+            payload, code = enable_project(repository, language="rust")
+            rows.append({"hook": "enable", "exit_code": code, "result": payload})
+            if code == 0:
+                raise RuntimeError("enable accepted hostile wrapper")
+            checks = diagnose(config)
+            rows.append({"hook": "doctor", "checks": checks})
+            if not any(c["name"] == "rust_toolchain" and not c["ok"] for c in checks):
+                raise RuntimeError("doctor accepted hostile wrapper")
+            response = service.query(QueryRequest("definition", "run", {
+                "source_path": "src/lib.rs", "source_line": 4, "source_column": 28,
+                "target_path": "src/left.rs"}))
+            rows.append({"hook": "cold_query", "status": response.status,
+                         "completeness": response.completeness, "node_count": len(response.nodes)})
+            if response.status != "unavailable" or response.nodes:
+                raise RuntimeError("cold query accepted hostile wrapper")
+            result = coordinator.refresh(timeout_ms=60000)
+            rows.append({"hook": "refresh", "result": result})
+            if result.get("status") != "failed" or not result.get("previous_generation_preserved"):
+                raise RuntimeError("refresh accepted hostile wrapper")
+    finally:
+        observer["active"] = False
+        service.close()
+        evidence = {"hooks": rows, "observer": "Python audit only; NOT whole-tree or OS network",
+                    "forbidden_events": observer["forbidden"], "git_argv": observer["git_argv"],
+                    "wrapper_executed": marker.exists(),
+                    "config_unchanged": config_path.read_bytes() == original_config,
+                    "generation_preserved": _load_index(config.data_dir, config.repository, config.project)[0]["generation_id"] == original_generation}
+        (work / "hostile-hooks.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+    if (evidence["forbidden_events"] or evidence["wrapper_executed"]
+            or not evidence["config_unchanged"] or not evidence["generation_preserved"]):
+        raise RuntimeError("hostile hooks changed config or attempted forbidden execution")
+    return {"status": "ready", **evidence}, 0
 
 from codebase_atlas import languages
 from codebase_atlas.rust_installation import release_lock, verify_existing_toolchain, save_toolchain_receipt, toolchain_store
@@ -156,6 +231,7 @@ def main(argv=None):
         install_scanner_asset(args.scanner, sha256=args.scanner_sha256, commit=args.scanner_commit, target=target)
         for operation, function in (("enable", lambda: enable_project(repository, language="rust")),
                                     ("status", lambda: status_project(repository)),
+                                    ("hostile_hooks", lambda: hostile_hook_check(repository, work)),
                                     ("mcp", lambda: mcp_check(repository)),
                                     ("verify", lambda: verify_project(repository)),
                                     ("stop", lambda: stop_project(repository)),
@@ -176,7 +252,7 @@ def main(argv=None):
                 raise RuntimeError(operation + " executed forbidden fixture code")
             expected = {"enable": "ready", "status": "ready", "verify": "PASS",
                         "stop": "stopped", "resume": "ready", "remove": "removed",
-                        "remove_again": "removed", "mcp": "ready"}[operation]
+                        "remove_again": "removed", "mcp": "ready", "hostile_hooks": "ready"}[operation]
             if code != 0 or payload.get("status") != expected:
                 raise RuntimeError(operation + " did not pass")
         if subprocess.check_output(["git", "diff", "HEAD"], cwd=repository) != before:

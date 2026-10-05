@@ -51,6 +51,9 @@ def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool) -> 
             evidence = work / "results.json"
             if evidence.is_file():
                 report["operations"] = json.loads(evidence.read_text(encoding="utf-8"))
+            hostile = work / "hostile-hooks.json"
+            if hostile.is_file():
+                report["hostile_hooks"] = json.loads(hostile.read_text(encoding="utf-8"))
         report["status"] = "passed"
 
 
