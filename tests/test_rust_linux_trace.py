@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 import subprocess
 
-from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe
+from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata
 
 
 class LinuxTraceTests(unittest.TestCase):
@@ -18,6 +18,8 @@ class LinuxTraceTests(unittest.TestCase):
                 text = '1 execve("/python", ["python"], []) = 0\n1 +++ exited with 0 +++\n'
                 if "positive-control" in path.name:
                     text += '2 execve("/python", ["python", "-c", "pass"], []) = 0\n2 socket(AF_INET, SOCK_STREAM, 0) = 3\n'
+                else:
+                    text += '2 execve("/cargo", ["cargo", "metadata", "--offline", "--no-deps"], []) = 0\n'
                 path.write_text(text)
                 self.assertTrue(kwargs["capture_output"])
                 self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
@@ -30,6 +32,7 @@ class LinuxTraceTests(unittest.TestCase):
             self.assertIn("-f", calls[0])
             self.assertIn("--seccomp-bpf", calls[0])
             self.assertEqual(report["status"], "observed_no_non_unix_socket_attempts")
+            self.assertEqual(report["offline_metadata_launches"], 1)
             self.assertTrue((base / "raw/lifecycle.trace").is_file())
 
     def summary(self, text):
@@ -68,6 +71,23 @@ class LinuxTraceTests(unittest.TestCase):
                      '10 execve("/tool", ["tool"], [])\n'):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 self.summary(text)
+
+    def test_metadata_gate_checks_launched_argv_not_environment_or_failed_attempts(self):
+        for text in (
+                '1 execve("/cargo", ["cargo", "metadata", "--no-deps"], ["--offline"]) = 0\n',
+                '1 execve("/cargo", ["cargo", "metadata", "--offline"], []) = 0\n',
+                '1 execve("/cargo", ["cargo", "metadata", "--offline", "--no-deps"], []) = -1 ENOENT (No such file or directory)\n',
+                '1 execve("/cargo", ["cargo", "--version"], []) = 0\n',
+                '1 execveat(3, "cargo", ["cargo", "metadata", "--offline", "--no-deps"], [], 0) = 0\n',
+                '1 execve("/cargo", ["cargo", "metadata", "\\\\x2d\\\\x2doffline", "--no-deps"], []) = 0\n'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                require_offline_metadata(self.summary(text))
+
+    def test_metadata_gate_handles_interleaving_and_brackets_in_paths(self):
+        summary = self.summary('1 execve("/bin/[tools]/cargo", ["cargo", "metadata", "--offline", "--no-deps", "--manifest-path", "/project/[x]/Cargo.toml"], [] <unfinished ...>\n'
+                               '2 execve("/python", ["python"], []) = 0\n'
+                               '1 <... execve resumed>) = 0\n')
+        self.assertEqual(require_offline_metadata(summary), 1)
 
     def test_missing_truncated_detached_and_io_uring_evidence_fail(self):
         for text in ('', 'socket(AF_INET, SOCK_STREAM, 0) = 3\n',

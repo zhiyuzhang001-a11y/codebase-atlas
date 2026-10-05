@@ -6,6 +6,7 @@ allow-list audit; collecting them alone does not close the full phase-2 gate.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -74,6 +75,44 @@ def bootstrap_environment() -> dict[str, str]:
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
+def require_offline_metadata(summary: dict) -> int:
+    """Check real launched argv, never an environment string or failed attempt.
+
+    This narrow gate does not qualify other probes or the complete allow-list.
+    Unsupported strace string encodings/syscalls fail closed rather than guessing.
+    """
+    decoder = json.JSONDecoder()
+    count = 0
+    for entry in summary["execution_results"]:
+        if not entry["launched"]:
+            continue
+        if entry["syscall"] != "execve":
+            raise ValueError("Unsupported native exec syscall for metadata audit")
+        arguments = entry["argv_raw"].split("execve(", 1)[1]
+        try:
+            executable, end = decoder.raw_decode(arguments)
+            remainder = arguments[end:].lstrip()
+            if not remainder.startswith(","):
+                raise ValueError("Native exec argv separator missing")
+            vector = remainder[1:].lstrip()
+            argv, end = decoder.raw_decode(vector)
+            if not vector[end:].lstrip().startswith(","):
+                raise ValueError("Native exec argv terminator missing")
+        except (ValueError, IndexError) as error:
+            raise ValueError("Native exec argv cannot be decoded completely") from error
+        if not isinstance(executable, str) or not isinstance(argv, list) or not argv or \
+                not all(isinstance(value, str) for value in argv):
+            raise ValueError("Native exec argv has an unsupported shape")
+        if Path(executable).name != "cargo" or argv[1:2] != ["metadata"]:
+            continue
+        if "--offline" not in argv[2:] or "--no-deps" not in argv[2:]:
+            raise ValueError("Launched cargo metadata lacks explicit --offline/--no-deps")
+        count += 1
+    if count == 0:
+        raise ValueError("Native trace has no launched cargo metadata evidence")
+    return count
+
+
 def observe(argv: list[str], *, cwd: Path, directory: Path) -> dict:
     if not sys.platform.startswith("linux"):
         raise ValueError("Linux native observer cannot qualify another OS")
@@ -102,7 +141,9 @@ def observe(argv: list[str], *, cwd: Path, directory: Path) -> dict:
         raise ValueError("Lifecycle attempted non-Unix network socket")
     if actual["exit_records"] == 0:
         raise ValueError("Native trace lacks process exit evidence")
+    metadata_count = require_offline_metadata(actual)
     return {"status": "observed_no_non_unix_socket_attempts", "positive_control": positive,
             "lifecycle": actual, "environment_names": sorted(environment),
+            "offline_metadata_launches": metadata_count,
             "not_proven": ["independent full argv allow-list audit", "other OS native tracing",
                            "installed-wheel", "resource gates"]}

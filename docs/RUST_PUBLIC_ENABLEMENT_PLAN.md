@@ -423,3 +423,8 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   固定 `cargo.metadataExtraArgs=["--offline"]`，使项目与 sysroot metadata 的
   离线约束在 argv 中明确，而非仅靠环境。保留 noDeps、features、build scripts/
   proc macros 与语义合同不变；实际原生 argv 与查询结果仍待新 CI 核对。
+- 新提交的五平台九步真实生命周期及 wrapper 负例已核对通过；两个 Linux
+  原始 syscall 日志中各二十次成功 metadata 调用均明确携带 `--offline` 和
+  `--no-deps`，正向观察控制通过且正常流程无非 Unix socket 尝试。内部观察器
+  新增启动 argv 的自动离线断言，不接受环境字符串、失败 exec 或缺失调用
+  作为证据；未知解析格式拒绝。此窄门不等于完整 argv 清单或阶段二出口通过。
