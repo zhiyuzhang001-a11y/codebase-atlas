@@ -114,6 +114,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codebase-atlas")
     parser.add_argument("--version", action="store_true")
     commands = parser.add_subparsers(dest="command")
+    scanner_prepare = commands.add_parser("rust-scanner-prepare", help="plan or explicitly acquire a scanner from an exact stable Release")
+    scanner_prepare.add_argument("--repo", type=Path, default=Path.cwd())
+    scanner_prepare.add_argument("--release-tag", required=True)
+    scanner_prepare.add_argument("--allow-network", action="store_true")
+    scanner_prepare.add_argument("--apply", action="store_true")
     rust_prepare = commands.add_parser("rust-prepare", help="plan or explicitly prepare source-verified official Rust tools")
     rust_prepare.add_argument("--repo", type=Path, default=Path.cwd())
     rust_prepare.add_argument("--toolchain-root", type=Path)
@@ -394,6 +399,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
         return 0
+    if args.command == "rust-scanner-prepare":
+        if not get_language("rust").public_enabled:
+            print(json.dumps({"schema_version": 1, "status": "blocked", "error": "Rust public enablement is closed"}))
+            return 2
+        from .rust_scanner_acquisition import acquire_scanner, fetch_scanner_release
+        try:
+            if args.apply:
+                binary = acquire_scanner(args.repo, args.release_tag, network_authorized=args.allow_network)
+                result = {"schema_version": 1, "status": "prepared", "binary": str(binary),
+                          "project_writes": [], "executes_tools": False, "project_enabled": False}
+            else:
+                release = fetch_scanner_release(args.release_tag, network_authorized=args.allow_network)
+                result = {"schema_version": 1, "status": "planned", "tag": release.tag,
+                          "commit": release.commit, "target": release.target,
+                          "archive": release.archive.name, "archive_digest": release.archive.digest,
+                          "project_writes": [], "executes_tools": False}
+        except (OSError, RuntimeError, ValueError) as exc:
+            result = {"schema_version": 1, "status": "blocked", "error": str(exc)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["status"] in {"planned", "prepared"} else 2
     if args.command == "rust-prepare":
         if not get_language("rust").public_enabled:
             print(json.dumps({"schema_version": 1, "status": "blocked", "error": "Rust public enablement is closed"}))

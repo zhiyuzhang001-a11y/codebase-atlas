@@ -364,3 +364,9 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   `rust-prepare` 不指定现有 root 时可先只读计划，再显式 apply；联网仍需独立选项，
   公共开关继续关闭。真实 macOS 临时安装与离线复用通过，五平台新路径及完整安全
   观察尚待验收，不能据此宣称第二阶段退出或已支持公开 Rust。
+- 新增独立 `rust-scanner-prepare`：显式联网读取本仓精确稳定 tag，拒绝 draft、
+  prerelease、外来 tag/URL 与缺少五平台资产的 Release；解析真实 tag commit，
+  API digest、相邻/汇总 checksum 和内部来源 manifest/许可证一致后才能 apply。
+  默认只读计划不下载资产，已有匹配安装复用；生产不接受调用者任意 commit、
+  checksum 或候选 URL。当前稳定版仍没有公开 scanner，命令受关闭 gate 保护；
+  后续资格使用临时测试传输，不据此修改旧 Release 或提前公开 Rust。
