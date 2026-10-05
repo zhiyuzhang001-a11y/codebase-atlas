@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "version": "0.2.0",
+  "repository": "https://github.com/zhiyuzhang001-a11y/codebase-atlas",
+  "license": "Apache-2.0",
+  "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "files": {
+    "Cargo.toml": "495d52fd36f78e4e727b37ad6625501e5e57a8c6054acacac38348e74e4890f9",
+    "Cargo.lock": "0368be3294b28426c149cf9280bbbdd0b75ba8c896b8915475ad692677da9383",
+    "src/main.rs": "2f55e828ecd1235329debfa89f0b3b1b64c60156df50c9b244ee868662d87263",
+    "THIRD_PARTY_NOTICES.md": "6c94a5695e7ba18161194585a2eefbe4425f34febb888ebc39174c73ef27e177"
+  }
+}

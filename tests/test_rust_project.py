@@ -15,11 +15,65 @@ from codebase_atlas.languages import get_language
 from codebase_atlas.config import diagnose
 from codebase_atlas.runtime import runtime_checks, required_checks_ok
 from codebase_atlas.operations import operational_index_status
+from codebase_atlas.lifecycle import ProjectRefreshLease
+from codebase_atlas.enable_transaction import EnableTransaction
+from codebase_atlas.lifecycle_recovery import LifecycleRecoveryJournal, recover_lifecycle_transaction
+from codebase_atlas.providers.rust_syntax import rust_syntax_pointer_path
+from codebase_atlas.onboarding import OnboardingInputs, build_plan
 from types import SimpleNamespace
 from tests import test_rust_refresh as fixture_module
 
 
 class RustProjectTests(unittest.TestCase):
+    def test_mcp_does_not_continue_after_project_config_changes(self):
+        from codebase_atlas.rust_mcp_refresh import RustMcpRefreshCoordinator
+        path = self.config.repository / ".codebase-atlas.toml"
+        self.config.write(path)
+        service = load_rust_service(self.config)
+        coordinator = RustMcpRefreshCoordinator(self.config, service, {}, config_path=path)
+        path.write_text(path.read_text() + "\n# changed during session\n")
+        with self.assertRaisesRegex(ValueError, "config_changed"):
+            with coordinator.query_snapshot():
+                self.fail("changed config was admitted")
+        service.close()
+
+    def test_project_discovery_accepts_exact_rust_index_without_cbm(self):
+        from codebase_atlas.project_discovery import resolve_project
+        self.config.write(self.config.repository / ".codebase-atlas.toml")
+        with patch("codebase_atlas.project_discovery.provider_database_health") as cbm:
+            self.assertEqual(resolve_project(self.config.repository).status, "configured")
+        cbm.assert_not_called()
+
+    def test_mcp_snapshot_rebinds_both_tiers_after_other_process_refresh(self):
+        from codebase_atlas.rust_mcp_refresh import RustMcpRefreshCoordinator
+        service = load_rust_service(self.config)
+        status = {"identity": {"repository": str(self.config.repository)}}
+        coordinator = RustMcpRefreshCoordinator(self.config, service, status)
+        before = service.rust_provider.generation["generation_id"]
+        with coordinator.query_snapshot():
+            self.assertEqual(status["generation_id"], before)
+        refreshed = RustRefreshCoordinator(self.config, self.fixture.scanner,
+                                           runner=self.fixture.runner).refresh()
+        old = service.rust_provider
+        service.start()
+        with coordinator.query_snapshot():
+            self.assertEqual(service.rust_provider.generation["generation_id"], refreshed["generation_after"])
+            self.assertEqual(service.rust_syntax_index.document["generation_id"], refreshed["generation_after"])
+            self.assertIsNot(service.rust_provider, old)
+            self.assertTrue(service.started)
+            self.assertEqual(status["identity"]["repository"], str(self.config.repository))
+        service.close()
+
+    def test_mcp_snapshot_rejects_pending_rust_recovery(self):
+        from codebase_atlas.rust_mcp_refresh import RustMcpRefreshCoordinator
+        from codebase_atlas.rust_refresh_recovery import rust_refresh_journal_path
+        service = load_rust_service(self.config)
+        rust_refresh_journal_path(self.config.data_dir).write_text("{}")
+        with self.assertRaisesRegex(ValueError, "recovery_required"):
+            with RustMcpRefreshCoordinator(self.config, service, {}).query_snapshot():
+                self.fail("pending generation was admitted")
+        service.close()
+
     def setUp(self):
         fixture = fixture_module.RustRefreshTests()
         fixture.setUp()
@@ -123,7 +177,7 @@ class RustProjectTests(unittest.TestCase):
             "codebase_atlas.languages.get_language", return_value=candidate
         ), patch("codebase_atlas.rust_installation.runtime_from_receipt", return_value=self.runtime), patch(
             "codebase_atlas.runtime.shutil.which"
-        ) as path_lookup:
+        ) as path_lookup, patch("codebase_atlas.rust_scanner_installation.verified_scanner"):
             checks = diagnose(self.config, runner=probe)
         self.assertTrue(required_checks_ok(checks), checks)
         path_lookup.assert_not_called()
@@ -177,6 +231,55 @@ class RustProjectTests(unittest.TestCase):
                                     rust_runtime_receipt=self.config.rust_runtime_receipt, runner=runner)
         self.assertFalse(required_checks_ok(checks))
         runner.assert_not_called()
+
+    def test_onboarding_replays_receipt_and_does_not_require_legacy_tools(self):
+        path = self.config.repository / ".codebase-atlas.toml"
+        inputs = OnboardingInputs(self.config.repository, path, "rust", None, None, None,
+                                  None, None, self.config.data_dir, "fast", self.config.rust_runtime_receipt)
+        with patch("codebase_atlas.onboarding.runtime_checks", return_value=[{"ok": True, "required": True}]):
+            plan, candidate = build_plan(inputs)
+        self.assertEqual(plan["status"], "planned")
+        self.assertIn("--rust-runtime-receipt", plan["apply_argv"])
+        self.assertIsNone(candidate.cbm_binary)
+        self.assertIsNone(candidate.node)
+        self.assertFalse(path.exists())
+
+    def test_refresh_borrows_owned_exact_lease_and_does_not_release_it(self):
+        lease = ProjectRefreshLease(self.config.data_dir, self.config.repository, self.config.project)
+        self.assertTrue(lease.acquire())
+        self.addCleanup(lease.release)
+        coordinator = RustRefreshCoordinator(self.config, self.fixture.scanner, runner=self.fixture.runner, lease=lease)
+        self.assertEqual(coordinator.refresh()["status"], "refreshed")
+        self.assertTrue(lease.owned)
+        foreign = ProjectRefreshLease(self.config.data_dir, self.config.repository, "foreign")
+        self.assertTrue(foreign.acquire())
+        self.addCleanup(foreign.release)
+        with self.assertRaisesRegex(ValueError, "exact-project"):
+            RustRefreshCoordinator(self.config, self.fixture.scanner, lease=foreign)
+
+    def test_outer_enable_rollback_restores_rust_pointer_and_generation(self):
+        path = self.config.repository / ".codebase-atlas.toml"
+        self.config.write(path)
+        before = self.fixture.published_bytes()
+        transaction = EnableTransaction(self.config, path)
+        transaction.run(lambda: RustRefreshCoordinator(self.config, self.fixture.scanner,
+                                                       runner=self.fixture.runner).refresh(), indexes=True)
+        self.assertNotEqual(self.fixture.published_bytes()["pointer"], before["pointer"])
+        self.assertEqual(transaction.rollback(), [])
+        self.assertEqual(self.fixture.published_bytes(), before)
+
+    def test_durable_enable_recovery_restores_rust_pointer_after_crash(self):
+        path = self.config.repository / ".codebase-atlas.toml"
+        self.config.write(path)
+        before = self.fixture.published_bytes()
+        journal = LifecycleRecoveryJournal.begin(self.config, path, operation="enable", operation_id="rust-crash", routing=None)
+        transaction = EnableTransaction(self.config, path)
+        transaction.attach_recovery(journal)
+        transaction.run(lambda: RustRefreshCoordinator(self.config, self.fixture.scanner,
+                                                       runner=self.fixture.runner).refresh(), indexes=True)
+        recovered = recover_lifecycle_transaction(self.config.repository)
+        self.assertEqual(recovered["action"], "restored_previous_state")
+        self.assertEqual(self.fixture.published_bytes(), before)
 
 
 if __name__ == "__main__":

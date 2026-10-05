@@ -147,6 +147,15 @@ def runtime_checks(
                                  detail=detail, remediation="revalidate the pinned Rust installation"))
             if not ok:
                 break
+        else:
+            from .rust_scanner_installation import verified_scanner
+            try:
+                scanner = verified_scanner(repo)
+                checks.append(_check("rust_scanner", True, path=scanner.path,
+                                     version="0.2.0", detail="verified scanner source, binary and licenses"))
+            except (OSError, ValueError) as exc:
+                checks.append(_check("rust_scanner", False, detail=str(exc),
+                                     remediation="prepare the checksum-verified scanner for this platform"))
         return checks
 
     node_path = _candidate(node, "ATLAS_NODE", "node")

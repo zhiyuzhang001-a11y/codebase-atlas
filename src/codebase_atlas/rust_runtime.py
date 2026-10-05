@@ -106,6 +106,10 @@ No files, toolchains or global environment variables are changed.
             if value != str(expected):
                 raise RustRuntimeError("Rust executable environment override requires review")
         elif name.startswith(("RUST", "CARGO_", "DYLD_", "LD_")):
+            # Diagnostic filtering is not an executable/toolchain override.
+            # It is deliberately not forwarded to the isolated child env.
+            if name == "RUST_LOG":
+                continue
             if name == "CARGO_NET_OFFLINE" and value.lower() == "true":
                 continue
             if name == "CARGO_HOME" and Path(value).absolute() == cargo_home.absolute():
@@ -115,8 +119,10 @@ No files, toolchains or global environment variables are changed.
             raise RustRuntimeError("Rust execution environment override requires review")
 
     config_paths = [cargo_home / "config", cargo_home / "config.toml"]
+    analyzer_config_paths = []
     for directory in (repo, *repo.parents):
         config_paths.extend((directory / ".cargo/config", directory / ".cargo/config.toml"))
+        analyzer_config_paths.append(directory / "rust-analyzer.toml")
         for name in ("rust-toolchain", "rust-toolchain.toml"):
             toolchain_path = directory / name
             if toolchain_path.exists() or toolchain_path.is_symlink():
@@ -139,6 +145,21 @@ No files, toolchains or global environment variables are changed.
         document = _read_config(path)
         if document is not None and document not in ({}, {"net": {"offline": True}}):
             raise RustRuntimeError("Cargo configuration requires reviewed safe preparation")
+
+    # A server-side config must not re-enable build scripts/proc macros behind
+    # the client's disabled settings. Unknown configuration is reviewed first.
+    for key in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME", "APPDATA"):
+        if inherited.get(key):
+            base = Path(inherited[key])
+            if key in {"HOME", "USERPROFILE"}:
+                base = base / ".config"
+            analyzer_config_paths.extend((base / "rust-analyzer.toml",
+                                          base / "rust-analyzer/rust-analyzer.toml",
+                                          base / "rust-analyzer/config.toml"))
+    for path in dict.fromkeys(analyzer_config_paths):
+        document = _read_config(path)
+        if document not in (None, {}):
+            raise RustRuntimeError("Rust analyzer configuration requires reviewed safe preparation")
 
     settings = _read_config(rustup_home / "settings.toml")
     if settings is not None:

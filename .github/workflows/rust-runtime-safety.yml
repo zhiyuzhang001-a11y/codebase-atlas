@@ -1,0 +1,50 @@
+name: Rust Runtime Safety (Internal)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/rust-runtime-safety.yml'
+      - 'src/codebase_atlas/**'
+      - 'tests/test_rust*.py'
+      - 'tests/test_windows*.py'
+      - 'tests/test_frontend_installation.py'
+      - 'tests/fixtures/rust-product/**'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-14
+            target: macos-arm64
+          - runner: windows-latest
+            target: windows-x86_64
+          - runner: windows-11-arm
+            target: windows-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install closed-gate frontend
+        run: python -m pip install .
+      - name: Confirm exact target and closed public gate
+        env:
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python -c "import os; from codebase_atlas.release_installation import current_platform_target; from codebase_atlas.languages import get_language; assert current_platform_target() == os.environ['ATLAS_EXPECTED_TARGET']; assert not get_language('rust').public_enabled"
+      - name: Run internal source/receipt/transaction and native ownership regressions
+        run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_scanner_installation tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
+      # Native Windows tests must execute on both Windows targets. Non-Windows
+      # skips are expected here and are not installed-wheel product evidence.

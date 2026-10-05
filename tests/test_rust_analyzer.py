@@ -203,6 +203,7 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         process.poll.return_value = None
         with patch("codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: clock[0]), \
                 patch("codebase_atlas.providers.rust_analyzer.subprocess.Popen", return_value=process), \
+                patch("codebase_atlas.windows_owned_process.WindowsOwnedProcess", return_value=process), \
                 patch("codebase_atlas.providers.rust_analyzer.threading.Thread"), \
                 patch.object(provider, "_request", side_effect=request), \
                 patch.object(provider, "_notify"), \
@@ -370,10 +371,10 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             "codebase_atlas.providers.rust_analyzer.subprocess.run"
         ) as kill_tree:
             provider._terminate()
-        kill_tree.assert_called_once_with(
-            ["taskkill", "/PID", "12345", "/T", "/F"],
-            check=False, capture_output=True, timeout=3,
-        )
+        kill_tree.assert_not_called()
+        process.terminate.assert_called_once()
+        process.close_owned_job.assert_called_once()
+        self.assertLessEqual(process.close_owned_job.call_args.args[0], 10)
         process.wait.assert_called_once_with(timeout=3)
         self.assertIsNone(provider._process)
 
@@ -388,15 +389,16 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         def shutdown(*_args):
             elapsed[0] += 1.0
             raise TimeoutError("shutdown stalled")
-        def taskkill(*_args, **kwargs):
-            elapsed[0] += kwargs["timeout"]
+        def close_job(timeout):
+            elapsed[0] += timeout
+        process.close_owned_job.side_effect = close_job
         def wait(**kwargs):
             elapsed[0] += kwargs["timeout"]
             raise subprocess.TimeoutExpired("analyzer", kwargs["timeout"])
         process.wait.side_effect = wait
         with patch("codebase_atlas.providers.rust_analyzer.os.name", "nt"), patch(
             "codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: elapsed[0]
-        ), patch("codebase_atlas.providers.rust_analyzer.subprocess.run", side_effect=taskkill), patch.object(
+        ), patch.object(
             provider, "_request", side_effect=shutdown
         ):
             with self.assertRaisesRegex(RustAnalyzerError, "cleanup grace"):

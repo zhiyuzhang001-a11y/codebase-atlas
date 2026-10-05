@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     initialize.add_argument("--node-bin-dir", type=Path)
     initialize.add_argument("--tsconfig", type=Path)
     initialize.add_argument("--data-dir", type=Path)
+    initialize.add_argument("--rust-runtime-receipt", type=Path)
     setup = commands.add_parser(
         "setup", help="read-only compatibility check for required local runtimes"
     )
@@ -135,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--serena-python", type=Path)
     setup.add_argument("--node-bin-dir", type=Path)
     setup.add_argument("--tsconfig", type=Path)
+    setup.add_argument("--rust-runtime-receipt", type=Path)
     onboard = commands.add_parser("onboard", help="plan or explicitly apply a guided local onboarding flow")
     onboard.add_argument("--repo", type=Path, default=Path.cwd())
     onboard.add_argument("--config", type=Path)
@@ -145,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     onboard.add_argument("--node-bin-dir", type=Path)
     onboard.add_argument("--tsconfig", type=Path)
     onboard.add_argument("--data-dir", type=Path)
+    onboard.add_argument("--rust-runtime-receipt", type=Path)
     onboard.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
     onboard.add_argument("--apply", action="store_true")
     codex = commands.add_parser(
@@ -416,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo, config_path, args.language, args.node, args.cbm_binary,
             args.serena_python, args.node_bin_dir, args.tsconfig, args.data_dir,
             args.mode,
+            args.rust_runtime_receipt,
         ))
         if not args.apply:
             print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -455,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             serena_python=serena_python,
             node_bin_dir=node_bin_dir,
             tsconfig=tsconfig,
+            rust_runtime_receipt=(configured.rust_runtime_receipt if candidate is not None else args.rust_runtime_receipt),
         )
         ok = required_checks_ok(checks)
         print(json.dumps({
@@ -473,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
             node_bin_dir=args.node_bin_dir,
             tsconfig=args.tsconfig,
             data_dir=args.data_dir,
+            rust_runtime_receipt=args.rust_runtime_receipt,
         )
         config.write(config_path)
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
@@ -896,6 +902,19 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2))
             return 2
         config_identity, config_bytes = _config_publication_snapshot(args.config)
+        if config.language == "rust":
+            try:
+                def publication_preflight():
+                    if _config_publication_snapshot(args.config) != (config_identity, config_bytes):
+                        raise RuntimeError("Rust config changed during indexing")
+                result = _index_repository(config, args.mode, publication_preflight=publication_preflight)
+                print(json.dumps({"status": "updated" if args.command == "update" else "indexed",
+                                  "provider": result,
+                                  "index": index_freshness(config.data_dir, config.repository, config.project)}, indent=2))
+                return 0
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(json.dumps({"status": "failed", "error": str(exc)}, indent=2))
+                return 2
         if args.command == "update" and not args.force_provider:
             freshness = index_freshness(config.data_dir, config.repository, config.project)
             provider_database = provider_database_health(config.cache_dir, config.project)
@@ -1255,8 +1274,11 @@ def main(argv: list[str] | None = None) -> int:
             from .rust_project import load_rust_service
             if active_config_path is None:
                 raise SystemExit("Rust service requires an exact project configuration")
+            rust_config = AtlasConfig.load(active_config_path)
+            if rust_config != args._atlas_config:
+                raise SystemExit("Rust project configuration changed during service preparation")
             service = load_rust_service(
-                AtlasConfig.load(active_config_path),
+                rust_config,
                 session_continuations=args.command in {"mcp", "query-batch", "ui"},
             )
             transport = None
@@ -1272,6 +1294,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "mcp" and transport is not None and active_config_path is not None
             else None
         )
+        if args.command == "mcp" and args.language == "rust":
+            from .rust_mcp_refresh import RustMcpRefreshCoordinator
+            refresh_coordinator = RustMcpRefreshCoordinator(
+                rust_config, service, args.index_status, config_path=active_config_path)
         return _run_service_command(args, service, refresh_coordinator)
     parser.print_help()
     return 0
@@ -1510,6 +1536,7 @@ def _apply_project_config(args) -> None:
         candidate = local if local.is_file() else None
     if candidate is not None:
         config = AtlasConfig.load(candidate)
+        args._atlas_config = config
         args.repo = config.repository
         args.node = config.node
         args.analyzer = config.analyzer
@@ -1554,7 +1581,30 @@ def _apply_project_config(args) -> None:
         )
 
 
-def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
+def _index_repository(config: AtlasConfig, mode: str, *, refresh_lease=None, publication_preflight=None) -> dict[str, object]:
+    if config.language == "rust":
+        deadline = time.monotonic() + 120.0
+        from .rust_installation import runtime_from_receipt
+        from .rust_scanner_installation import verified_scanner
+        from .rust_refresh import RustRefreshCoordinator
+        if config.rust_runtime_receipt is None:
+            raise ValueError("Rust indexing requires a verified runtime receipt")
+        runtime = runtime_from_receipt(config.rust_runtime_receipt, repository=config.repository)
+        runtime.environment(config.repository)  # Fail closed before scanner execution.
+        scanner = verified_scanner(config.repository)
+        def preflight():
+            scanner.verify()
+            return runtime.environment(config.repository)
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("Rust indexing deadline exceeded during preparation")
+        result = RustRefreshCoordinator(config, scanner.verify(), lease=refresh_lease,
+                                        mode=mode, execution_preflight=preflight,
+                                        publication_preflight=publication_preflight).refresh(
+                                            timeout_seconds=budget)
+        if result.get("status") != "refreshed":
+            raise RuntimeError("Rust indexing failed: " + str(result.get("reason") or result.get("status")))
+        return result | {"project": config.project}
     if config.provider_layout == SHARED_PROVIDER_LAYOUT:
         cache_dir = ensure_managed_provider_cache(config.cache_dir)
     else:

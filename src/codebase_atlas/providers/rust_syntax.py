@@ -390,12 +390,14 @@ class RustSyntaxProvider:
         project: str,
         *,
         runner: Runner = subprocess.run,
+        execution_preflight: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self.scanner = scanner.absolute()
         self.repository = repository.resolve()
         self.data_dir = data_dir.resolve()
         self.project = project
         self.runner = runner
+        self.execution_preflight = execution_preflight
 
     def stage(self, generation: dict[str, Any], *, timeout_seconds: float = 120.0) -> StagedRustSyntaxShard:
         if generation.get("repository") != str(self.repository) or generation.get("project") != self.project:
@@ -452,6 +454,8 @@ class RustSyntaxProvider:
                 stream.write(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode())
                 stream.flush()
                 os.fsync(stream.fileno())
+            environment = (self.execution_preflight() if self.execution_preflight is not None
+                           else {"PATH": os.environ.get("PATH", ""), "CARGO_NET_OFFLINE": "true"})
             completed = self.runner(
                 [str(self.scanner), str(self.repository), str(scope_path), str(output_path)],
                 check=False,
@@ -459,7 +463,7 @@ class RustSyntaxProvider:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=self.repository,
-                env={"PATH": os.environ.get("PATH", ""), "CARGO_NET_OFFLINE": "true"},
+                env=environment,
                 timeout=timeout_seconds,
             )
             if completed.returncode != 0:

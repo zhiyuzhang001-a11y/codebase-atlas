@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from codebase_atlas.config import AtlasConfig
 from codebase_atlas.index_state import state_path
@@ -31,6 +32,32 @@ def git(repository: Path, *args: str) -> None:
 
 
 class RustRefreshTests(unittest.TestCase):
+    def test_publication_guard_failure_preserves_previous_generation(self):
+        coordinator = RustRefreshCoordinator(self.config, self.scanner, runner=self.runner)
+        self.assertEqual(coordinator.refresh()["status"], "refreshed")
+        before = {path: path.read_bytes() for path in (
+            manifest_path(self.data), state_path(self.data), rust_syntax_pointer_path(self.data))}
+        def reject():
+            raise RuntimeError("config changed")
+        result = RustRefreshCoordinator(self.config, self.scanner, runner=self.runner,
+                                        publication_preflight=reject).refresh()
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["previous_generation_preserved"])
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+
+    def test_preparation_and_scan_share_publication_deadline(self):
+        clock = [100.0]
+        def observer(phase):
+            if phase == "prepared":
+                clock[0] = 102.0
+        with patch("codebase_atlas.rust_refresh.monotonic", side_effect=lambda: clock[0]):
+            result = RustRefreshCoordinator(self.config, self.scanner, runner=self.runner,
+                                            phase_observer=observer).refresh(timeout_seconds=1)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("deadline", result["error"])
+        self.assertFalse(manifest_path(self.data).exists())
+        self.assertFalse(rust_syntax_pointer_path(self.data).exists())
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

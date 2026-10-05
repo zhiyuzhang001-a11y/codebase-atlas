@@ -23,6 +23,7 @@ from .provider_transport import ProviderInitializeTimeout
 from .providers.python_callers import PythonExactCallerProvider
 from .providers.python_references import PythonExactReferenceProvider
 from .providers.python_registrations import RegistrationIndex
+from .providers.rust_analyzer import RustAnalyzerError
 
 if TYPE_CHECKING:
     from .lifecycle import CodebaseMemoryDaemon
@@ -428,6 +429,11 @@ class AtlasService:
                 request.query_type, limits, started,
                 reason="rust_source_position_required",
             ), status="unavailable")
+        if (self.rust_syntax_index is not None
+                and source_path not in self.rust_syntax_index.scope["source_paths"]):
+            return replace(self._time_budget_response(
+                request.query_type, limits, started, reason="rust_source_outside_admitted_scope"
+            ), status="unavailable")
         if request.query_type == "references" and self.rust_syntax_index is not None:
             declarations = self.rust_syntax_index.definition_candidates(
                 request.symbol, target_path=source_path,
@@ -497,7 +503,17 @@ class AtlasService:
                 reason="target_outside_indexed_language_scope",
             )
         if self.indexed_language == "rust":
-            return self._query_rust(request, limits, started)
+            try:
+                return self._query_rust(request, limits, started)
+            except (RustAnalyzerError, ValueError, OSError):
+                # Admission/protocol/position failure is not an empty exact
+                # answer. Also close a child whose startup never completed.
+                if self.rust_provider is not None:
+                    self.rust_provider.close()
+                self._rust_started = False
+                return replace(self._time_budget_response(
+                    request.query_type, limits, started, reason="rust_runtime_or_request_unavailable"
+                ), status="unavailable")
         if request.parameters.get("relation") == "registers":
             if self.registration_index is None:
                 return self._impact_response(

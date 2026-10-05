@@ -24,7 +24,7 @@ generation 与 refresh/recovery 模块。大型 Rust 留出集的正确性和资
 [Provider](https://github.com/zhiyuzhang001-a11y/codebase-atlas/actions/runs/37219250587)。
 这里的 scanner 门是构建及资产身份验证，不是五平台 Rust installed-wheel 语义验收。
 
-当前缺口有直接源码依据：
+计划制定时的缺口有直接源码依据（后续落实情况见文末实施进展）：
 
 - `languages.py` 的 Rust `public_enabled=False`；普通 `atlas enable` 不接受 Rust。
 - `AtlasConfig` 的运行时字段仍以 Node、Codebase Memory、Serena 为中心；Rust 工具身份、
@@ -297,3 +297,41 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   的 smoke wheel 通过 `verify_release`，SHA-256 为
   `6993f8cdcaa8308eea66ceac27ae5826fde2408aed476e3ee45a8f803d58cc7a`。
   仍未推送公开启用开关、未发布新版本、未改变任何现有项目部署或全局连接。
+- 第四批接通 Rust onboarding、正常 index/update、项目发现、维护检查和生命周期；
+  不再借用 CBM 数据库判定 Rust 就绪。刷新借用 exact-project 外层 lease，enable
+  回滚和持久恢复包含 Rust pointer，防止失败后 pointer 指向新、manifest 仍指向旧。
+- 新增纯 frontend 版本化安装和独立 scanner 私有 receipt/source lock；纯 Rust 不下载
+  旧语言 Provider。安装发布逐路径 no-replace、receipt 最后发布，故障时仅回收本次
+  拥有的 inode；不同已有安装和外来目录不会覆盖。正常公开获取与完整准备入口
+  仍需后续完成，不能把低层可信资产安装函数当成已交付的公开下载流程。
+- 本机 scanner 使用已验证 1.98.0 工具链两次独立离线构建，二进制字节一致；
+  macos-arm64 archive SHA-256 为
+  `e05466e54c24eb37641647efa43e5794c31fe1efb292aa3d1a37dcb20921ae4d`。
+  旧 Actions 资格资产下载无进展后有界取消，未重复触发或上传 scanner 到 Release。
+- 真实临时 crate 流程发现并修复日志环境误拒、验证缺少进程清理证据、项目发现残留
+  CBM 依赖三个问题。早期只检查 exit code 的 harness 曾把 stop/remove 的
+  `not_enabled` 误计成功；此记录作废，改为逐操作固定状态断言后完整复跑通过。
+  最新真实 run 完成 enable/status、T2 verify、stop/resume、remove/repeated remove；
+  仅操作临时 fixture，源码不变，共享官方工具不重装。不是 installed-wheel 验收。
+- 同一内部 MCP handler 完成真实 T2 查询、refresh、新 generation rebind、再次查询；
+  原和新 owned analyzer 均退出。query snapshot 绑定共享刷新 lease，拒绝待恢复事务
+  与会话期间变更的配置；T1/T2 不混用 generation。这不是新 stdio/桌面 Codex 任务证据。
+- 刷新准备、scanner 与发布检查共享 deadline；配置中途变更或超时保留旧 generation。
+  Rust startup/protocol/位置错误返回 unavailable 并清理，不冒充完整空结果。server-side
+  analyzer 配置也需安全审查，不能背后恢复 build scripts/proc macros。
+- Windows 新增原生 owner/DACL 只读检查，以及创建即进入 kill-on-close Job 的 stdio
+  子进程封装，避免父进程先退出后 PID tree 清理失效。根据 Microsoft 原生 API 文档
+  实施，已补权限策略和 native Job/worker 回归；本机非 Windows，原生门仍待 runner
+  验证，不能以本机 skipped 替代通过。版本探测和 scanner 的完整进程树观察仍待补齐。
+- 第四批中间全套本机回归运行 606 项，586 项通过、20 项 skipped，无失败；其中
+  两项是新 Windows Job 原生测试。本批仍在迭代，后续改动须重跑。临时关闭 Rust 的
+  packaging smoke wheel 通过 `verify_release`，SHA-256 为
+  `7aaf2f79e9980f18280e121d2919e738fd48dda3b84d5d05cf6702eb4529f7cc`。
+  该 wheel 不是最终候选，不替换已发布资产，后续修改不沿用其验收。
+- 第二阶段尚未声明退出：五平台原生安全/准备、禁止执行与禁网观察、安装态完整
+  生命周期、第三阶段资源与冻结语义用例、两个外仓及真实 Codex 新任务均未完成。
+  `public_enabled=False` 保持不变，最终公开启用仍需独立证据审查及明确授权。
+- 第四批最新本机全套回归运行 608 项，587 项通过、21 项 skipped，无失败；
+  三项 native Windows ACL/Job 回归须在 Windows x86_64/ARM64 真正执行。新增五平台
+  `Rust Runtime Safety (Internal)` workflow 只检查内部 receipt/事务/原生 ownership，
+  强制公开 Rust 仍关闭，不把此门当成最终正常安装/语义/资源资格。

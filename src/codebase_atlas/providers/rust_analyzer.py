@@ -329,20 +329,15 @@ class RustAnalyzerProvider:
                 raise RustAnalyzerError("rust-analyzer version mismatch")
             environment = self._environment()
             self._remaining_startup(deadline)
-            process = subprocess.Popen(
-                [str(self.analyzer), *self.arguments],
-                cwd=self.repository,
-                env=environment,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-                start_new_session=os.name != "nt",
-                creationflags=(
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    if os.name == "nt" else 0
-                ),
-            )
+            if os.name == "nt":
+                from ..windows_owned_process import WindowsOwnedProcess
+                process = WindowsOwnedProcess([str(self.analyzer), *self.arguments],
+                                               cwd=self.repository, env=environment)
+            else:
+                process = subprocess.Popen(
+                    [str(self.analyzer), *self.arguments], cwd=self.repository,
+                    env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
             if process.stdin is None or process.stdout is None or process.stderr is None:
                 process.kill()
                 raise RustAnalyzerError("rust-analyzer lacks stdio pipes")
@@ -679,15 +674,6 @@ class RustAnalyzerProvider:
                 except ProcessLookupError:
                     pass
             else:
-                # Terminating only the parent leaves analyzer-owned workers alive.
-                # Kill the tree while its parent PID still identifies that tree.
-                try:
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        check=False, capture_output=True, timeout=budget(3),
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
                 process.terminate()
             try:
                 process.wait(timeout=budget(3))
@@ -718,6 +704,12 @@ class RustAnalyzerProvider:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        job_error = None
+        if process is not None and hasattr(process, "close_owned_job"):
+            try:
+                process.close_owned_job(budget(CLEANUP_GRACE_SECONDS))
+            except (OSError, TimeoutError) as exc:
+                job_error = exc
         for stream in (
             process.stdin if process is not None else None,
             process.stdout if process is not None else None,
@@ -737,6 +729,8 @@ class RustAnalyzerProvider:
         self._semantic_ready = False
         if cleanup_failed:
             raise RustAnalyzerError("rust-analyzer did not exit within cleanup grace")
+        if job_error is not None:
+            raise RustAnalyzerError("rust-analyzer Windows Job cleanup failed") from job_error
 
     def close(self) -> None:
         process = self._process

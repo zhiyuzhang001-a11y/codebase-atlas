@@ -138,6 +138,10 @@ class ProjectRefreshLease:
         self.project = project
         self._handle = None
 
+    @property
+    def owned(self) -> bool:
+        return self._handle is not None
+
     def acquire(self) -> bool:
         if self._handle is not None:
             return True

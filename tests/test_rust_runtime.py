@@ -54,6 +54,12 @@ class RustRuntimePreflightTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(RustRuntimeError):
                 self.check({name: "sentinel"})
 
+    def test_diagnostic_log_filter_is_not_forwarded_or_treated_as_execution_override(self):
+        result = self.check({"RUST_LOG": "info,atlas=debug"})
+        self.assertNotIn("RUST_LOG", result)
+        with self.assertRaises(RustRuntimeError):
+            self.check({"RUST_LOG": "info", "RUSTC_WRAPPER": "sentinel"})
+
     def test_rejects_project_ancestor_and_user_cargo_config(self):
         for directory in (self.repo / ".cargo", self.root / ".cargo", self.root / "cargo-home"):
             with self.subTest(directory=directory):
@@ -71,6 +77,18 @@ class RustRuntimePreflightTests(unittest.TestCase):
             self.check()
         path.write_text('[toolchain]\nchannel="1.98.0"\n')
         self.check()
+
+    def test_server_config_cannot_reenable_project_execution(self):
+        path = self.repo / "rust-analyzer.toml"
+        path.write_text('[cargo.buildScripts]\nenable=true\n')
+        with self.assertRaisesRegex(RustRuntimeError, "analyzer configuration"):
+            self.check()
+        path.unlink()
+        home = self.root / "user-config"
+        (home / "rust-analyzer").mkdir(parents=True)
+        (home / "rust-analyzer/config.toml").write_text('[procMacro]\nenable=true\n')
+        with self.assertRaisesRegex(RustRuntimeError, "analyzer configuration"):
+            self.check({"XDG_CONFIG_HOME": str(home)})
 
     def test_bad_checksum_and_symlink_fail_before_probing(self):
         self.tools[0].path.write_bytes(b"tampered")

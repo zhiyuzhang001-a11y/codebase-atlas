@@ -61,7 +61,11 @@ def session_start_update(
     freshness = index_freshness(
         configured.data_dir, configured.repository, configured.project
     )
-    provider = provider_database_health(configured.cache_dir, configured.project)
+    if configured.language == "rust":
+        from .rust_project import rust_index_health
+        provider = rust_index_health(configured.data_dir, configured.repository, configured.project)
+    else:
+        provider = provider_database_health(configured.cache_dir, configured.project)
     registrations = (
         registration_index_health(
             configured.data_dir,
@@ -110,7 +114,7 @@ def session_start_update(
             "previous_index_preserved": False,
         }
     if (
-        configured.provider_layout != SHARED_PROVIDER_LAYOUT
+        configured.language != "rust" and configured.provider_layout != SHARED_PROVIDER_LAYOUT
         and freshness.get("status") in {"stale", "rebuild_required"}
     ):
         probe = GlobalCbmLock(timeout_seconds=0.02)
