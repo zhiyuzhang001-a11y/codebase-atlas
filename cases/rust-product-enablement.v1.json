@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "contract": "rust-product-enablement",
+  "status": "FROZEN_IMPLEMENTATION_NOT_ACCEPTED",
+  "parent_contract": "rust-layered-stage1-contract.v1.json",
+  "public_enablement_authorized": false,
+  "platforms": ["linux-x64", "linux-arm64", "macos-arm64", "windows-x64", "windows-arm64"],
+  "transports": ["cli", "json-lines", "mcp-stdio"],
+  "budgets": {
+    "query_default_ms": 30000,
+    "query_max_ms": 300000,
+    "acceptance_query_ms": 60000,
+    "cold_query_end_to_end_ms": 60000,
+    "readiness_retry_max_ms": 60000,
+    "cleanup_grace_ms": 10000,
+    "fixture_enable_index_ms": 120000,
+    "external_enable_index_ms": 300000,
+    "fresh_process_repeats_per_platform": 3,
+    "t1_process_tree_peak_rss_kib_max": 524288,
+    "t2_process_tree_peak_rss_kib_max": 1572864,
+    "deadline_rule": "version/spawn/initialize/readiness/query share the request remaining budget; cleanup grace is separate and measured; retries never reset it",
+    "missing_resource_sample": "blocked_not_passed"
+  },
+  "coordinate_contract": {
+    "public": "one_based_unicode_codepoints",
+    "lsp": "zero_based_utf16_code_units",
+    "conversion": "both requests and returned ranges; reject out of file positions"
+  },
+  "capabilities": {
+    "definition_without_position": "syntactic_candidates_T1",
+    "definition_with_position": "T2_exact_or_explicit_partial",
+    "references": "T2_unique_declaration_path_range_or_explicit_partial",
+    "unsupported": ["callers", "callees", "implementations", "related_tests", "impact"],
+    "scip": "evaluation_only",
+    "empty_partial_scope": "never_complete_no_match"
+  },
+  "lifecycle": ["plan", "enable", "status", "doctor", "verify", "stop", "resume", "update", "downgrade", "remove", "remove_again"],
+  "safety": {
+    "required_checks_before_any_probe": ["verified_binary_identity", "env_allowlist", "cargo_project_ancestor_user_config", "rustup_override_and_toolchain", "wrapper_and_runner_rejection"],
+    "allowed_probes": [
+      {"tool": "verified-rust-analyzer", "args": ["--version"]},
+      {"tool": "verified-cargo", "args": ["--version"]},
+      {"tool": "verified-rustc", "args": ["--version", "--verbose"]},
+      {"tool": "verified-cargo", "args": ["metadata", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", "<verified-manifest>"]},
+      {"tool": "verified-rustc", "args": ["--print", "sysroot"]},
+      {"tool": "verified-rustc", "args": ["--print", "cfg"]},
+      {"tool": "verified-rustc", "args": ["--print", "target-libdir"]}
+    ],
+    "other_probes": "reject_until_contract_review",
+    "cwd": "exact_verified_repository_or_verified_tool_directory",
+    "environment": "platform_minimum_allowlist_plus_verified_tool_paths; no inherited wrappers or rustup shims",
+    "query_network": false,
+    "project_build_check_test_run": false,
+    "build_scripts": false,
+    "proc_macros": false,
+    "global_config_changes": false,
+    "evidence": ["sentinel_not_executed", "network_observation", "owned_process_tree_argv", "source_fingerprint_unchanged"]
+  },
+  "fixture_queries": [
+    {"id": "crate-left", "fixture": "crate", "type": "definition", "symbol": "run", "source_path": "src/lib.rs", "source_line": 4, "source_column": 28, "expected_path": "src/left.rs", "expected_line": 1},
+    {"id": "crate-right", "fixture": "crate", "type": "definition", "symbol": "run", "source_path": "src/lib.rs", "source_line": 5, "source_column": 30, "expected_path": "src/right.rs", "expected_line": 1},
+    {"id": "crate-unicode", "fixture": "crate", "type": "definition", "symbol": "run", "source_path": "src/lib.rs", "source_line": 6, "source_column": 44, "expected_path": "src/left.rs", "expected_line": 1},
+    {"id": "crate-candidates", "fixture": "crate", "type": "definition", "symbol": "run", "expected_paths": ["src/left.rs", "src/right.rs"], "expected_status": "syntactic_candidates"},
+    {"id": "crate-references", "fixture": "crate", "type": "references", "symbol": "run", "target_path": "src/left.rs", "target_range": {"start_line": 1, "end_line": 1, "start_column": 8, "end_column": 11}, "required_paths": ["src/left.rs", "src/lib.rs"]},
+    {"id": "workspace-definition", "fixture": "workspace", "type": "definition", "symbol": "run", "source_path": "app/src/main.rs", "source_line": 1, "source_column": 33, "expected_path": "core/src/lib.rs", "expected_line": 1},
+    {"id": "workspace-references", "fixture": "workspace", "type": "references", "symbol": "run", "target_path": "core/src/lib.rs", "target_range": {"start_line": 1, "end_line": 1, "start_column": 8, "end_column": 11}, "required_paths": ["core/src/lib.rs", "app/src/main.rs"]}
+  ],
+  "negative_gates": ["foreign_repository_position", "wrong_declaration_range", "ambiguous_target", "out_of_file_position", "unsupported_relation", "partial_scope_empty", "stale_generation", "stop_blocks_queries", "malicious_cargo_wrapper", "rustup_download_trap", "checksum_mismatch", "combined_startup_delays", "cancel_cleanup", "refresh_failure_restores_previous", "concurrent_mutation", "old_rust_schema_downgrade_not_typescript"],
+  "coverage": {
+    "fixtures": "all_five_platforms_all_transports",
+    "external": "two_frozen_repositories_each_all_five_platforms_cli_and_mcp; at_least_4_definitions_and_4_references_each",
+    "live_codex": "at_least_one_new_task_explicitly_authorized_temporary_project",
+    "final_draft": "repeat_five_platform_fixture_external_and_lifecycle_using_downloaded_final_bytes",
+    "missing_platform_or_tool": "blocked_not_skipped_pass"
+  }
+}

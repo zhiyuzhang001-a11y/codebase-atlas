@@ -29,6 +29,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
+"codebase_atlas" = ["rust_release_lock.json"]
 "codebase_atlas.ui_assets" = ["*.html", "*.css", "*.js"]
 
 [tool.setuptools.data-files]

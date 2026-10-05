@@ -156,6 +156,91 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(RustAnalyzerError, "unavailable"):
             provider._relative_uri((self.repository / "src/missing.rs").as_uri())
 
+    def test_start_uses_one_deadline_for_version_initialize_and_readiness(self) -> None:
+        clock = [0.0]
+        initialize_budgets = []
+
+        def version_runner(*args, **kwargs):
+            self.assertLessEqual(kwargs["timeout"], 1.0)
+            clock[0] = 0.4
+            return subprocess.CompletedProcess(args[0], 0, "rust-analyzer 1.98.0 (fake)", "")
+
+        def request(method, params, timeout_seconds):
+            if method == "initialize":
+                initialize_budgets.append(timeout_seconds)
+                clock[0] = 1.1
+                return {"capabilities": {}}
+            self.fail("readiness must not run after the shared deadline")
+
+        provider = self.provider()
+        provider.version_runner = version_runner
+        process = Mock()
+        process.poll.return_value = None
+        with patch("codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: clock[0]), \
+                patch("codebase_atlas.providers.rust_analyzer.subprocess.Popen", return_value=process), \
+                patch("codebase_atlas.providers.rust_analyzer.threading.Thread"), \
+                patch.object(provider, "_request", side_effect=request), \
+                patch.object(provider, "_notify"), \
+                patch.object(provider, "_terminate") as terminate:
+            with self.assertRaises(TimeoutError):
+                provider.start(timeout_seconds=1.0)
+            self.assertAlmostEqual(initialize_budgets[0], 0.6)
+            terminate.assert_called_once()
+        provider._process = None
+
+    def test_version_timeout_is_a_timeout_not_an_uncaught_subprocess_error(self) -> None:
+        provider = self.provider()
+        provider.version_runner = Mock(side_effect=subprocess.TimeoutExpired("rust-analyzer", 0.1))
+        with self.assertRaises(TimeoutError), patch(
+            "codebase_atlas.providers.rust_analyzer.subprocess.Popen"
+        ) as spawn:
+            provider.start(timeout_seconds=0.1)
+        spawn.assert_not_called()
+
+    def test_startup_lock_contention_cannot_wait_outside_request_budget(self):
+        provider = self.provider()
+        provider._state_lock = Mock()
+        provider._state_lock.acquire.return_value = False
+        provider.version_runner = Mock()
+        with self.assertRaises(TimeoutError):
+            provider.start(timeout_seconds=0.01)
+        self.assertLessEqual(provider._state_lock.acquire.call_args.kwargs["timeout"], 0.01)
+        provider._state_lock.release.assert_not_called()
+        provider.version_runner.assert_not_called()
+
+    def test_unicode_positions_convert_public_codepoints_to_lsp_utf16(self) -> None:
+        provider = self.provider()
+        source = 'pub fn call() { let _ = "🦀"; run(); }'
+        column = source.index("run") + 1
+        requests = []
+
+        def request(method, params, timeout):
+            requests.append(params["position"])
+            return []
+
+        provider._semantic_ready = True
+        with patch.object(provider, "_assert_fresh"), patch.object(provider, "_open", return_value=source), \
+                patch.object(provider, "_request", side_effect=request):
+            provider.query("definition", "run", source_path="src/lib.rs",
+                           source_line=1, source_column=column)
+        self.assertEqual(requests, [{"line": 0, "character": column}])
+
+    def test_unicode_result_range_converts_utf16_and_rejects_split_surrogate(self) -> None:
+        provider = self.provider()
+        source = 'let _ = "🦀"; run();'
+        start = len(source[:source.index("run")].encode("utf-16-le")) // 2
+        raw = {"uri": (self.repository / "src/lib.rs").as_uri(), "range": {
+            "start": {"line": 0, "character": start},
+            "end": {"line": 0, "character": start + 3},
+        }}
+        with patch.object(provider, "_open", return_value=source):
+            node = provider._nodes([raw], "definition", "run")[0]
+            self.assertEqual(node.location.start_column, source.index("run") + 1)
+            self.assertEqual(node.location.end_column, source.index("run") + 4)
+            raw["range"]["start"]["character"] = source.index("🦀") + 1
+            with self.assertRaises(RustAnalyzerError):
+                provider._nodes([raw], "definition", "run")
+
     def test_lsp_reader_accumulates_fragmented_payload(self) -> None:
         class FragmentedStream(BytesIO):
             def read(self, size: int = -1) -> bytes:

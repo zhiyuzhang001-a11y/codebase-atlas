@@ -171,6 +171,18 @@ class LanguageScopeTests(unittest.TestCase):
         self.assertEqual(provider.starts, 1)
         self.assertEqual(provider.closes, 1)
 
+    def test_rust_empty_partial_scope_is_not_complete_no_match(self):
+        provider = FakeRustProvider()
+        provider.scope = {"status": "exact_hits_partial_scope"}
+        provider.query = lambda *args, **kwargs: ()
+        with AtlasService(indexed_language="rust", rust_provider=provider) as service:
+            response = service.query(QueryRequest("definition", "run", {
+                "source_path": "src/lib.rs", "source_line": 1, "source_column": 8,
+            }))
+        self.assertEqual(response.nodes, ())
+        self.assertEqual(response.status, "exact_hits_partial_scope")
+        self.assertEqual(response.completeness["scope_status"], "exact_hits_partial_scope")
+
 
 class QueryContractTests(unittest.TestCase):
     def test_definition_position_is_optional_but_atomic(self) -> None:

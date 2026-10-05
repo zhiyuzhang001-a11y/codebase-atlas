@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -274,7 +276,10 @@ class RustAnalyzerProvider:
                 return message.get("result")
 
     def start(self, *, timeout_seconds: float = 30.0) -> None:
-        with self._state_lock:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Rust analyzer startup timeout must be finite and positive")
+        deadline = monotonic() + timeout_seconds
+        with self._startup_lock(deadline):
             if self.running:
                 return
             try:
@@ -283,18 +288,22 @@ class RustAnalyzerProvider:
                 raise RustAnalyzerError("rust-analyzer is unavailable") from exc
             if not stat.S_ISREG(metadata.st_mode):
                 raise RustAnalyzerError("rust-analyzer binary is unsafe")
-            version = self.version_runner(
-                [str(self.analyzer), *self.arguments, "--version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=self._environment(),
-            )
+            try:
+                version = self.version_runner(
+                    [str(self.analyzer), *self.arguments, "--version"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(5.0, self._remaining_startup(deadline)),
+                    env=self._environment(),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise TimeoutError("rust-analyzer version probe timed out") from exc
             if version.returncode != 0 or not version.stdout.startswith(
                 f"rust-analyzer {PROVIDER_VERSION} "
             ):
                 raise RustAnalyzerError("rust-analyzer version mismatch")
+            self._remaining_startup(deadline)
             process = subprocess.Popen(
                 [str(self.analyzer), *self.arguments],
                 cwd=self.repository,
@@ -351,19 +360,36 @@ class RustAnalyzerProvider:
                         "cachePriming": {"enable": False},
                         "checkOnSave": False,
                     },
-                }, timeout_seconds)
+                }, self._remaining_startup(deadline))
                 if not isinstance(result, dict) or not isinstance(
                     result.get("capabilities"), dict
                 ):
                     raise RustAnalyzerError("rust-analyzer initialize result is invalid")
                 self._notify("initialized")
-                self._wait_ready()
+                self._wait_ready(deadline=deadline)
             except BaseException:
                 self._terminate()
                 raise
 
-    def _wait_ready(self) -> None:
-        deadline = monotonic() + self.readiness_seconds
+    @staticmethod
+    def _remaining_startup(deadline: float) -> float:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("rust-analyzer startup budget exceeded")
+        return remaining
+
+    @contextmanager
+    def _startup_lock(self, deadline: float):
+        if not self._state_lock.acquire(timeout=self._remaining_startup(deadline)):
+            raise TimeoutError("rust-analyzer startup lock timed out")
+        try:
+            yield
+        finally:
+            self._state_lock.release()
+
+    def _wait_ready(self, *, deadline: float | None = None) -> None:
+        readiness_deadline = monotonic() + self.readiness_seconds
+        deadline = min(deadline, readiness_deadline) if deadline is not None else readiness_deadline
         while True:
             remaining = deadline - monotonic()
             if remaining <= 0:
@@ -380,7 +406,7 @@ class RustAnalyzerProvider:
                 graph = self._request(
                     "rust-analyzer/viewCrateGraph",
                     {"full": False},
-                    min(2.0, max(0.001, deadline - monotonic())),
+                    min(2.0, self._remaining_startup(deadline)),
                 )
                 if isinstance(graph, str):
                     body = graph.partition("{")[2].rpartition("}")[0].strip()
@@ -476,9 +502,17 @@ class RustAnalyzerProvider:
                 start.get("line"), start.get("character"),
                 end.get("line"), end.get("character"),
             )
-            if not all(isinstance(value, int) and value >= 0 for value in coordinates):
+            if not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in coordinates):
                 raise RustAnalyzerError("rust-analyzer result position is invalid")
             path = self._relative_uri(uri)
+            source = self._open(path)
+            lines = source.splitlines()
+            if source.endswith("\n"):
+                lines.append("")
+            start_column = self._public_column(lines, coordinates[0], coordinates[1])
+            end_column = self._public_column(lines, coordinates[2], coordinates[3])
+            if (coordinates[2], end_column) < (coordinates[0], start_column):
+                raise RustAnalyzerError("rust-analyzer result range is reversed")
             evidence = {
                 "query_type": query_type,
                 "symbol": symbol,
@@ -490,7 +524,7 @@ class RustAnalyzerProvider:
             nodes.append(Node(
                 id=(
                     f"rust-ra:{self.generation['generation_id']}:{query_type}:"
-                    f"{path}:{coordinates[0] + 1}:{coordinates[1] + 1}:"
+                    f"{path}:{coordinates[0] + 1}:{start_column}:"
                     f"{evidence_hash[:16]}"
                 ),
                 kind="reference" if query_type == "references" else "definition",
@@ -499,8 +533,8 @@ class RustAnalyzerProvider:
                     path,
                     coordinates[0] + 1,
                     coordinates[2] + 1,
-                    coordinates[1] + 1,
-                    coordinates[3] + 1,
+                    start_column,
+                    end_column,
                 ),
                 provider=PROVIDER_NAME,
                 confidence=1.0,
@@ -516,6 +550,21 @@ class RustAnalyzerProvider:
                 ),
             ))
         return tuple(nodes)
+
+    @staticmethod
+    def _public_column(lines: list[str], line: int, utf16_column: int) -> int:
+        if line >= len(lines):
+            raise RustAnalyzerError("rust-analyzer result position is outside the file")
+        units = 0
+        for offset, character in enumerate(lines[line]):
+            if units == utf16_column:
+                return offset + 1
+            units += len(character.encode("utf-16-le")) // 2
+            if units > utf16_column:
+                raise RustAnalyzerError("rust-analyzer result splits a UTF-16 character")
+        if units == utf16_column:
+            return len(lines[line]) + 1
+        raise RustAnalyzerError("rust-analyzer result position is outside the file")
 
     def query(
         self,
@@ -539,6 +588,7 @@ class RustAnalyzerProvider:
             raise ValueError("Rust analyzer source position must be positive")
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
             raise ValueError("timeout_ms must be between 1 and 300000")
+        deadline = monotonic() + min(timeout_ms / 1000.0, self.readiness_seconds)
         self._assert_fresh()
         source = self._open(source_path)
         lines = source.splitlines()
@@ -553,11 +603,13 @@ class RustAnalyzerProvider:
             "textDocument": {
                 "uri": (self.repository / repository_path(source_path)).resolve().as_uri()
             },
-            "position": {"line": source_line - 1, "character": source_column - 1},
+            "position": {
+                "line": source_line - 1,
+                "character": len(lines[source_line - 1][:source_column - 1].encode("utf-16-le")) // 2,
+            },
         }
         if query_type == "references":
             params["context"] = {"includeDeclaration": True}
-        deadline = monotonic() + min(timeout_ms / 1000.0, self.readiness_seconds)
         delay = 0.05
         saw_empty = False
         while True:
