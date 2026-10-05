@@ -22,6 +22,7 @@ from urllib.request import url2pathname
 from ..contracts import EvidenceProvenance, Node, SourceRange, repository_path
 from ..index_state import repository_snapshot
 from ..rust_runtime import RustToolchainRuntime
+from ..rust_owned_command import run_owned
 from ..rust_scope import (
     RustScopeError,
     validate_rust_build_context,
@@ -110,7 +111,7 @@ class RustAnalyzerProvider:
         generation: dict[str, Any],
         *,
         arguments: tuple[str, ...] = (),
-        version_runner: VersionRunner = subprocess.run,
+        version_runner: VersionRunner = run_owned,
         readiness_seconds: float = DEFAULT_READINESS_SECONDS,
         runtime: RustToolchainRuntime | None = None,
     ) -> None:
@@ -318,6 +319,7 @@ class RustAnalyzerProvider:
                     check=False,
                     capture_output=True,
                     text=True,
+                    cwd=self.repository,
                     timeout=min(5.0, self._remaining_startup(deadline)),
                     env=environment,
                 )

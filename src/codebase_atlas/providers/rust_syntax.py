@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from ..contracts import EvidenceProvenance, Node, SourceRange
 from ..rust_scope import RustScopeError, validate_rust_source_scope
+from ..rust_owned_command import run_owned
 
 
 PROVIDER_NAME = "rust-native-syntax"
@@ -389,7 +390,7 @@ class RustSyntaxProvider:
         data_dir: Path,
         project: str,
         *,
-        runner: Runner = subprocess.run,
+        runner: Runner = run_owned,
         execution_preflight: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self.scanner = scanner.absolute()

@@ -344,3 +344,9 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   仍仅允许当前账户/SYSTEM/Administrators 的授权，拒绝外来 owner、外来授权、
   未验证/未提升令牌、空 DACL 与未知 ACE；不提升进程、不改用户 ACL。原本已信任
   Administrators 的权限边界不扩大；这项兼容修复仍须两个 Windows 原生 runner 验证。
+- 最新内部 CI 已通过十二组 OS/Python、package lifecycle 和五平台安全门；两个
+  Windows runner 的目录/文件 ACL 与 Job worker 清理测试均真实执行通过。
+  继续补齐一次性命令 ownership：版本探测与 scanner 采用独立 POSIX session / 原子
+  Windows Job，stdout/stderr 各限 1 MiB，退出/失败/超时均清理遗留 worker，共享
+  10 秒 cleanup 宽限；本机真实命令回归通过，新增路径仍需五平台 CI 验证。
+  尚未完成禁网/禁止执行观察、工具准备及五平台安装态资格，不据此开放产品。

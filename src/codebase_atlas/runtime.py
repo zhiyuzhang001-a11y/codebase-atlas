@@ -107,6 +107,8 @@ def runtime_checks(
         return checks
 
     if language == "rust":
+        from .rust_owned_command import run_owned
+        rust_runner = run_owned if runner is subprocess.run else runner
         from .rust_installation import runtime_from_receipt
         from .rust_runtime import PINNED_TOOLCHAIN, RustRuntimeError
         deadline = monotonic() + 30.0
@@ -132,7 +134,7 @@ def runtime_checks(
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Rust runtime check deadline exceeded")
-                completed = runner([str(tool.path), "--version"], cwd=repo,
+                completed = rust_runner([str(tool.path), "--version"], cwd=repo,
                                    env=environment, stdin=subprocess.DEVNULL,
                                    check=False, capture_output=True, text=True,
                                    timeout=min(5.0, remaining))
