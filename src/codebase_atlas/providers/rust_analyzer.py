@@ -303,7 +303,7 @@ class RustAnalyzerProvider:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("Rust analyzer startup timeout must be finite and positive")
         deadline = monotonic() + timeout_seconds
-        with self._startup_lock(deadline):
+        with self._startup_lock(deadline, maximum_wait=timeout_seconds):
             if self.running:
                 return
             try:
@@ -401,8 +401,11 @@ class RustAnalyzerProvider:
         return remaining
 
     @contextmanager
-    def _startup_lock(self, deadline: float):
-        if not self._state_lock.acquire(timeout=self._remaining_startup(deadline)):
+    def _startup_lock(self, deadline: float, *, maximum_wait: float):
+        # Absolute-deadline subtraction can round slightly above the original
+        # duration. Never enlarge even a very small caller's lock-wait budget.
+        remaining = min(maximum_wait, self._remaining_startup(deadline))
+        if not self._state_lock.acquire(timeout=remaining):
             raise TimeoutError("rust-analyzer startup lock timed out")
         try:
             yield

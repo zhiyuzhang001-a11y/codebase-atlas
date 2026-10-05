@@ -234,6 +234,18 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         provider._state_lock.release.assert_not_called()
         provider.version_runner.assert_not_called()
 
+    def test_startup_lock_budget_does_not_round_up_at_large_monotonic_epoch(self):
+        provider = self.provider()
+        provider._state_lock = Mock()
+        provider._state_lock.acquire.return_value = False
+        provider.version_runner = Mock()
+        with patch("codebase_atlas.providers.rust_analyzer.monotonic", return_value=10000.0):
+            with self.assertRaises(TimeoutError):
+                provider.start(timeout_seconds=0.01)
+        self.assertLessEqual(provider._state_lock.acquire.call_args.kwargs["timeout"], 0.01)
+        provider._state_lock.release.assert_not_called()
+        provider.version_runner.assert_not_called()
+
     def test_unicode_positions_convert_public_codepoints_to_lsp_utf16(self) -> None:
         provider = self.provider()
         source = 'pub fn call() { let _ = "🦀"; run(); }'
