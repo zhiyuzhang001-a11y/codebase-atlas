@@ -15,6 +15,39 @@ import sys
 from codebase_atlas.rust_owned_command import run_owned
 
 
+def execution_results(text: str) -> list[dict]:
+    """Pair interleaved exec results; an attempt is not a successful launch."""
+    pending: dict[tuple[str, str], str] = {}
+    completed = []
+    for line in text.splitlines():
+        start = re.match(r"^(\d+)\s+(execve(?:at)?)\(", line)
+        resume = re.match(r"^(\d+)\s+<\.\.\. (execve(?:at)?) resumed>", line)
+        if start:
+            key = (start[1], start[2])
+            if key in pending:
+                raise ValueError("Native exec result missing before next attempt")
+            if line.endswith("<unfinished ...>"):
+                pending[key] = line
+                continue
+            argv_raw = line
+        elif resume:
+            key = (resume[1], resume[2])
+            if key not in pending:
+                raise ValueError("Native exec resumed without its complete argv")
+            argv_raw = pending.pop(key)
+        else:
+            continue
+        result = re.search(r"\)\s+=\s+(.+)$", line)
+        if result is None:
+            raise ValueError("Native exec completion result missing")
+        completed.append({"pid": int(key[0]), "syscall": key[1],
+                          "argv_raw": argv_raw, "result": result[1],
+                          "launched": result[1] == "0"})
+    if pending:
+        raise ValueError("Native trace ended with unresolved exec attempts")
+    return completed
+
+
 def trace_summary(path: Path) -> dict:
     if not path.is_file() or not 0 < path.stat().st_size <= 64 * 1024 * 1024:
         raise ValueError("Native trace missing, empty or oversized")
@@ -29,6 +62,7 @@ def trace_summary(path: Path) -> dict:
                if re.search(r"\bsocket\(AF_(?!UNIX\b)", line)]
     return {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
             "execution_argv_raw": executions, "non_unix_socket_attempts": network,
+            "execution_results": execution_results(text),
             "exit_records": sum("+++ exited with" in line or "+++ killed by" in line
                                 for line in text.splitlines())}
 

@@ -405,3 +405,10 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   exec argv 与网络 syscall。证据启动环境不继承 CI token，观察缺失/截断/
   非 Unix socket 尝试或 io_uring 盲区均不接受。Linux 实际结果与 argv 独立
   策略审核仍待完成，不替代 macOS/Windows 原生安全门，更不宣布第二阶段退出。
+- 两个 Linux 原始追踪已核对：正向 socket/子进程控制真实被观察，正常生命周期
+  未出现非 Unix socket 尝试，记录中的各 PID 都有退出证据，交错 exec 返回均能配对。
+  追踪暴露 analyzer 的实际 locate-project/config/metadata/print 探测与第一阶段
+  精确允许清单不一致；rustup which cargo 仅为 ENOENT 尝试，不是成功启动。
+  因此只接受观察器证据，不接受完整 argv 安全资格；不得静默扩大清单或晋级。
+  观察器新增交错 exec 完成结果校验，区分尝试与成功，并拒绝缺失返回记录。
+  后续须核查固定官方源码的只读探测行为、消除或审查清单差异并复跑五平台。

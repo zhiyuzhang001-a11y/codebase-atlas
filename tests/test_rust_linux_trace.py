@@ -51,6 +51,23 @@ class LinuxTraceTests(unittest.TestCase):
                                '10 <... execve resumed>) = 0\n'
                                '10 socket(AF_UNIX, SOCK_STREAM, 0) = 3\n')
         self.assertFalse(summary["non_unix_socket_attempts"])
+        self.assertTrue(summary["execution_results"][0]["launched"])
+
+    def test_failed_and_interleaved_exec_attempts_are_not_successful_launches(self):
+        summary = self.summary('10 execve("/rustup", ["rustup"], [] <unfinished ...>\n'
+                               '11 execve("/cargo", ["cargo"], []) = 0\n'
+                               '10 <... execve resumed>) = -1 ENOENT (No such file or directory)\n')
+        self.assertEqual([entry["launched"] for entry in summary["execution_results"]],
+                         [True, False])
+        self.assertEqual(summary["execution_results"][1]["pid"], 10)
+
+    def test_unresolved_or_unpaired_exec_results_fail_closed(self):
+        for text in ('10 execve("/tool", ["tool"], [] <unfinished ...>\n',
+                     '10 execve("/tool", ["tool"], []) = 0\n'
+                     '11 <... execve resumed>) = 0\n',
+                     '10 execve("/tool", ["tool"], [])\n'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.summary(text)
 
     def test_missing_truncated_detached_and_io_uring_evidence_fail(self):
         for text in ('', 'socket(AF_INET, SOCK_STREAM, 0) = 3\n',
