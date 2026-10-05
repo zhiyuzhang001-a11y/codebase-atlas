@@ -34,6 +34,7 @@ PROVIDER_VERSION = "1.98.0"
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 MAX_STDERR_BYTES = 1024 * 1024
 DEFAULT_READINESS_SECONDS = 60.0
+CLEANUP_GRACE_SECONDS = 10.0
 VersionRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -162,6 +163,7 @@ class RustAnalyzerProvider:
         self._next_id = 1
         self._opened: dict[str, str] = {}
         self._semantic_ready = False
+        self._cleanup_deadline: float | None = None
 
     def _package_feature_cfgs(self) -> list[str]:
         """Derive all workspace feature cfgs from generation-bound manifests."""
@@ -240,10 +242,21 @@ class RustAnalyzerProvider:
             "jsonrpc": "2.0", "id": message.get("id"), "result": result,
         })
 
+    @contextmanager
+    def _request_ownership(self, timeout_seconds: float):
+        deadline = monotonic() + timeout_seconds
+        if not self._request_lock.acquire(timeout=max(0.0, deadline - monotonic())):
+            self._terminate()
+            raise TimeoutError("rust-analyzer request admission timed out")
+        try:
+            yield deadline
+        finally:
+            self._request_lock.release()
+
     def _request(
         self, method: str, params: dict[str, Any], timeout_seconds: float
     ) -> Any:
-        with self._request_lock:
+        with self._request_ownership(timeout_seconds) as deadline:
             process = self._process
             if process is None or process.stdin is None or process.poll() is not None:
                 raise RustAnalyzerError("rust-analyzer is not running")
@@ -253,7 +266,6 @@ class RustAnalyzerProvider:
                 "jsonrpc": "2.0", "id": request_id,
                 "method": method, "params": params,
             })
-            deadline = monotonic() + timeout_seconds
             while True:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
@@ -655,6 +667,9 @@ class RustAnalyzerProvider:
                 delay = min(delay * 2.0, 1.0)
 
     def _terminate(self) -> None:
+        deadline = self._cleanup_deadline or (monotonic() + CLEANUP_GRACE_SECONDS)
+        def budget(maximum: float) -> float:
+            return min(maximum, max(0.0, deadline - monotonic()))
         process = self._process
         self._process = None
         if process is not None and process.poll() is None:
@@ -669,13 +684,13 @@ class RustAnalyzerProvider:
                 try:
                     subprocess.run(
                         ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        check=False, capture_output=True, timeout=3,
+                        check=False, capture_output=True, timeout=budget(3),
                     )
                 except (OSError, subprocess.TimeoutExpired):
                     pass
                 process.terminate()
             try:
-                process.wait(timeout=3)
+                process.wait(timeout=budget(3))
             except subprocess.TimeoutExpired:
                 if os.name != "nt":
                     try:
@@ -684,7 +699,25 @@ class RustAnalyzerProvider:
                         pass
                 else:
                     process.kill()
-                process.wait(timeout=3)
+                try:
+                    process.wait(timeout=budget(3))
+                except subprocess.TimeoutExpired:
+                    # Do not silently claim cleanup success. Close pipes and
+                    # release reader ownership before reporting an unreaped PID.
+                    cleanup_failed = True
+                else:
+                    cleanup_failed = False
+            else:
+                cleanup_failed = False
+        else:
+            cleanup_failed = False
+        # The parent can exit before its workers. Its owned POSIX session still
+        # needs cleanup even when poll()/wait() already reported parent exit.
+        if process is not None and os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         for stream in (
             process.stdin if process is not None else None,
             process.stdout if process is not None else None,
@@ -697,25 +730,31 @@ class RustAnalyzerProvider:
                     pass
         for thread in (self._reader_thread, self._stderr_thread):
             if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=1)
+                thread.join(timeout=budget(1))
         self._reader_thread = None
         self._stderr_thread = None
         self._opened = {}
         self._semantic_ready = False
+        if cleanup_failed:
+            raise RustAnalyzerError("rust-analyzer did not exit within cleanup grace")
 
     def close(self) -> None:
         process = self._process
         if process is None:
             return
+        self._cleanup_deadline = monotonic() + CLEANUP_GRACE_SECONDS
         try:
             if process.poll() is None:
-                self._request("shutdown", {}, 5.0)
+                self._request("shutdown", {}, 1.0)
                 self._notify("exit")
-                process.wait(timeout=5)
+                process.wait(timeout=min(1.0, max(0.0, self._cleanup_deadline - monotonic())))
         except (OSError, RustAnalyzerError, TimeoutError, subprocess.TimeoutExpired):
             pass
         finally:
-            self._terminate()
+            try:
+                self._terminate()
+            finally:
+                self._cleanup_deadline = None
 
     def __enter__(self) -> "RustAnalyzerProvider":
         self.start()

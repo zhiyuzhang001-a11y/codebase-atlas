@@ -874,7 +874,12 @@ def main(argv: list[str] | None = None) -> int:
             checks = diagnose(config)
             ok = required_checks_ok(checks)
             freshness = index_freshness(config.data_dir, config.repository, config.project)
-            provider_database = provider_database_health(config.cache_dir, config.project)
+            provider_database = (
+                {"status": "not_applicable", "required": False,
+                 "reason": "Rust uses generation-bound syntax and analyzer providers, not a CBM database"}
+                if config.language == "rust"
+                else provider_database_health(config.cache_dir, config.project)
+            )
             print(json.dumps({
                 "status": "ready" if ok else "incomplete",
                 "index": freshness,
@@ -1523,6 +1528,7 @@ def _apply_project_config(args) -> None:
             config.repository,
             config.cache_dir,
             config.project,
+            language=config.language,
         )
         args.data_dir = config.data_dir
         args.provider_layout = config.provider_layout

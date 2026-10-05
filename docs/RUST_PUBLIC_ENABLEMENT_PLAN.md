@@ -276,3 +276,24 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   与 Rust 工厂模块，SHA-256 为
   `50e5e1a5dc9b4806eb8a7f5b66c6042d158dde5290251b221fea709615756677`。
   仍是关闭 Rust 的内部打包检查，不替换已发布 0.27.0，也不是最终候选验收。
+- 第三批接通 Rust 专属 runtime checks 与 doctor：先验证 receipt 和安全配置，再执行
+  cargo/rustc/analyzer 的版本探测，三者与 preflight 共用 30 秒检查预算，失败即停止；
+  公共开关关闭时不执行 Rust 探测。doctor 不再要求 CBM 数据库或共享 Provider root。
+- CLI 的 operational status 开始按显式 Rust language 检查 generation/T1 artifact，
+  不因不存在 CBM 数据库误报 rebuild。该检查仅证明索引身份/完整性，不证明 T2 ready；
+  maintenance inspect、正常 enable/update/refresh 和安装生命周期仍需后续接通。
+- 真实本机官方组件比对通过：macos-arm64 的五份锁定 archive 对照已有 1.98.0 安装，
+  共 3766 个文件、10 份许可证一致。三个工具 SHA-256：
+  cargo `1de2e84c15443b70444eecfa959ff9099dd8c1a5606b6d9ef5bc0ea9c25bc7f9`；
+  rustc `a11618eca0956a8aa4372c2bc898690b513cbdfa2cb9125b2a5301e360ed5b49`；
+  analyzer `387dd2602eea1162387c03936b0ddb5f422c2d611a4c7a11d7d32684ed83dbb0`。
+  新增离线核验脚本，不执行工具、不重装、不发布 receipt；约 100 MiB 下载仅为临时证据。
+  这不是正常 installed-wheel、语义查询、其余四平台或真实 MCP 的验收。
+- analyzer 请求锁等待计入请求 deadline；shutdown、等待退出、强制清理共享 10 秒 grace，
+  超限未退出时报错并关闭管道，不伪装成功。POSIX 父进程先退出时仍清理其进程组，
+  新增真实 worker 存活负例。Windows parent 已退出时的 worker ownership/ACL，以及
+  五平台实际时限测量仍未完成，不能把模拟测试当作这些出口通过。
+- 第三批全量本机回归运行 579 项，561 项通过、18 项 skipped，无失败；临时关闭 Rust
+  的 smoke wheel 通过 `verify_release`，SHA-256 为
+  `6993f8cdcaa8308eea66ceac27ae5826fde2408aed476e3ee45a8f803d58cc7a`。
+  仍未推送公开启用开关、未发布新版本、未改变任何现有项目部署或全局连接。

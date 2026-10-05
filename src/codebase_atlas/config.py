@@ -309,8 +309,6 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
     from .runtime import runtime_checks
 
     freshness = index_freshness(config.data_dir, config.repository, config.project)
-    provider_database = provider_database_health(config.cache_dir, config.project)
-    shared_root = inspect_provider_root(config.shared_cache_dir)
     kwargs = {} if runner is None else {"runner": runner}
     checks = runtime_checks(
         config.repository,
@@ -320,8 +318,38 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
         serena_python=config.serena_python,
         node_bin_dir=config.node_bin_dir,
         tsconfig=config.tsconfig,
+        rust_runtime_receipt=config.rust_runtime_receipt,
         **kwargs,
     )
+    if config.language == "rust":
+        from .languages import get_language
+        from .rust_project import load_rust_service
+        generation_ok, detail = False, "Rust is not product-enabled"
+        if get_language("rust").public_enabled and all(
+            item["ok"] for item in checks if item.get("required", True)
+        ):
+            try:
+                service = load_rust_service(config)
+                generation_ok = True
+                detail = "exact Rust generation and checksum-verified T1 artifact agree"
+                service.close()
+            except (OSError, ValueError, RuntimeError) as exc:
+                detail = str(exc)
+        checks.extend([
+            {"name": "indexed_project", "ok": bool(config.project), "required": True,
+             "path": "", "version": "", "detail": config.project or "project identity missing",
+             "remediation": "" if config.project else "enable the exact Rust project"},
+            {"name": "index_freshness", "ok": bool(freshness["ok"]), "required": True,
+             "path": str(config.data_dir / "index-state.json"), "version": "",
+             "detail": f"{freshness['status']}: {freshness['reason']}",
+             "remediation": "" if freshness["ok"] else "refresh this Rust project's index"},
+            {"name": "rust_generation", "ok": generation_ok, "required": True,
+             "path": str(config.data_dir), "version": "", "detail": detail,
+             "remediation": "" if generation_ok else "verify or rebuild this Rust generation"},
+        ])
+        return checks
+    provider_database = provider_database_health(config.cache_dir, config.project)
+    shared_root = inspect_provider_root(config.shared_cache_dir)
     checks.extend([
         {
             "name": "indexed_project", "ok": bool(config.project), "required": True,

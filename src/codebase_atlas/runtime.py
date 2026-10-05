@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from time import monotonic
 from typing import Callable, Any
 
 from .config import _asset
@@ -74,6 +75,7 @@ def runtime_checks(
     serena_python: Path | None = None,
     node_bin_dir: Path | None = None,
     tsconfig: Path | None = None,
+    rust_runtime_receipt: Path | None = None,
     runner: Runner = subprocess.run,
 ) -> list[dict[str, object]]:
     """Inspect required runtimes without installing software or changing config."""
@@ -102,6 +104,49 @@ def runtime_checks(
             remediation="complete the language qualification and product enablement gates",
             required=True,
         ))
+        return checks
+
+    if language == "rust":
+        from .rust_installation import runtime_from_receipt
+        from .rust_runtime import PINNED_TOOLCHAIN, RustRuntimeError
+        deadline = monotonic() + 30.0
+        try:
+            if rust_runtime_receipt is None:
+                raise RustRuntimeError("Rust installation receipt is missing")
+            runtime = runtime_from_receipt(rust_runtime_receipt, repository=repo)
+            environment = runtime.environment(repo)
+        except (OSError, ValueError) as exc:
+            checks.append(_check(
+                "rust_toolchain", False, path=rust_runtime_receipt,
+                detail=str(exc), remediation="prepare a verified pinned Rust toolchain; do not use PATH shims",
+            ))
+            return checks
+        checks.append(_check("rust_toolchain", True, path=rust_runtime_receipt,
+                             version=PINNED_TOOLCHAIN, detail="official component receipt and execution preflight verified"))
+        for name, tool in (("cargo", runtime.cargo), ("rustc", runtime.rustc),
+                           ("rust-analyzer", runtime.analyzer)):
+            try:
+                # Recheck config before every execution; all probes share one
+                # deadline, including receipt and environment validation time.
+                environment = runtime.environment(repo)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Rust runtime check deadline exceeded")
+                completed = runner([str(tool.path), "--version"], cwd=repo,
+                                   env=environment, stdin=subprocess.DEVNULL,
+                                   check=False, capture_output=True, text=True,
+                                   timeout=min(5.0, remaining))
+                output = (completed.stdout or completed.stderr or "").strip()
+                ok = completed.returncode == 0 and bool(re.match(
+                    re.escape(name) + r" " + re.escape(PINNED_TOOLCHAIN) + r"(?:\s|$)", output))
+                detail = output or "version probe returned no identity"
+            except (OSError, ValueError, TimeoutError, subprocess.SubprocessError) as exc:
+                ok, detail = False, str(exc)
+            checks.append(_check("rust_" + name.replace("-", "_"), ok,
+                                 path=tool.path, version=PINNED_TOOLCHAIN if ok else "",
+                                 detail=detail, remediation="revalidate the pinned Rust installation"))
+            if not ok:
+                break
         return checks
 
     node_path = _candidate(node, "ATLAS_NODE", "node")

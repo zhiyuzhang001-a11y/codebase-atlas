@@ -377,6 +377,64 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         process.wait.assert_called_once_with(timeout=3)
         self.assertIsNone(provider._process)
 
+    def test_close_and_forced_cleanup_share_ten_second_grace(self):
+        provider = self.provider()
+        process = Mock(pid=12345)
+        process.poll.return_value = None
+        provider._process = process
+        reader, stderr = Mock(), Mock()
+        provider._reader_thread, provider._stderr_thread = reader, stderr
+        elapsed = [0.0]
+        def shutdown(*_args):
+            elapsed[0] += 1.0
+            raise TimeoutError("shutdown stalled")
+        def taskkill(*_args, **kwargs):
+            elapsed[0] += kwargs["timeout"]
+        def wait(**kwargs):
+            elapsed[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired("analyzer", kwargs["timeout"])
+        process.wait.side_effect = wait
+        with patch("codebase_atlas.providers.rust_analyzer.os.name", "nt"), patch(
+            "codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: elapsed[0]
+        ), patch("codebase_atlas.providers.rust_analyzer.subprocess.run", side_effect=taskkill), patch.object(
+            provider, "_request", side_effect=shutdown
+        ):
+            with self.assertRaisesRegex(RustAnalyzerError, "cleanup grace"):
+                provider.close()
+        self.assertLessEqual(elapsed[0], 10.0)
+        reader.join.assert_called_once_with(timeout=0.0)
+        stderr.join.assert_called_once_with(timeout=0.0)
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        self.assertIsNone(provider._cleanup_deadline)
+
+    def test_request_lock_admission_cannot_reset_request_deadline(self):
+        provider = self.provider()
+        provider._request_lock.acquire()
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(TimeoutError, "admission"):
+                provider._request("shutdown", {}, 0.03)
+        finally:
+            provider._request_lock.release()
+        self.assertLess(time.monotonic() - started, 0.2)
+
+    @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
+    def test_cleanup_kills_worker_even_if_analyzer_parent_already_exited(self):
+        provider = self.provider()
+        marker = self.root / "orphan-worker-marker"
+        worker = f"import pathlib,time; time.sleep(.5); pathlib.Path({str(marker)!r}).write_text('orphan')"
+        parent = f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', {worker!r}])"
+        process = subprocess.Popen([sys.executable, "-c", parent], start_new_session=True,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        provider._process = process
+        process.wait(timeout=3)
+        self.assertIsNotNone(process.poll())
+        provider.close()
+        time.sleep(.7)
+        self.assertFalse(marker.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
