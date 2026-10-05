@@ -22,6 +22,32 @@ from codebase_atlas.release_installation import current_platform_target
 from codebase_atlas.simple_cli import enable_project, status_project, verify_project, stop_project, remove_project
 
 
+def install_execution_sentinels(repository: Path, work: Path) -> None:
+    """Temporary safety fixture only; neither sentinel is intentionally run."""
+    build_marker = json.dumps(str(work / "forbidden-build-script"), ensure_ascii=False)
+    macro_marker = json.dumps(str(work / "forbidden-proc-macro"), ensure_ascii=False)
+    (repository / "build.rs").write_text(
+        'fn main() { std::fs::write(' + build_marker + ', b"executed").unwrap(); }\n', encoding="utf-8")
+    macro = repository / "sentinel-macro"
+    (macro / "src").mkdir(parents=True)
+    (macro / "Cargo.toml").write_text(
+        '[package]\nname="atlas-sentinel-macro"\nversion="0.1.0"\nedition="2021"\n'
+        '[lib]\nproc-macro=true\n', encoding="utf-8")
+    (macro / "src/lib.rs").write_text(
+        'extern crate proc_macro;\n#[proc_macro_derive(Sentinel)]\n'
+        'pub fn sentinel(_: proc_macro::TokenStream) -> proc_macro::TokenStream {\n'
+        'std::fs::write(' + macro_marker + ', b"executed").unwrap();\n'
+        'proc_macro::TokenStream::new()\n}\n', encoding="utf-8")
+    with (repository / "Cargo.toml").open("a", encoding="utf-8") as output:
+        output.write('\n[dependencies]\natlas-sentinel-macro = { path="sentinel-macro" }\n')
+    with (repository / "src/lib.rs").open("a", encoding="utf-8") as output:
+        output.write('\n#[derive(atlas_sentinel_macro::Sentinel)]\npub struct SentinelProbe;\n')
+
+
+def execution_sentinel_state(work: Path) -> dict[str, bool]:
+    return {name: (work / name).exists() for name in ("forbidden-build-script", "forbidden-proc-macro")}
+
+
 def mcp_check(repository):
     from codebase_atlas.config import AtlasConfig
     from codebase_atlas.rust_project import load_rust_service
@@ -34,6 +60,7 @@ def mcp_check(repository):
     coordinator = RustMcpRefreshCoordinator(config, service, status)
     server = McpServer(service, index_status=status, refresh_coordinator=coordinator)
     processes = []
+    frozen_results = []
     def call(name, arguments):
         response = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                   "params": {"name": name, "arguments": arguments}})
@@ -46,10 +73,22 @@ def mcp_check(repository):
         if process is not None and process not in processes:
             processes.append(process)
         return result
+    def frozen_definition():
+        contract = json.loads((Path(__file__).resolve().parents[1] / "cases/rust-product-enablement.v1.json").read_text())
+        request = next(item for item in contract["fixture_queries"] if item["id"] == "crate-left")
+        result = query(request["symbol"], request["expected_path"],
+                       {key: request[key] for key in ("source_path", "source_line", "source_column")})
+        frozen_results.append(result)
+        if (result.get("status") not in {"complete_exact", "exact_hits_partial_scope"}
+                or not any(node.get("location", {}).get("path") == request["expected_path"]
+                           and node.get("location", {}).get("start_line") == request["expected_line"]
+                           for node in result.get("nodes", []))):
+            raise RuntimeError("frozen crate-left query did not return its exact target")
     with service:
         first = call("project_status", {})
         before = first["generation_id"]
         _rust_verification_query(config, repository / ".codebase-atlas.toml", query=query)
+        frozen_definition()
         refreshed = call("refresh_index", {"mode": "fast", "timeout_ms": 60000})
         if refreshed["status"] != "refreshed":
             raise RuntimeError("MCP refresh did not publish")
@@ -57,10 +96,12 @@ def mcp_check(repository):
         if after["generation_id"] == before or after["identity"] != status["identity"]:
             raise RuntimeError("MCP generation/identity binding failed")
         _rust_verification_query(config, repository / ".codebase-atlas.toml", query=query)
+        frozen_definition()
     if not processes or any(process.poll() is None for process in processes):
         raise RuntimeError("MCP owned child cleanup failed")
     return {"status": "ready", "generation_before": before, "generation_after": after["generation_id"],
             "owned_process_cleanup": "pass", "process_ids": [process.pid for process in processes],
+            "frozen_crate_left_before_after": frozen_results,
             "live_codex_task_tested": False}, 0
 
 
@@ -72,14 +113,21 @@ def main():
     parser.add_argument("--scanner", type=Path, required=True)
     parser.add_argument("--scanner-sha256", required=True)
     parser.add_argument("--scanner-commit", required=True)
+    parser.add_argument("--execution-sentinels", action="store_true")
     args = parser.parse_args()
     work = args.work_dir.resolve()
     source = Path(__file__).resolve().parents[1]
+    source_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, capture_output=True,
+                                text=True, check=True, timeout=5).stdout.strip()
+    if args.scanner_commit != source_sha:
+        raise RuntimeError("internal lifecycle requires the exact current-source scanner")
     if work.is_relative_to(source) or (work.exists() and any(work.iterdir())):
         raise RuntimeError("integration work directory must be empty and outside the checkout")
     work.mkdir(parents=True, mode=0o700, exist_ok=True)
     repository = work / "project"
     shutil.copytree(source / "tests/fixtures/rust-product/crate", repository)
+    if args.execution_sentinels:
+        install_execution_sentinels(repository, work)
     for argv in (["git", "init", "-q"], ["git", "add", "."],
                  ["git", "-c", "user.name=Atlas Integration", "-c", "user.email=atlas@example.invalid",
                   "commit", "-qm", "frozen fixture"]):
@@ -109,10 +157,15 @@ def main():
             started = time.monotonic()
             payload, code = function()
             result = {"operation": operation, "exit_code": code, "elapsed_seconds": time.monotonic() - started,
-                      "result": payload}
+                      "result": payload, "atlas_source_sha": source_sha,
+                      "scanner_source_sha": args.scanner_commit}
+            if args.execution_sentinels:
+                result["project_execution_sentinels"] = execution_sentinel_state(work)
             results.append(result)
             print(json.dumps(result), flush=True)
             (work / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+            if any(result.get("project_execution_sentinels", {}).values()):
+                raise RuntimeError(operation + " executed forbidden fixture code")
             expected = {"enable": "ready", "status": "ready", "verify": "PASS",
                         "stop": "stopped", "resume": "ready", "remove": "removed",
                         "remove_again": "removed", "mcp": "ready"}[operation]

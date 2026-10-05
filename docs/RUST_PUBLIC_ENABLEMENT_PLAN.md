@@ -383,3 +383,9 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
 - scanner 构建工作流新增精确源码的真实安装、no-replace 复用和 owned 版本探测，
   使用生产来源/内部 manifest/许可证校验，不接受旧 commit；原始报告与资格 bundle
   分开保存，仍不上传公开 Release。五平台新结果待验，不计正常产品语义或资源门。
+- 精确源码 scanner 的五平台安装/复用/版本报告及完整 bundle 校验已通过。
+  临时内部生命周期 fixture 新增真实 build.rs 与 proc-macro 标记哨兵；本机完成
+  启用、状态、MCP handler 查询/刷新/rebind、verify、停止/恢复和重复卸载，两个
+  哨兵均未执行，冻结 crate-left 跨文件定义在刷新前后返回正确位置、analyzer 已退出。
+  这仍是本机 source-API 集成，不是五平台 installed-wheel、fresh stdio、全部进程
+  argv 或操作系统级禁网证据；不据此宣称第二阶段退出或公开 Rust 可用。

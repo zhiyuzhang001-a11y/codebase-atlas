@@ -7,12 +7,17 @@ on:
       - '.gitattributes'
       - .github/workflows/rust-syntax-scanner.yml
       - native/rust-syntax-scanner/**
+      # Internal qualification requires scanner manifest commit == Atlas head,
+      # even when only the Python runtime/lifecycle changes.
+      - src/codebase_atlas/**
       - scripts/build_rust_syntax_scanner.py
       - scripts/verify_rust_syntax_bundles.py
       - scripts/rust_scanner_qualification.py
+      - scripts/rust_lifecycle_integration.py
       - scripts/rust_toolchain_qualification.py
       - tests/test_rust_syntax_bundles.py
       - tests/test_rust_scanner_qualification.py
+      - tests/test_rust_lifecycle_integration.py
 
 permissions:
   contents: read
