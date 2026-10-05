@@ -377,6 +377,9 @@ class RustAnalyzerProvider:
                             "cfgs": self._cargo_cfgs,
                             "features": self.build_context["cargo_features"],
                             "noDeps": self.build_context["cargo_no_deps"],
+                            # Pinned analyzer filters general extraArgs for
+                            # metadata; its dedicated option must carry this.
+                            "metadataExtraArgs": ["--offline"],
                         },
                         "procMacro": {"enable": False},
                         "cachePriming": {"enable": False},

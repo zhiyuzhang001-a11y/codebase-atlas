@@ -418,3 +418,8 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   不删除代理、不运行它来猜测身份、不改用户 Cargo home 或全局配置。
   五平台真实工具资格新增四类代理负例；实际结果待 CI 审核，不以本机单元门
   代替原生证据。该收紧防护不扩大允许命令清单，阶段二仍未退出。
+- 五平台真实官方工具报告的十八类 preflight 负例已核对通过，包括新增四类
+  工具代理拒绝；这仍不替代实际执行诱饵和完整 OS 观察。分析器初始化新增
+  固定 `cargo.metadataExtraArgs=["--offline"]`，使项目与 sysroot metadata 的
+  离线约束在 argv 中明确，而非仅靠环境。保留 noDeps、features、build scripts/
+  proc macros 与语义合同不变；实际原生 argv 与查询结果仍待新 CI 核对。

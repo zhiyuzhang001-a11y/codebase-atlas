@@ -317,6 +317,7 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         self.assertFalse(options["cargo"]["buildScripts"]["enable"])
         self.assertEqual(options["cargo"]["features"], "all")
         self.assertTrue(options["cargo"]["noDeps"])
+        self.assertEqual(options["cargo"]["metadataExtraArgs"], ["--offline"])
         self.assertEqual(options["cargo"]["cfgs"], ["feature=default", "feature=fast"])
         self.assertFalse(options["procMacro"]["enable"])
         self.assertFalse(options["cachePriming"]["enable"])
