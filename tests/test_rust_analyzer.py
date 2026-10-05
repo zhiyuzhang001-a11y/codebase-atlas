@@ -20,6 +20,7 @@ from codebase_atlas.providers.rust_analyzer import (
     _read_lsp_frame,
 )
 from codebase_atlas.refresh_planner import build_generation_manifest
+from codebase_atlas.rust_runtime import RustRuntimeError
 
 
 def git(repository: Path, *args: str) -> None:
@@ -144,6 +145,30 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         )
         self.addCleanup(provider.close)
         return provider
+
+    def test_verified_runtime_preflight_blocks_version_and_spawn(self):
+        runtime = Mock()
+        runtime.analyzer.path = Path(sys.executable).resolve()
+        runtime.environment.side_effect = RustRuntimeError("unsafe configuration")
+        version = Mock()
+        provider = RustAnalyzerProvider(
+            runtime.analyzer.path, self.repository, "rust-project", self.generation,
+            runtime=runtime, version_runner=version,
+        )
+        with patch("codebase_atlas.providers.rust_analyzer.subprocess.Popen") as spawn:
+            with self.assertRaisesRegex(RustRuntimeError, "unsafe configuration"):
+                provider.start()
+            version.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_verified_runtime_rejects_extra_executable_arguments(self):
+        runtime = Mock()
+        runtime.analyzer.path = Path(sys.executable).resolve()
+        with self.assertRaisesRegex(RustAnalyzerError, "verified runtime"):
+            RustAnalyzerProvider(
+                runtime.analyzer.path, self.repository, "rust-project", self.generation,
+                runtime=runtime, arguments=(str(self.analyzer),),
+            )
 
     def test_result_uri_round_trips_native_path(self) -> None:
         provider = self.provider()

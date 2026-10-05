@@ -47,6 +47,21 @@ class VerifiedRustTool:
         return path
 
 
+@dataclass(frozen=True)
+class RustToolchainRuntime:
+    cargo: VerifiedRustTool
+    rustc: VerifiedRustTool
+    analyzer: VerifiedRustTool
+    cargo_home: Path
+    rustup_home: Path
+
+    def environment(self, repository: Path) -> dict[str, str]:
+        return rust_runtime_environment(
+            repository, cargo=self.cargo, rustc=self.rustc, analyzer=self.analyzer,
+            cargo_home=self.cargo_home, rustup_home=self.rustup_home,
+        )
+
+
 def _read_config(path: Path) -> dict | None:
     try:
         metadata = os.lstat(path)

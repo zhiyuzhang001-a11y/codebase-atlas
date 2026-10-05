@@ -238,10 +238,10 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   T1 原有字节坐标在 index 查询边界规范化为代码点，保留 scanner 资产格式和证据 hash。
   已有单元回归，但正常安装后的全链路仍未验收。
 - 内部 service 新增 T1 definition candidates 注入，拒绝跨仓 shard 和 stale generation，
-  不支持关系标记 unsupported；正常 CLI 工厂及配置/安装/生命周期仍待接通。
+  不支持关系标记 unsupported；第一批结束时正常 CLI 工厂及配置/安装/生命周期仍待接通。
 - 新增非执行型 Rust runtime preflight：工具 receipt hash、环境白名单、项目/祖先/用户
-  Cargo 配置、rustup override、toolchain 文件检查。当前是独立模块，尚未接入正常入口；
-  不能据此宣称现有 provider 的环境继承问题已解决。
+  Cargo 配置、rustup override、toolchain 文件检查。第一批结束时仍是独立模块；
+  后续接线进展见下述第二批记录，不能据此宣称五平台运行环境已经验收。
 - Rust 配置开始支持 schema 2 的独立安装 receipt，discovery 不再查找 Node/CBM/Serena；
   原 schema 1 Python/TS 往返保持不变。配置只记录路径，不宣称 receipt 已可信验证。
   schema 2 的 exact-project config 被识别为运行时元数据，不污染源码 fingerprint。
@@ -259,3 +259,20 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
 - Rust `public_enabled` 仍为 false；本批只在新开发分支做本地提交，不推送或修改 Release/tag，
   未部署现有项目，
   未改全局 MCP/editor。原 0.27.0 发布 heartbeat 不重启。
+- 第二批新增官方组件 archive 与现有安装逐文件比对，包括三个工具、动态库、sysroot、
+  rust-src 和许可证；archive 必须命中 packaged source lock。receipt 原子发布、不覆盖
+  已有不同安装，读取时重新检查安装文件；正常工厂只接受账户独立私有 store，拒绝
+  项目内 store/工具链及错误平台。当前验证用合成 archive，尚未证明本机实际工具可信。
+- Rust service 工厂绑定 exact project、同一 generation 与 checksum-pinned T1 shard，
+  T2 必须获得 verified runtime；版本探测及 analyzer 启动前执行安全 preflight。
+  CLI 将 Rust 路由与原 Node/CBM/Serena 工厂分开，schema 2 不要求这些旧依赖。
+  公共入口仍返回关闭开关；测试中模拟开启只验证路由，不是产品启用或真实 MCP 验收。
+- 安装/doctor/刷新/升级降级卸载仍未接通；真实官方工具比对、Windows ACL、进程清理
+  时限以及五平台 installed-wheel/CLI/MCP 验收仍是未完成项。不得据此部署现有 Rust 项目。
+- 第二批接线中全量回归曾发现旧内部 Rust config 在检查 receipt 时提前退出；
+  修复为先保留语言产品 gate，真正构建 Rust service 时强制可信 receipt。
+- 修复后全套本机回归运行 570 项，552 项通过、18 项 skipped，无失败；跳过项不计
+  产品资格通过。新的未发布 packaging smoke wheel 通过 `verify_release`，包含 receipt
+  与 Rust 工厂模块，SHA-256 为
+  `50e5e1a5dc9b4806eb8a7f5b66c6042d158dde5290251b221fea709615756677`。
+  仍是关闭 Rust 的内部打包检查，不替换已发布 0.27.0，也不是最终候选验收。

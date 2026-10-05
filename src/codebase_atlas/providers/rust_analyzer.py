@@ -21,6 +21,7 @@ from urllib.request import url2pathname
 
 from ..contracts import EvidenceProvenance, Node, SourceRange, repository_path
 from ..index_state import repository_snapshot
+from ..rust_runtime import RustToolchainRuntime
 from ..rust_scope import (
     RustScopeError,
     validate_rust_build_context,
@@ -110,6 +111,7 @@ class RustAnalyzerProvider:
         arguments: tuple[str, ...] = (),
         version_runner: VersionRunner = subprocess.run,
         readiness_seconds: float = DEFAULT_READINESS_SECONDS,
+        runtime: RustToolchainRuntime | None = None,
     ) -> None:
         try:
             self.analyzer = analyzer.resolve(strict=True)
@@ -120,6 +122,11 @@ class RustAnalyzerProvider:
         self.generation = dict(generation)
         self.version_runner = version_runner
         self.arguments = tuple(arguments)
+        self.runtime = runtime
+        if runtime is not None and (
+            arguments or self.analyzer != runtime.analyzer.path.absolute()
+        ):
+            raise RustAnalyzerError("Rust analyzer differs from verified runtime")
         if not 0 < readiness_seconds <= DEFAULT_READINESS_SECONDS:
             raise ValueError("Rust analyzer readiness timeout must be between 0 and 60 seconds")
         self.readiness_seconds = readiness_seconds
@@ -185,6 +192,10 @@ class RustAnalyzerProvider:
         return bytes(self._stderr).decode("utf-8", "replace")
 
     def _environment(self) -> dict[str, str]:
+        if self.runtime is not None:
+            return self.runtime.environment(self.repository)
+        # Legacy internal qualification harness only. Normal Rust service
+        # construction must supply a receipt-verified runtime.
         environment = os.environ.copy()
         environment.update({
             "CARGO_NET_OFFLINE": "true",
@@ -289,13 +300,14 @@ class RustAnalyzerProvider:
             if not stat.S_ISREG(metadata.st_mode):
                 raise RustAnalyzerError("rust-analyzer binary is unsafe")
             try:
+                environment = self._environment()
                 version = self.version_runner(
                     [str(self.analyzer), *self.arguments, "--version"],
                     check=False,
                     capture_output=True,
                     text=True,
                     timeout=min(5.0, self._remaining_startup(deadline)),
-                    env=self._environment(),
+                    env=environment,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise TimeoutError("rust-analyzer version probe timed out") from exc
@@ -303,11 +315,12 @@ class RustAnalyzerProvider:
                 f"rust-analyzer {PROVIDER_VERSION} "
             ):
                 raise RustAnalyzerError("rust-analyzer version mismatch")
+            environment = self._environment()
             self._remaining_startup(deadline)
             process = subprocess.Popen(
                 [str(self.analyzer), *self.arguments],
                 cwd=self.repository,
-                env=self._environment(),
+                env=environment,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -1246,71 +1246,17 @@ def main(argv: list[str] | None = None) -> int:
                     args.stale_policy,
                 ), ensure_ascii=False, indent=2))
                 return 3
-        provider_layout = getattr(args, "provider_layout", "legacy-project-v0")
-        transport = (
-            CodebaseMemoryMcpTransport(
-                args.binary, args.repo, args.cache_dir,
-                exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
-                client_version=__version__,
-                managed_cache=provider_layout == SHARED_PROVIDER_LAYOUT,
+        if args.language == "rust":
+            from .rust_project import load_rust_service
+            if active_config_path is None:
+                raise SystemExit("Rust service requires an exact project configuration")
+            service = load_rust_service(
+                AtlasConfig.load(active_config_path),
+                session_continuations=args.command in {"mcp", "query-batch", "ui"},
             )
-            if args.command == "mcp"
-            else None
-        )
-        lifecycle = transport or _provider_lifecycle(
-            args.binary, args.repo, args.cache_dir, provider_layout,
-        )
-        structural = CodebaseMemoryImpactProvider(
-            args.binary,
-            args.repo,
-            args.cache_dir,
-            args.project,
-            transport=transport,
-        )
-        registration_index = None
-        if args.language == "python" and getattr(args, "data_dir", None) is not None:
-            source_fingerprint = args.index_status.get("source", {}).get(
-                "source_fingerprint"
-            )
-            if source_fingerprint:
-                try:
-                    registration_index, registration_health = load_registration_index_state(
-                        args.data_dir,
-                        args.repo,
-                        args.project,
-                        source_fingerprint,
-                    )
-                except RegistrationIndexError as exc:
-                    registration_index = None
-                    registration_health = {
-                        "status": "rebuild_required",
-                        "ok": False,
-                        "reason": str(exc),
-                    }
-            else:
-                registration_health = registration_index_health(
-                    args.data_dir, args.repo, args.project, source_fingerprint
-                )
-            args.index_status["python_registrations"] = registration_health
-        service = AtlasService(
-            repository=args.repo,
-            structural_provider=structural,
-            semantic_provider=SerenaSemanticProvider(
-                args.serena_python,
-                args.serena_runner,
-                args.repo,
-                args.serena_home,
-                args.metadata_root,
-                language=args.language,
-                node_bin_dir=args.node_bin_dir,
-            ),
-            test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
-            impact_provider=structural,
-            lifecycle=lifecycle,
-            registration_index=registration_index,
-            session_continuations=args.command in {"mcp", "query-batch", "ui"},
-            indexed_language=args.language,
-        )
+            transport = None
+        else:
+            service, transport = _legacy_service(args)
         refresh_coordinator = (
             RefreshCoordinator(
                 AtlasConfig.load(active_config_path),
@@ -1321,124 +1267,197 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "mcp" and transport is not None and active_config_path is not None
             else None
         )
-        with service:
-            if args.command == "mcp":
-                notifier = VersionNotifier(
-                    __version__, args.data_dir,
-                    enabled=args.version_check == "notify",
+        return _run_service_command(args, service, refresh_coordinator)
+    parser.print_help()
+    return 0
+
+
+def _legacy_service(args):
+    provider_layout = getattr(args, "provider_layout", "legacy-project-v0")
+    transport = (
+        CodebaseMemoryMcpTransport(
+            args.binary, args.repo, args.cache_dir,
+            exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
+            client_version=__version__,
+            managed_cache=provider_layout == SHARED_PROVIDER_LAYOUT,
+        )
+        if args.command == "mcp"
+        else None
+    )
+    lifecycle = transport or _provider_lifecycle(
+        args.binary, args.repo, args.cache_dir, provider_layout,
+    )
+    structural = CodebaseMemoryImpactProvider(
+        args.binary,
+        args.repo,
+        args.cache_dir,
+        args.project,
+        transport=transport,
+    )
+    registration_index = None
+    if args.language == "python" and getattr(args, "data_dir", None) is not None:
+        source_fingerprint = args.index_status.get("source", {}).get(
+            "source_fingerprint"
+        )
+        if source_fingerprint:
+            try:
+                registration_index, registration_health = load_registration_index_state(
+                    args.data_dir,
+                    args.repo,
+                    args.project,
+                    source_fingerprint,
                 )
-                _run_mcp_with_graceful_termination(
-                    McpServer(
-                        service, args.index_status, args.stale_policy,
-                        instructions=(
-                            f"This server is only for repository {args.repo.resolve()}; "
-                            f"never use it for another repository. {PROJECT_RULE}"
-                        ),
-                        version_notifier=notifier,
-                        refresh_coordinator=refresh_coordinator,
-                        auto_update=args.auto_update,
-                        auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
-                        availability=lambda: operational_lifecycle_status(
-                            args.data_dir, args.repo, args.project
-                        ),
-                    )
-                )
-            elif args.command == "query":
-                source_position = (
-                    {
-                        "source_path": args.source_path,
-                        "source_line": args.source_line,
-                        "source_column": args.source_column,
-                    }
-                    if any(value is not None for value in (
-                        args.source_path, args.source_line, args.source_column
-                    ))
-                    else {}
-                )
-                target_range_values = {
-                    "start_line": args.target_start_line,
-                    "end_line": args.target_end_line,
-                    "start_column": args.target_start_column,
-                    "end_column": args.target_end_column,
+            except RegistrationIndexError as exc:
+                registration_index = None
+                registration_health = {
+                    "status": "rebuild_required",
+                    "ok": False,
+                    "reason": str(exc),
                 }
-                target_range = (
-                    {"target_range": {
-                        key: value for key, value in target_range_values.items()
-                        if value is not None
-                    }}
-                    if any(value is not None for value in target_range_values.values())
-                    else {}
-                )
-                response = service.query(
-                    QueryRequest(
-                        args.query_type,
-                        args.symbol,
-                        {
-                            "target_path": args.target_path,
-                            "target_owner": args.target_owner,
-                            "relation": args.relation,
-                            "direction": args.direction,
-                            "depth": args.depth,
-                            "max_nodes": args.max_nodes,
-                            "max_edges": args.max_edges,
-                            "timeout_ms": args.timeout_ms,
-                            **source_position,
-                            **target_range,
-                        },
-                    )
-                )
-                print(json.dumps(
-                    _response_payload(response, args.index_status, args.stale_policy),
-                    ensure_ascii=False,
-                    indent=2,
-                ))
-            elif args.command == "analyze-change":
-                print(json.dumps(
-                    analyze_change(
-                        service,
-                        args.symbol,
-                        intent=args.intent,
-                        target_path=args.target_path,
-                        target_owner=args.target_owner,
-                        direction=args.direction,
-                        depth=args.depth,
-                        max_nodes=args.max_nodes,
-                        max_edges=args.max_edges,
-                        timeout_ms=args.timeout_ms,
-                        index_status=args.index_status,
-                        stale_policy=args.stale_policy,
-                        response_mode=args.response_mode,
+        else:
+            registration_health = registration_index_health(
+                args.data_dir, args.repo, args.project, source_fingerprint
+            )
+        args.index_status["python_registrations"] = registration_health
+    service = AtlasService(
+        repository=args.repo,
+        structural_provider=structural,
+        semantic_provider=SerenaSemanticProvider(
+            args.serena_python,
+            args.serena_runner,
+            args.repo,
+            args.serena_home,
+            args.metadata_root,
+            language=args.language,
+            node_bin_dir=args.node_bin_dir,
+        ),
+        test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
+        impact_provider=structural,
+        lifecycle=lifecycle,
+        registration_index=registration_index,
+        session_continuations=args.command in {"mcp", "query-batch", "ui"},
+        indexed_language=args.language,
+    )
+    return service, transport
+
+
+def _run_service_command(args, service, refresh_coordinator):
+    with service:
+        if args.command == "mcp":
+            notifier = VersionNotifier(
+                __version__, args.data_dir,
+                enabled=args.version_check == "notify",
+            )
+            _run_mcp_with_graceful_termination(
+                McpServer(
+                    service, args.index_status, args.stale_policy,
+                    instructions=(
+                        f"This server is only for repository {args.repo.resolve()}; "
+                        f"never use it for another repository. {PROJECT_RULE}"
                     ),
-                    ensure_ascii=False,
-                    indent=2,
+                    version_notifier=notifier,
+                    refresh_coordinator=refresh_coordinator,
+                    auto_update=args.auto_update,
+                    auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
+                    availability=lambda: operational_lifecycle_status(
+                        args.data_dir, args.repo, args.project
+                    ),
+                )
+            )
+        elif args.command == "query":
+            source_position = (
+                {
+                    "source_path": args.source_path,
+                    "source_line": args.source_line,
+                    "source_column": args.source_column,
+                }
+                if any(value is not None for value in (
+                    args.source_path, args.source_line, args.source_column
                 ))
-            elif args.command == "query-batch":
-                _run_query_batch(service, args.index_status, args.stale_policy)
-            else:
-                if not 0 <= args.port <= 65535:
-                    raise SystemExit("port must be between 0 and 65535")
-                server = LocalUiServer(
+                else {}
+            )
+            target_range_values = {
+                "start_line": args.target_start_line,
+                "end_line": args.target_end_line,
+                "start_column": args.target_start_column,
+                "end_column": args.target_end_column,
+            }
+            target_range = (
+                {"target_range": {
+                    key: value for key, value in target_range_values.items()
+                    if value is not None
+                }}
+                if any(value is not None for value in target_range_values.values())
+                else {}
+            )
+            response = service.query(
+                QueryRequest(
+                    args.query_type,
+                    args.symbol,
+                    {
+                        "target_path": args.target_path,
+                        "target_owner": args.target_owner,
+                        "relation": args.relation,
+                        "direction": args.direction,
+                        "depth": args.depth,
+                        "max_nodes": args.max_nodes,
+                        "max_edges": args.max_edges,
+                        "timeout_ms": args.timeout_ms,
+                        **source_position,
+                        **target_range,
+                    },
+                )
+            )
+            print(json.dumps(
+                _response_payload(response, args.index_status, args.stale_policy),
+                ensure_ascii=False,
+                indent=2,
+            ))
+        elif args.command == "analyze-change":
+            print(json.dumps(
+                analyze_change(
                     service,
-                    repository=str(args.repo),
-                    language=args.language,
+                    args.symbol,
+                    intent=args.intent,
+                    target_path=args.target_path,
+                    target_owner=args.target_owner,
+                    direction=args.direction,
+                    depth=args.depth,
+                    max_nodes=args.max_nodes,
+                    max_edges=args.max_edges,
+                    timeout_ms=args.timeout_ms,
                     index_status=args.index_status,
                     stale_policy=args.stale_policy,
-                    port=args.port,
-                )
-                print(json.dumps({
-                    "status": "ready", "url": server.url,
-                    "binding": server.authority, "mode": "read_only",
-                }), flush=True)
-                if not args.no_open:
-                    webbrowser.open(server.url)
-                try:
-                    server.serve_forever()
-                except KeyboardInterrupt:
-                    pass
-                finally:
-                    server.httpd.server_close()
-        return 0
-    parser.print_help()
+                    response_mode=args.response_mode,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ))
+        elif args.command == "query-batch":
+            _run_query_batch(service, args.index_status, args.stale_policy)
+        else:
+            if not 0 <= args.port <= 65535:
+                raise SystemExit("port must be between 0 and 65535")
+            server = LocalUiServer(
+                service,
+                repository=str(args.repo),
+                language=args.language,
+                index_status=args.index_status,
+                stale_policy=args.stale_policy,
+                port=args.port,
+            )
+            print(json.dumps({
+                "status": "ready", "url": server.url,
+                "binding": server.authority, "mode": "read_only",
+            }), flush=True)
+            if not args.no_open:
+                webbrowser.open(server.url)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.httpd.server_close()
     return 0
 
 
@@ -1517,6 +1536,10 @@ def _apply_project_config(args) -> None:
         "serena_python": args.serena_python, "serena_home": args.serena_home,
         "metadata_root": args.metadata_root, "language": args.language,
     }
+    if args.language == "rust" and candidate is not None:
+        required = {
+            "repo": args.repo, "project": args.project, "data_dir": args.data_dir,
+        }
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise SystemExit(

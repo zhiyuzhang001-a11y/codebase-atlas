@@ -38,6 +38,8 @@ def verify_wheel(path: Path, version: str) -> str:
         "codebase_atlas/languages.py",
         "codebase_atlas/rust_scope.py",
         "codebase_atlas/rust_runtime.py",
+        "codebase_atlas/rust_installation.py",
+        "codebase_atlas/rust_project.py",
         "codebase_atlas/rust_release_lock.json",
         "codebase_atlas/rust_refresh.py",
         "codebase_atlas/rust_refresh_recovery.py",
