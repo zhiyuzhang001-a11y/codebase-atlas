@@ -12,11 +12,22 @@ from unittest.mock import patch, MagicMock
 # module-level import can retain a mock and contaminate later full-suite tests.
 from codebase_atlas import rust_mcp_refresh
 
-from scripts.rust_lifecycle_integration import install_execution_sentinels, execution_sentinel_state, hostile_hook_check
+from scripts.rust_lifecycle_integration import install_execution_sentinels, execution_sentinel_state, hostile_hook_check, git_audit_launch
 from scripts import rust_lifecycle_qualification as qualification
 
 
 class RustExecutionSentinelTests(unittest.TestCase):
+    def test_windows_audit_none_executable_only_allows_exact_git_token(self):
+        git = r"C:\Program Files\Git\cmd\git.exe"
+        self.assertTrue(git_audit_launch(None, 'git -C "C:\\fixture" rev-parse HEAD', git))
+        self.assertTrue(git_audit_launch(None, subprocess.list2cmdline([git, "rev-parse", "HEAD"]), git))
+        self.assertTrue(git_audit_launch("git", ["git", "rev-parse", "HEAD"], git))
+        for command in ('git-foreign rev-parse HEAD', 'git.exe-foreign rev-parse HEAD',
+                        'cmd /c git rev-parse HEAD', 'python -c foreign',
+                        r'C:\foreign\git.exe rev-parse HEAD'):
+            self.assertFalse(git_audit_launch(None, command, git))
+        self.assertFalse(git_audit_launch(None, "python foreign", None))
+
     def test_hostile_hooks_record_rejection_and_detect_forbidden_attempt(self):
         for forbidden in (False, True):
             with self.subTest(forbidden=forbidden), tempfile.TemporaryDirectory() as temporary:

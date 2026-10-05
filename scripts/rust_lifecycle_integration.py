@@ -17,6 +17,22 @@ import argparse
 import sys
 
 
+def git_audit_launch(executable, argv, git: str | None) -> bool:
+    """Recognize only Git, including Windows Popen(None, commandline) audit."""
+    allowed = {"git"}
+    if git is not None:
+        allowed.add(git)
+    if executable is not None:
+        return str(executable) in allowed
+    if isinstance(argv, str):
+        # CPython has already used list2cmdline. Compare the exact first token,
+        # including quoting of a trusted absolute Git path; never allow shells
+        # or basename-only matches for an arbitrary executable path.
+        return any(argv == token or argv.startswith(token + " ")
+                   for token in (subprocess.list2cmdline([path]) for path in allowed))
+    return isinstance(argv, (tuple, list)) and bool(argv) and str(argv[0]) in allowed
+
+
 def hostile_hook_check(repository: Path, work: Path):
     """Real normal hooks with hostile env; Python audit only, NOT OS tracing."""
     from codebase_atlas.config import AtlasConfig, diagnose
@@ -35,16 +51,17 @@ def hostile_hook_check(repository: Path, work: Path):
                        encoding="utf-8")
     if os.name != "nt":
         wrapper.chmod(0o700)
-    observer = {"active": False, "forbidden": [], "git_argv": []}
+    observer = {"active": False, "forbidden": [], "git_argv": [], "forbidden_launches": []}
     git = shutil.which("git")
     def audit(event, args):
         if not observer["active"]:
             return
         if event == "subprocess.Popen":
             executable, argv = args[:2]
-            if str(executable) in {"git", git}:
-                observer["git_argv"].append(list(argv))
+            if git_audit_launch(executable, argv, git):
+                observer["git_argv"].append(argv if isinstance(argv, str) else list(argv))
                 return
+            observer["forbidden_launches"].append({"executable": str(executable), "argv": argv})
         elif not (event in {"os.system", "os.exec", "os.posix_spawn", "socket.connect", "socket.getaddrinfo"}
                   or event.startswith("os.spawn")):
             return
@@ -81,6 +98,7 @@ def hostile_hook_check(repository: Path, work: Path):
         service.close()
         evidence = {"hooks": rows, "observer": "Python audit only; NOT whole-tree or OS network",
                     "forbidden_events": observer["forbidden"], "git_argv": observer["git_argv"],
+                    "forbidden_launches": observer["forbidden_launches"],
                     "wrapper_executed": marker.exists(),
                     "config_unchanged": config_path.read_bytes() == original_config,
                     "generation_preserved": _load_index(config.data_dir, config.repository, config.project)[0]["generation_id"] == original_generation}
