@@ -6,6 +6,26 @@ from codebase_atlas.windows_private_store import validate_private_acl
 
 
 class WindowsPrivateAclPolicyTests(unittest.TestCase):
+    def test_cpython_owner_rights_alias_requires_verified_actual_owner(self):
+        entries = [(0, 0x1f01ff, "S-1-3-4"), (0, 0x1f01ff, "S-1-5-18"),
+                   (0, 0x1f01ff, "S-1-5-32-544")]
+        validate_private_acl("user", "user", entries)
+        facts = dict(token_owner="S-1-5-32-544", elevated=True, administrator_enabled=True)
+        validate_private_acl("S-1-5-32-544", "user", entries, **facts)
+        for changed in (dict(token_owner="user"), dict(elevated=False),
+                        dict(administrator_enabled=False)):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                validate_private_acl("S-1-5-32-544", "user", entries, **(facts | changed))
+        for owner in ("foreign", "S-1-5-18"):
+            with self.subTest(owner=owner), self.assertRaises(ValueError):
+                validate_private_acl(owner, "user", entries, **(facts | dict(token_owner=owner)))
+        for rejected in (entries + [(0, 1, "foreign")], entries + [(1, 1, "S-1-3-4")],
+                         [(0, 1, "S-1-3-4")], [(0, 0x1f01ff, "S-1-3-0")]):
+            with self.subTest(entries=rejected), self.assertRaises(ValueError):
+                validate_private_acl("S-1-5-32-544", "user", rejected, **facts)
+        with self.assertRaises(ValueError):
+            validate_private_acl("user", "user", [(0, 0x1f01ff, "S-1-3-0")])
+
     def test_verified_elevated_default_owner_requires_private_current_account_grant(self):
         facts = dict(token_owner="S-1-5-32-544", elevated=True, administrator_enabled=True)
         entries = [(0, 0x1f01ff, "user"), (0, 0x1f01ff, "S-1-5-18"),

@@ -9,11 +9,13 @@ def validate_private_acl(owner, current_user, entries, *, token_owner=None,
     # Windows elevated processes may create objects owned by their token's
     # Administrators default owner. This is NOT a general group-owner exception:
     # all three facts come from the same native process token, and the current
-    # account must itself have explicit full access. Existing trusted SYSTEM /
+    # account must have full access directly or through OWNER RIGHTS (which
+    # denotes the already-verified owner, not an arbitrary/creator account).
+    # Existing trusted SYSTEM /
     # Administrators ACEs remain the only other grants admitted.
     administrator_owner = (owner == "S-1-5-32-544" and token_owner == owner
                            and elevated is True and administrator_enabled is True
-                           and any(kind == 0 and sid == current_user
+                           and any(kind == 0 and sid in (current_user, "S-1-3-4")
                                    and mask & 0x1f01ff == 0x1f01ff
                                    for kind, mask, sid in entries)
                            and not any(kind == 1 and mask for kind, mask, sid in entries))
@@ -25,7 +27,8 @@ def validate_private_acl(owner, current_user, entries, *, token_owner=None,
                     "administrators" if owner == "S-1-5-32-544" else "foreign")
         raise ValueError("Windows store must have an owned, explicit DACL "
                          f"(owner={relation}, ace_count={len(entries)})")
-    trusted = {current_user, "S-1-5-18", "S-1-5-32-544"}  # SYSTEM, Administrators
+    # Ownership was proven above before admitting the OWNER RIGHTS alias.
+    trusted = {current_user, "S-1-5-18", "S-1-5-32-544", "S-1-3-4"}
     for ace_type, mask, sid in entries:
         if ace_type == 1:  # Deny entries cannot grant access.
             continue
@@ -132,7 +135,7 @@ def verify_windows_private_path(path):
             # An inherit-only ACE cannot prove current-account access. Foreign
             # trustees remain rejected even when their grants are inherit-only.
             sid = stringify(raw.value + ACE.sid_start.offset)
-            if ace.flags & 0x8 and sid == user and ace.kind == 0:
+            if ace.flags & 0x8 and sid in (user, "S-1-3-4") and ace.kind == 0:
                 continue
             entries.append((ace.kind, ace.mask, sid))
         validate_private_acl(owner_text, user, entries, token_owner=default_owner,
