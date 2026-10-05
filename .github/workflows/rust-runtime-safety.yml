@@ -45,6 +45,6 @@ jobs:
           ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
         run: python -c "import os; from codebase_atlas.release_installation import current_platform_target; from codebase_atlas.languages import get_language; assert current_platform_target() == os.environ['ATLAS_EXPECTED_TARGET']; assert not get_language('rust').public_enabled"
       - name: Run internal source/receipt/transaction and native ownership regressions
-        run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_scanner_installation tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
+        run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_scanner_installation tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
       # Native Windows tests must execute on both Windows targets. Non-Windows
       # skips are expected here and are not installed-wheel product evidence.

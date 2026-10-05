@@ -114,6 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codebase-atlas")
     parser.add_argument("--version", action="store_true")
     commands = parser.add_subparsers(dest="command")
+    rust_prepare = commands.add_parser("rust-prepare", help="plan or explicitly verify and reuse an official Rust toolchain")
+    rust_prepare.add_argument("--repo", type=Path, default=Path.cwd())
+    rust_prepare.add_argument("--toolchain-root", type=Path, required=True)
+    rust_prepare.add_argument("--archive", action="append", default=[], metavar="COMPONENT=PATH")
+    rust_prepare.add_argument("--apply", action="store_true")
+    rust_prepare.add_argument("--allow-network", action="store_true")
     initialize = commands.add_parser("init", help="create a project-local Atlas configuration")
     initialize.add_argument("--repo", type=Path, default=Path.cwd())
     initialize.add_argument("--config", type=Path)
@@ -388,6 +394,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
         return 0
+    if args.command == "rust-prepare":
+        if not get_language("rust").public_enabled:
+            print(json.dumps({"schema_version": 1, "status": "blocked", "error": "Rust public enablement is closed"}))
+            return 2
+        from .rust_preparation import plan_existing_toolchain, prepare_existing_toolchain
+        try:
+            archives = {}
+            for entry in args.archive:
+                component, separator, path = entry.partition("=")
+                if not separator or not component or not path or component in archives:
+                    raise ValueError("Rust archives require unique COMPONENT=PATH entries")
+                archives[component] = Path(path)
+            if args.allow_network and not args.apply:
+                raise ValueError("Rust network acquisition requires explicit --apply")
+            if args.apply:
+                result = prepare_existing_toolchain(args.repo, args.toolchain_root,
+                                                    archives=archives or None,
+                                                    network_authorized=args.allow_network)
+            else:
+                result = plan_existing_toolchain(args.repo, args.toolchain_root, archives=archives or None)
+        except (OSError, RuntimeError, ValueError) as exc:
+            result = {"schema_version": 1, "status": "blocked", "error": str(exc)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["status"] in {"planned", "prepared"} else 2
     if args.command == "codex":
         operation = {
             "plan": codex_plan,

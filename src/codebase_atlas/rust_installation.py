@@ -45,6 +45,12 @@ def runtime_from_receipt(path: Path, *, repository: Path) -> RustToolchainRuntim
     root = Path(document["root"])
     if root.is_relative_to(repo):
         raise RustRuntimeError("Rust toolchain cannot be project-local")
+    return _runtime_from_document(document)
+
+
+def _runtime_from_document(document: dict) -> RustToolchainRuntime:
+    """Construct only from a verified document; also used before publication."""
+    root = Path(document["root"])
     tools = {name: VerifiedRustTool(root / value["path"], value["sha256"])
              for name, value in document["tools"].items()}
     return RustToolchainRuntime(
