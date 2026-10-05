@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,8 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from codebase_atlas.rust_runtime import RustToolchainRuntime, VerifiedRustTool
 
 
 spec = importlib.util.spec_from_file_location(
@@ -94,6 +97,7 @@ class OfficialToolQualificationTests(unittest.TestCase):
             with patch.object(qualification, "install_toolchain", return_value=result) as install, \
                     patch.object(qualification, "load_toolchain_receipt", return_value={}), \
                     patch.object(qualification, "runtime_from_receipt", return_value=runtime), \
+                    patch.object(qualification, "qualify_preflight"), \
                     patch.object(qualification, "run_owned", side_effect=outputs) as owned:
                 report = {}
                 qualification.qualify(report, base, base / "data", allow_network=False)
@@ -104,6 +108,48 @@ class OfficialToolQualificationTests(unittest.TestCase):
                 for call in owned.call_args_list:
                     self.assertEqual(call.args[0][1:], ["--version"])
                     self.assertEqual(call.kwargs["timeout"], 5)
+
+    def test_hostile_preflight_rejects_before_execution_and_preserves_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            project = base / "project"
+            project.mkdir()
+            tools = []
+            for name in ("cargo", "rustc", "analyzer"):
+                path = base / ("tool-" + name)
+                path.write_bytes(b"non-executable verified test fixture")
+                tools.append(VerifiedRustTool(path, hashlib.sha256(path.read_bytes()).hexdigest()))
+            with qualification.isolated_environment(base, base / "data"):
+                runtime = RustToolchainRuntime(*tools, base / "cargo", base / "rustup")
+                report = {}
+                qualification.qualify_preflight(report, runtime, project, base)
+                self.assertEqual(len(report["preflight_negatives"]), 14)
+                self.assertTrue(all(case["rejected"] and not case["events"]
+                                    and case["config_unchanged"] for case in report["preflight_negatives"]))
+                self.assertEqual(list(project.iterdir()), [])
+
+    def test_audit_observer_catches_execution_instead_of_counting_rejection_as_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            project = base / "project"
+            project.mkdir()
+            runtime = SimpleNamespace(cargo_home=base / "cargo", rustup_home=base / "rustup",
+                                      environment=lambda repo: os.system("must-never-execute"))
+            report = {}
+            with self.assertRaisesRegex(RuntimeError, "Forbidden execution"):
+                qualification.qualify_preflight(report, runtime, project, base)
+            self.assertEqual(report["preflight_negatives"][0]["events"], ["os.system"])
+
+    def test_environment_setup_failure_also_restores_inherited_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            (base / "cargo").write_text("foreign fixture")
+            with patch.dict(os.environ, {"RUSTC_WRAPPER": "preserve"}):
+                original = dict(os.environ)
+                with self.assertRaises(FileExistsError):
+                    with qualification.isolated_environment(base, base / "data"):
+                        self.fail("setup must refuse existing home")
+                self.assertEqual(dict(os.environ), original)
 
 
 if __name__ == "__main__":

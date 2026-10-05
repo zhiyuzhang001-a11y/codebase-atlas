@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 from time import monotonic
 
@@ -21,7 +23,7 @@ from codebase_atlas.languages import get_language
 from codebase_atlas.release_installation import current_platform_target
 from codebase_atlas.rust_installation import load_toolchain_receipt, runtime_from_receipt, toolchain_store
 from codebase_atlas.rust_owned_command import run_owned
-from codebase_atlas.rust_runtime import PINNED_TOOLCHAIN
+from codebase_atlas.rust_runtime import PINNED_TOOLCHAIN, RustRuntimeError
 from codebase_atlas.rust_toolchain_installation import install_toolchain
 
 
@@ -48,15 +50,15 @@ def isolated_environment(base: Path, data_root: Path):
     original = dict(os.environ)
     removed = sorted(name for name in original
                      if name == "CARGO" or name.startswith(("CARGO_", "RUST", "LD_", "DYLD_")))
-    for name in removed:
-        os.environ.pop(name, None)
-    homes = {"HOME": base / "home", "USERPROFILE": base / "home",
-             "CARGO_HOME": base / "cargo", "RUSTUP_HOME": base / "rustup"}
-    for path in set(homes.values()):
-        path.mkdir(mode=0o700)
-    os.environ.update({name: str(path) for name, path in homes.items()})
-    os.environ["XDG_DATA_HOME"] = str(data_root)
     try:
+        for name in removed:
+            os.environ.pop(name, None)
+        homes = {"HOME": base / "home", "USERPROFILE": base / "home",
+                 "CARGO_HOME": base / "cargo", "RUSTUP_HOME": base / "rustup"}
+        for path in set(homes.values()):
+            path.mkdir(mode=0o700)
+        os.environ.update({name: str(path) for name, path in homes.items()})
+        os.environ["XDG_DATA_HOME"] = str(data_root)
         yield removed
     finally:
         os.environ.clear()
@@ -67,6 +69,75 @@ def validate_version(name: str, output: str) -> None:
     prefix = "rust-analyzer" if name == "analyzer" else name
     if not re.match(r"^" + re.escape(prefix + " " + PINNED_TOOLCHAIN) + r"(?:\s|$)", output):
         raise ValueError("Official tool version mismatch: " + name)
+
+
+def qualify_preflight(report: dict, runtime, project: Path, base: Path) -> None:
+    """Real receipt/tools, hostile fixture config; Python audit, NOT OS tracing.
+
+    A forbidden audit event fails the harness even if preflight catches it. This
+    observer cannot see arbitrary native API calls and does not prove whole-tree
+    network/argv behavior during enable/query/refresh. Those remain open gates.
+    """
+    report["preflight_negatives"] = []
+    active = {"events": None}
+
+    def audit(event, args):
+        if active["events"] is not None and (event in {
+                "subprocess.Popen", "os.system", "os.exec", "os.posix_spawn",
+                "socket.connect", "socket.getaddrinfo"} or event.startswith("os.spawn")):
+            active["events"].append(event)
+            raise RuntimeError("Forbidden execution/network attempt during preflight")
+
+    sys.addaudithook(audit)
+    sentinel = base / "untrusted-wrapper"
+    # No executable is installed: the observer must reject any attempt BEFORE
+    # launching even a missing wrapper. No fake wrapper-execution proof claimed.
+    cases = [("env-" + name, None, None, {name: str(sentinel)}) for name in (
+        "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN", "RUSTC",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES", "CARGO_REGISTRIES_CRATES_IO_INDEX")]
+    cases.extend([
+        ("project-cargo", project / ".cargo/config.toml", '[build]\nrustc-wrapper="untrusted"\n', {}),
+        ("ancestor-cargo", base / ".cargo/config.toml", '[build]\nrustc-wrapper="untrusted"\n', {}),
+        ("user-cargo", runtime.cargo_home / "config.toml", '[build]\nrustc-wrapper="untrusted"\n', {}),
+        ("project-analyzer", project / "rust-analyzer.toml", '[cargo.buildScripts]\nenable=true\n', {}),
+        ("toolchain-download", project / "rust-toolchain.toml", '[toolchain]\nchannel="nightly"\n', {}),
+        ("rustup-override", runtime.rustup_home / "settings.toml",
+         '[overrides]\n' + json.dumps(str(project)) + '="nightly"\n', {}),
+    ])
+    for name, path, content, overrides in cases:
+        old = dict(os.environ)
+        evidence = {"case": name, "observer": "Python audit events only",
+                    "events": [], "rejected": False}
+        report["preflight_negatives"].append(evidence)
+        if path is not None:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with path.open("x", encoding="utf-8") as output:
+                output.write(content)
+            before = path.read_bytes()
+            evidence["config_sha256"] = hashlib.sha256(before).hexdigest()
+        try:
+            os.environ.update(overrides)
+            active["events"] = evidence["events"]
+            try:
+                runtime.environment(project)
+            except RustRuntimeError as exc:
+                evidence.update(rejected=True, error=str(exc))
+            finally:
+                active["events"] = None
+            if not evidence["rejected"] or evidence["events"]:
+                raise ValueError("Hostile preflight did not fail closed: " + name)
+            if path is not None and path.read_bytes() != before:
+                raise ValueError("Preflight modified hostile fixture config")
+            evidence["config_unchanged"] = True
+        finally:
+            active["events"] = None
+            os.environ.clear()
+            os.environ.update(old)
+            if path is not None:
+                path.unlink()
+    # Remove only our now-empty fixture directory; do not touch user config.
+    (project / ".cargo").rmdir()
 
 
 def qualify(report: dict, base: Path, data_root: Path, *, allow_network: bool) -> None:
@@ -103,6 +174,7 @@ def qualify(report: dict, base: Path, data_root: Path, *, allow_network: bool) -
                          stderr=result.stderr, elapsed_seconds=monotonic() - start)
             result.check_returncode()
             validate_version(name, result.stdout.strip())
+        qualify_preflight(report, runtime, project, base)
         if list(project.iterdir()):
             raise ValueError("Version qualification unexpectedly wrote to project")
         report["project_writes"] = []
