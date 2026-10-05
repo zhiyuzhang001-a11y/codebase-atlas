@@ -168,6 +168,12 @@ def _private_directory(path: Path) -> None:
         raise RustRuntimeError("Rust receipt store is unsafe")
     if os.name != "nt" and (metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077):
         raise RustRuntimeError("Rust receipt store must be private and owned")
+    if os.name == "nt":
+        from .windows_private_store import verify_windows_private_path
+        try:
+            verify_windows_private_path(path)
+        except (OSError, ValueError) as exc:
+            raise RustRuntimeError("Rust store Windows ownership/ACL is unsafe") from exc
 
 
 def save_toolchain_receipt(document: dict, store: Path) -> Path:
@@ -222,6 +228,12 @@ def load_toolchain_receipt(path: Path, *, store: Path) -> dict:
         raise RustRuntimeError("Rust receipt is unsafe or oversized")
     if os.name != "nt" and (metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077):
         raise RustRuntimeError("Rust receipt is not private and owned")
+    if os.name == "nt":
+        from .windows_private_store import verify_windows_private_path
+        try:
+            verify_windows_private_path(path)
+        except (OSError, ValueError) as exc:
+            raise RustRuntimeError("Rust receipt Windows ownership/ACL is unsafe") from exc
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         lock = release_lock()
