@@ -335,3 +335,10 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   三项 native Windows ACL/Job 回归须在 Windows x86_64/ARM64 真正执行。新增五平台
   `Rust Runtime Safety (Internal)` workflow 只检查内部 receipt/事务/原生 ownership，
   强制公开 Rust 仍关闭，不把此门当成最终正常安装/语义/资源资格。
+- Windows runner 已证明新目录默认由 Administrators 拥有；按 Microsoft
+  [默认对象所有者](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object)
+  规则补充只读验证：仅当同一进程 TokenOwner 为 Administrators、TokenElevation
+  已提升、该组在显式复制的令牌中启用，且当前账户有实际 full-control ACE 时接受。
+  仍仅允许当前账户/SYSTEM/Administrators 的授权，拒绝外来 owner、外来授权、
+  未验证/未提升令牌、空 DACL 与未知 ACE；不提升进程、不改用户 ACL。原本已信任
+  Administrators 的权限边界不扩大；这项兼容修复仍须两个 Windows 原生 runner 验证。
