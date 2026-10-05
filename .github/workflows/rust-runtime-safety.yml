@@ -10,6 +10,7 @@ on:
       - 'tests/test_windows*.py'
       - 'tests/test_frontend_installation.py'
       - 'tests/fixtures/rust-product/**'
+      - 'scripts/rust_toolchain_qualification.py'
       - 'pyproject.toml'
 
 permissions:
@@ -32,9 +33,11 @@ jobs:
           - runner: windows-11-arm
             target: windows-arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -45,6 +48,25 @@ jobs:
           ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
         run: python -c "import os; from codebase_atlas.release_installation import current_platform_target; from codebase_atlas.languages import get_language; assert current_platform_target() == os.environ['ATLAS_EXPECTED_TARGET']; assert not get_language('rust').public_enabled"
       - name: Run internal source/receipt/transaction and native ownership regressions
-        run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_toolchain_installation tests.test_rust_scanner_installation tests.test_rust_scanner_acquisition tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
+        run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_toolchain_installation tests.test_rust_toolchain_qualification tests.test_rust_scanner_installation tests.test_rust_scanner_acquisition tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
       # Native Windows tests must execute on both Windows targets. Non-Windows
       # skips are expected here and are not installed-wheel product evidence.
+      - name: Qualify real pinned official tools (phase 2 only)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_toolchain_qualification.py --source-sha "$env:ATLAS_SOURCE_SHA" --target "$env:ATLAS_EXPECTED_TARGET" --output official-tools.json --allow-network --require-clean-source
+        if: runner.os == 'Windows'
+      - name: Qualify real pinned official tools (phase 2 only, POSIX)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_toolchain_qualification.py --source-sha "$ATLAS_SOURCE_SHA" --target "$ATLAS_EXPECTED_TARGET" --output official-tools.json --allow-network --require-clean-source
+        if: runner.os != 'Windows'
+      - name: Preserve phase-2 raw official-tool evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: official-tools-${{ matrix.target }}
+          path: official-tools.json
+          if-no-files-found: error
