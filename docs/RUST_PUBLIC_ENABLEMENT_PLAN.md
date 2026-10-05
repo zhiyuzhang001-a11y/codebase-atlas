@@ -389,3 +389,8 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   哨兵均未执行，冻结 crate-left 跨文件定义在刷新前后返回正确位置、analyzer 已退出。
   这仍是本机 source-API 集成，不是五平台 installed-wheel、fresh stdio、全部进程
   argv 或操作系统级禁网证据；不据此宣称第二阶段退出或公开 Rust 可用。
+- 同一内部 source-API 生命周期现已接入五平台 scanner workflow：先单独准备
+  锁定官方工具，再离线复用同一安装/缓存完成临时哨兵 fixture；失败保留已完成
+  操作的原始报告。CI 必须匹配精确干净源码、对应 scanner commit 和本机平台，
+  Windows 使用 zip，其他平台使用 tar.gz。五平台真实结果仍待运行与审核；
+  该门不替代 installed-wheel、fresh stdio、OS 禁网和完整子进程 argv 验收。

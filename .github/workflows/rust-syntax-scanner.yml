@@ -14,6 +14,7 @@ on:
       - scripts/verify_rust_syntax_bundles.py
       - scripts/rust_scanner_qualification.py
       - scripts/rust_lifecycle_integration.py
+      - scripts/rust_lifecycle_qualification.py
       - scripts/rust_toolchain_qualification.py
       - tests/test_rust_syntax_bundles.py
       - tests/test_rust_scanner_qualification.py
@@ -66,6 +67,16 @@ jobs:
         with:
           name: scanner-qualification-${{ matrix.target }}
           path: scanner-qualification.json
+          if-no-files-found: error
+      - name: Qualify real lifecycle with execution sentinels (internal phase 2 only)
+        shell: bash
+        run: |
+          python scripts/rust_lifecycle_qualification.py --source-sha ${{ github.sha }} --target ${{ matrix.target }} --directory dist --output lifecycle-qualification.json --allow-network
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lifecycle-qualification-${{ matrix.target }}
+          path: lifecycle-qualification.json
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:

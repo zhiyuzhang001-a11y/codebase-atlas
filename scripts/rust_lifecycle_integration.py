@@ -105,16 +105,18 @@ def mcp_check(repository):
             "live_codex_task_tested": False}, 0
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
-    parser.add_argument("--archives", type=Path, required=True)
+    archives_group = parser.add_mutually_exclusive_group(required=True)
+    archives_group.add_argument("--archives", type=Path)
+    archives_group.add_argument("--archive-map", type=Path)
     parser.add_argument("--scanner", type=Path, required=True)
     parser.add_argument("--scanner-sha256", required=True)
     parser.add_argument("--scanner-commit", required=True)
     parser.add_argument("--execution-sentinels", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     work = args.work_dir.resolve()
     source = Path(__file__).resolve().parents[1]
     source_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, capture_output=True,
@@ -142,7 +144,13 @@ def main():
         target = current_platform_target()
         components = dict(lock["targets"][target]["components"])
         components["rust-src"] = lock["rust_src"]
-        archives = {name: args.archives / Path(identity["url"]).name for name, identity in components.items()}
+        if args.archive_map is not None:
+            paths = json.loads(args.archive_map.read_text(encoding="utf-8"))
+            if set(paths) != set(components):
+                raise RuntimeError("archive map must contain the exact official component inventory")
+            archives = {name: Path(path) for name, path in paths.items()}
+        else:
+            archives = {name: args.archives / Path(identity["url"]).name for name, identity in components.items()}
         document = verify_existing_toolchain(args.toolchain.resolve(), archives, target)
         save_toolchain_receipt(document, toolchain_store())
         install_scanner_asset(args.scanner, sha256=args.scanner_sha256, commit=args.scanner_commit, target=target)
@@ -173,8 +181,11 @@ def main():
                 raise RuntimeError(operation + " did not pass")
         if subprocess.check_output(["git", "diff", "HEAD"], cwd=repository) != before:
             raise RuntimeError("tracked fixture source changed")
-    print(json.dumps({"status": "pass", "qualification": "internal_real_tool_only",
-                      "installed_wheel_tested": False, "public_enabled": languages.get_language("rust").public_enabled}))
+    summary = {"status": "pass", "qualification": "internal_real_tool_only",
+               "installed_wheel_tested": False, "tracked_fixture_source_unchanged": True,
+               "public_enabled": languages.get_language("rust").public_enabled}
+    print(json.dumps(summary))
+    return summary
 
 
 if __name__ == "__main__":
