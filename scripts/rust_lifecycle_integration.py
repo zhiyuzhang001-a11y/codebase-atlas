@@ -279,6 +279,7 @@ def main(argv=None):
                "installed_wheel_tested": False, "tracked_fixture_source_unchanged": True,
                "public_enabled": languages.get_language("rust").public_enabled}
     print(json.dumps(summary))
+    (work / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return summary
 
 

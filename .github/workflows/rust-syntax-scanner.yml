@@ -15,10 +15,12 @@ on:
       - scripts/rust_scanner_qualification.py
       - scripts/rust_lifecycle_integration.py
       - scripts/rust_lifecycle_qualification.py
+      - scripts/rust_linux_trace.py
       - scripts/rust_toolchain_qualification.py
       - tests/test_rust_syntax_bundles.py
       - tests/test_rust_scanner_qualification.py
       - tests/test_rust_lifecycle_integration.py
+      - tests/test_rust_linux_trace.py
 
 permissions:
   contents: read
@@ -71,12 +73,22 @@ jobs:
       - name: Qualify real lifecycle with execution sentinels (internal phase 2 only)
         shell: bash
         run: |
-          python scripts/rust_lifecycle_qualification.py --source-sha ${{ github.sha }} --target ${{ matrix.target }} --directory dist --output lifecycle-qualification.json --allow-network
+          trace_args=()
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            if ! command -v strace; then
+              sudo apt-get update
+              sudo apt-get install -y strace
+            fi
+            trace_args=(--linux-native-trace-dir "$PWD/lifecycle-native")
+          fi
+          python scripts/rust_lifecycle_qualification.py --source-sha ${{ github.sha }} --target ${{ matrix.target }} --directory dist --output lifecycle-qualification.json --allow-network "${trace_args[@]}"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: lifecycle-qualification-${{ matrix.target }}
-          path: lifecycle-qualification.json
+          path: |
+            lifecycle-qualification.json
+            lifecycle-native/*
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:

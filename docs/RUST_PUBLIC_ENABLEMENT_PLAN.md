@@ -399,3 +399,9 @@ Rust 配置，回滚应恢复启用前的 stopped/unconfigured 状态或保留�
   危险 wrapper 的 enable、doctor、冷查询、refresh 拒绝观察，保留配置与原
   generation，完成后再跑正常流程。观察者只覆盖 Python API，不能证明 OS 级
   禁网或所有原生子进程参数；新增正常入口负例仍须五平台真实运行后审核。
+- 正常入口 wrapper 负例已在五平台通过并核对原始证据。继续为两个 Linux
+  runner 接入 strace 原生 syscall 跟踪，下载准备在观察区间外；先以受控
+  loopback socket 和独立子进程验证观察器，再记录真实生命周期所有子进程
+  exec argv 与网络 syscall。证据启动环境不继承 CI token，观察缺失/截断/
+  非 Unix socket 尝试或 io_uring 盲区均不接受。Linux 实际结果与 argv 独立
+  策略审核仍待完成，不替代 macOS/Windows 原生安全门，更不宣布第二阶段退出。

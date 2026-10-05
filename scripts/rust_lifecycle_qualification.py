@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 import tempfile
+import sys
 
 from codebase_atlas.release_installation import parse_checksum_manifest
 from codebase_atlas.rust_acquisition import acquire_components
@@ -18,12 +19,14 @@ from codebase_atlas.rust_scanner_installation import scanner_lock
 try:
     from rust_toolchain_qualification import isolated_environment, validate_identity
     from rust_lifecycle_integration import main as lifecycle_main
+    from rust_linux_trace import observe
 except ModuleNotFoundError:
     from scripts.rust_toolchain_qualification import isolated_environment, validate_identity
     from scripts.rust_lifecycle_integration import main as lifecycle_main
+    from scripts.rust_linux_trace import observe
 
 
-def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool) -> None:
+def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, trace_directory: Path | None = None) -> None:
     preparation = base / "preparation"
     preparation.mkdir(mode=0o700)
     home = base / "environment"
@@ -41,12 +44,20 @@ def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool) -> 
         if set(checksums) != {scanner.name}:
             raise ValueError("Scanner adjacent checksum inventory mismatch")
         try:
-            report["lifecycle_summary"] = lifecycle_main([
+            lifecycle_args = [
                 "--work-dir", str(work), "--toolchain", installation["root"],
                 "--archive-map", str(archive_map), "--scanner", str(scanner),
                 "--scanner-sha256", checksums[scanner.name],
                 "--scanner-commit", report["source_sha"], "--execution-sentinels",
-            ])
+            ]
+            if trace_directory is not None:
+                report["linux_native_observation"] = observe(
+                    [sys.executable, str(Path(__file__).with_name("rust_lifecycle_integration.py")), *lifecycle_args],
+                    cwd=Path(__file__).resolve().parents[1], directory=trace_directory)
+                summary = json.loads((work / "summary.json").read_text(encoding="utf-8"))
+                report["lifecycle_summary"] = summary
+            else:
+                report["lifecycle_summary"] = lifecycle_main(lifecycle_args)
         finally:
             evidence = work / "results.json"
             if evidence.is_file():
@@ -64,6 +75,7 @@ def main(argv=None) -> int:
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--linux-native-trace-dir", type=Path)
     args = parser.parse_args(argv)
     source = Path(__file__).resolve().parents[1]
     report = {"schema_version": 1, "stage": "phase2-source-api-lifecycle",
@@ -79,7 +91,8 @@ def main(argv=None) -> int:
                                         + "-" + args.target + suffix)
             with tempfile.TemporaryDirectory(prefix="atlas-lifecycle-qualification-") as temporary:
                 qualify(report, Path(temporary).resolve(), scanner.resolve(strict=True),
-                        allow_network=args.allow_network)
+                        allow_network=args.allow_network,
+                        **({"trace_directory": args.linux_native_trace_dir.resolve()} if args.linux_native_trace_dir else {}))
         except Exception as exc:
             report["error"] = {"type": type(exc).__name__, "message": str(exc)}
         finally:
