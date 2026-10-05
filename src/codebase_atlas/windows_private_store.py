@@ -6,7 +6,13 @@ import os
 
 def validate_private_acl(owner, current_user, entries):
     if owner != current_user or not entries:
-        raise ValueError("Windows store must have an owned, explicit DACL")
+        # Report categories, not account SIDs or paths. Elevated Windows runners
+        # may use a different default owner; that is evidence to investigate,
+        # not permission to admit it or rewrite an existing directory's ACL.
+        relation = ("current-user" if owner == current_user else
+                    "administrators" if owner == "S-1-5-32-544" else "foreign")
+        raise ValueError("Windows store must have an owned, explicit DACL "
+                         f"(owner={relation}, ace_count={len(entries)})")
     trusted = {current_user, "S-1-5-18", "S-1-5-32-544"}  # SYSTEM, Administrators
     for ace_type, mask, sid in entries:
         if ace_type == 1:  # Deny entries cannot grant access.

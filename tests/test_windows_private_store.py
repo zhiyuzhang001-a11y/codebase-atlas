@@ -6,6 +6,12 @@ from codebase_atlas.windows_private_store import validate_private_acl
 
 
 class WindowsPrivateAclPolicyTests(unittest.TestCase):
+    def test_owner_diagnostic_does_not_admit_administrator_or_expose_sid(self):
+        with self.assertRaisesRegex(ValueError, r"owner=administrators, ace_count=1") as failure:
+            validate_private_acl("S-1-5-32-544", "private-user-sid", [(0, 1, "private-user-sid")])
+        self.assertNotIn("private-user-sid", str(failure.exception))
+        self.assertNotIn("S-1-5-32-544", str(failure.exception))
+
     @unittest.skipUnless(os.name == "nt", "native Windows ACL requires Windows")
     def test_native_private_directory_owner_and_acl_are_verified(self):
         from codebase_atlas.windows_private_store import verify_windows_private_path

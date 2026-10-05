@@ -31,6 +31,8 @@ class RustScannerInstallationTests(unittest.TestCase):
     def test_source_lock_matches_frozen_native_inputs(self):
         source = Path(__file__).resolve().parents[1]
         lock = scanner_lock()
+        self.assertEqual(hashlib.sha256((source / "LICENSE").read_bytes()).hexdigest(),
+                         lock["license_sha256"])
         for relative, digest in lock["files"].items():
             self.assertEqual(hashlib.sha256((source / "native/rust-syntax-scanner" / relative).read_bytes()).hexdigest(), digest)
 
@@ -104,6 +106,12 @@ class RustScannerInstallationTests(unittest.TestCase):
         self.payloads["LICENSE"] = b"different license"
         with self.assertRaisesRegex(RustRuntimeError, "identity"):
             self.install(self.bundle())
+
+    def test_license_line_ending_changes_are_rejected_before_writes(self):
+        self.payloads["LICENSE"] = self.payloads["LICENSE"].replace(b"\n", b"\r\n")
+        with self.assertRaisesRegex(RustRuntimeError, "identity"):
+            self.install(self.bundle())
+        self.assertFalse(self.store.exists())
 
     def test_existing_foreign_directory_is_not_replaced(self):
         destination = self.store / "0.2.0/macos-arm64"
