@@ -77,6 +77,26 @@ def _read_config(path: Path) -> dict | None:
         raise RustRuntimeError("Rust configuration cannot be safely parsed") from exc
 
 
+def _reject_unverified_tool_proxies(paths: list[Path], cargo_home: Path) -> None:
+    # Pinned analyzer tool discovery can prefer CARGO_HOME/bin over CARGO/RUSTC,
+    # and probes rustup via PATH. Receipts authenticate required component files,
+    # not arbitrary extra files in those directories. Never execute a proxy to
+    # discover its identity; require absence or the exact already-verified path.
+    directories = dict.fromkeys([cargo_home.absolute() / "bin", *(path.parent for path in paths)])
+    for directory in directories:
+        for name in ("cargo", "rustc", "rust-analyzer", "rustup", "rustfmt"):
+            for suffix in ("", ".exe", ".cmd", ".bat"):
+                candidate = directory / (name + suffix)
+                try:
+                    os.lstat(candidate)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise RustRuntimeError("Rust tool proxy location is inaccessible") from exc
+                if candidate not in paths:
+                    raise RustRuntimeError("Rust unverified tool proxy requires reviewed preparation")
+
+
 def rust_runtime_environment(
     repository: Path,
     *,
@@ -95,6 +115,7 @@ No files, toolchains or global environment variables are changed.
 """
     inherited = os.environ if environment is None else environment
     paths = [tool.verify() for tool in (cargo, rustc, analyzer)]
+    _reject_unverified_tool_proxies(paths, cargo_home)
     repo = repository.resolve(strict=True)
     if not repo.is_dir():
         raise RustRuntimeError("Rust repository is unavailable")

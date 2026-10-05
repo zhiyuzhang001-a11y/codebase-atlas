@@ -104,6 +104,10 @@ def qualify_preflight(report: dict, runtime, project: Path, base: Path) -> None:
         ("toolchain-download", project / "rust-toolchain.toml", '[toolchain]\nchannel="nightly"\n', {}),
         ("rustup-override", runtime.rustup_home / "settings.toml",
          '[overrides]\n' + json.dumps(str(project)) + '="nightly"\n', {}),
+        ("cargo-home-cargo-proxy", runtime.cargo_home / "bin/cargo", "untrusted proxy: never execute", {}),
+        ("cargo-home-rustc-proxy", runtime.cargo_home / "bin/rustc", "untrusted proxy: never execute", {}),
+        ("cargo-home-rustup-proxy", runtime.cargo_home / "bin/rustup", "untrusted download proxy: never execute", {}),
+        ("tool-directory-rustup-proxy", runtime.cargo.path.parent / "rustup", "untrusted download proxy: never execute", {}),
     ])
     for name, path, content, overrides in cases:
         old = dict(os.environ)

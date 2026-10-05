@@ -47,6 +47,25 @@ class RustRuntimePreflightTests(unittest.TestCase):
         self.assertEqual(result["RUSTC"], str(self.tools[1].path))
         self.assertEqual(result["CARGO_NET_OFFLINE"], "true")
 
+    def test_cargo_home_proxies_cannot_override_verified_absolute_tools(self):
+        directory = self.root / "cargo-home/bin"
+        directory.mkdir(parents=True)
+        for name in ("cargo", "rustc", "rustup", "rustfmt", "cargo.exe", "rustup.cmd"):
+            path = directory / name
+            path.write_bytes(b"foreign executable: never run")
+            with self.subTest(name=name), self.assertRaisesRegex(RustRuntimeError, "unverified tool proxy"):
+                self.check()
+            self.assertEqual(path.read_bytes(), b"foreign executable: never run")
+            path.unlink()
+
+    def test_unrecorded_rustup_next_to_verified_binaries_is_rejected(self):
+        for name in ("rustup", "rustup.exe", "rustup.cmd", "rustup.bat"):
+            path = self.root / name
+            path.write_bytes(b"download trap: never run")
+            with self.subTest(name=name), self.assertRaisesRegex(RustRuntimeError, "unverified tool proxy"):
+                self.check()
+            path.unlink()
+
     def test_rejects_wrapper_preload_registry_and_toolchain_overrides(self):
         for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN",
                      "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", "LD_PRELOAD",

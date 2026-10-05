@@ -115,15 +115,16 @@ class OfficialToolQualificationTests(unittest.TestCase):
             project = base / "project"
             project.mkdir()
             tools = []
+            (base / "tool-bin").mkdir()
             for name in ("cargo", "rustc", "analyzer"):
-                path = base / ("tool-" + name)
+                path = base / "tool-bin" / ("tool-" + name)
                 path.write_bytes(b"non-executable verified test fixture")
                 tools.append(VerifiedRustTool(path, hashlib.sha256(path.read_bytes()).hexdigest()))
             with qualification.isolated_environment(base, base / "data"):
                 runtime = RustToolchainRuntime(*tools, base / "cargo", base / "rustup")
                 report = {}
                 qualification.qualify_preflight(report, runtime, project, base)
-                self.assertEqual(len(report["preflight_negatives"]), 14)
+                self.assertEqual(len(report["preflight_negatives"]), 18)
                 self.assertTrue(all(case["rejected"] and not case["events"]
                                     and case["config_unchanged"] for case in report["preflight_negatives"]))
                 self.assertEqual(list(project.iterdir()), [])
@@ -134,6 +135,7 @@ class OfficialToolQualificationTests(unittest.TestCase):
             project = base / "project"
             project.mkdir()
             runtime = SimpleNamespace(cargo_home=base / "cargo", rustup_home=base / "rustup",
+                                      cargo=SimpleNamespace(path=base / "tool-bin/cargo"),
                                       environment=lambda repo: os.system("must-never-execute"))
             report = {}
             with self.assertRaisesRegex(RuntimeError, "Forbidden execution"):
