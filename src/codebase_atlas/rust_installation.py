@@ -261,6 +261,16 @@ def load_toolchain_receipt(path: Path, *, store: Path) -> dict:
             raise RustRuntimeError("Rust receipt root is unsafe")
         if not document["files"] or not all(key + "/" + name in document["licenses"] for key in expected for name in ("LICENSE-APACHE", "LICENSE-MIT")):
             raise RustRuntimeError("Rust receipt file/license proof is incomplete")
+        if "managed_licenses" in document:
+            prefix = "share/codebase-atlas/licenses/"
+            licenses = document["managed_licenses"]
+            if licenses != {prefix + key: value for key, value in document["licenses"].items()}:
+                raise RustRuntimeError("Rust managed license identity is incomplete")
+            for relative, digest in licenses.items():
+                _relative(relative)
+                path = root / relative
+                if path.resolve(strict=True) != path or not stat.S_ISREG(os.lstat(path).st_mode) or _path_digest(path) != digest:
+                    raise RustRuntimeError("Rust managed license content mismatch")
         for relative, identity in document["files"].items():
             _relative(relative)
             _relative(identity["resolved"])

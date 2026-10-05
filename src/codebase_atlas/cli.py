@@ -114,9 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codebase-atlas")
     parser.add_argument("--version", action="store_true")
     commands = parser.add_subparsers(dest="command")
-    rust_prepare = commands.add_parser("rust-prepare", help="plan or explicitly verify and reuse an official Rust toolchain")
+    rust_prepare = commands.add_parser("rust-prepare", help="plan or explicitly prepare source-verified official Rust tools")
     rust_prepare.add_argument("--repo", type=Path, default=Path.cwd())
-    rust_prepare.add_argument("--toolchain-root", type=Path, required=True)
+    rust_prepare.add_argument("--toolchain-root", type=Path)
     rust_prepare.add_argument("--archive", action="append", default=[], metavar="COMPONENT=PATH")
     rust_prepare.add_argument("--apply", action="store_true")
     rust_prepare.add_argument("--allow-network", action="store_true")
@@ -399,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"schema_version": 1, "status": "blocked", "error": "Rust public enablement is closed"}))
             return 2
         from .rust_preparation import plan_existing_toolchain, prepare_existing_toolchain
+        from .rust_toolchain_installation import plan_toolchain_installation, install_toolchain
         try:
             archives = {}
             for entry in args.archive:
@@ -408,7 +409,15 @@ def main(argv: list[str] | None = None) -> int:
                 archives[component] = Path(path)
             if args.allow_network and not args.apply:
                 raise ValueError("Rust network acquisition requires explicit --apply")
-            if args.apply:
+            if args.toolchain_root is None:
+                if args.apply:
+                    result = install_toolchain(args.repo, archives=archives or None,
+                                               network_authorized=args.allow_network)
+                else:
+                    if archives:
+                        raise ValueError("Rust archive input without a toolchain root requires explicit --apply")
+                    result = plan_toolchain_installation(args.repo)
+            elif args.apply:
                 result = prepare_existing_toolchain(args.repo, args.toolchain_root,
                                                     archives=archives or None,
                                                     network_authorized=args.allow_network)
