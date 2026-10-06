@@ -1,8 +1,8 @@
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PureWindowsPath, PurePosixPath
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import subprocess
 
 from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths, cwd_execution_records
@@ -16,6 +16,10 @@ class LinuxTraceTests(unittest.TestCase):
     def test_native_observer_runs_positive_control_before_lifecycle(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
+            # Native command execution is mocked as Linux; its cwd must also
+            # be Linux, independently of the host storing the fixture logs.
+            linux_cwd = MagicMock(spec=Path)
+            linux_cwd.resolve.return_value = PurePosixPath("/fixture")
             calls = []
             def run(argv, **kwargs):
                 calls.append(argv)
@@ -30,19 +34,20 @@ class LinuxTraceTests(unittest.TestCase):
                 text += '1 +++ exited with 0 +++\n'
                 path.write_text(text)
                 self.assertTrue(kwargs["capture_output"])
+                self.assertIs(kwargs["cwd"], linux_cwd)
                 self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
                 return subprocess.CompletedProcess(argv, 0, "fixture", "")
             with patch("scripts.rust_linux_trace.sys.platform", "linux"), \
                     patch("scripts.rust_linux_trace.shutil.which", return_value="/usr/bin/strace"), \
                     patch("scripts.rust_linux_trace.run_owned", side_effect=run):
-                report = observe(["/python", "lifecycle.py"], cwd=base, directory=base / "raw", verified_tools=self.tools())
+                report = observe(["/python", "lifecycle.py"], cwd=linux_cwd, directory=base / "raw", verified_tools=self.tools())
             self.assertEqual(len(calls), 2)
             self.assertIn("-f", calls[0])
             self.assertIn("--seccomp-bpf", calls[0])
             self.assertIn("trace=%process,%network,chdir,fchdir,unshare,chroot,setns,pivot_root,io_uring_setup,io_uring_enter", calls[0])
-            self.assertEqual(report["initial_cwd"], str(base))
+            self.assertEqual(report["initial_cwd"], "/fixture")
             self.assertIn("cwd filesystem identity/context admission", report["not_proven"])
-            self.assertEqual({x["cwd"] for x in report["lifecycle"]["execution_cwd_records"]}, {str(base)})
+            self.assertEqual({x["cwd"] for x in report["lifecycle"]["execution_cwd_records"]}, {"/fixture"})
             self.assertEqual(report["status"], "observed_no_non_unix_socket_attempts")
             self.assertEqual(report["offline_metadata_launches"], 1)
             self.assertEqual(len(report["verified_rust_tool_launches"]), 3)
@@ -213,3 +218,6 @@ class LinuxTraceTests(unittest.TestCase):
         for text in negatives:
             with self.subTest(text=text), self.assertRaises(ValueError):
                 cwd_execution_records(prefix + text, "/initial")
+        for initial in (r"C:\fixture", "relative", "/initial/../other"):
+            with self.subTest(initial=initial), self.assertRaises(ValueError):
+                cwd_execution_records(prefix, initial)
