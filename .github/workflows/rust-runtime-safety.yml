@@ -11,6 +11,7 @@ on:
       - 'tests/test_frontend_installation.py'
       - 'tests/fixtures/rust-product/**'
       - 'scripts/rust_toolchain_qualification.py'
+      - 'scripts/rust_landlock_feasibility.py'
       - 'pyproject.toml'
 
 permissions:
@@ -51,6 +52,19 @@ jobs:
         run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_toolchain_installation tests.test_rust_toolchain_qualification tests.test_rust_scanner_installation tests.test_rust_scanner_acquisition tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
       # Native Windows tests must execute on both Windows targets. Non-Windows
       # skips are expected here and are not installed-wheel product evidence.
+      - name: Collect Linux I0 resource experiment (NOT isolation qualification)
+        if: runner.os == 'Linux'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_landlock_feasibility.py --source-sha "$ATLAS_SOURCE_SHA" --target "$ATLAS_EXPECTED_TARGET" --output landlock-i0.json
+      - name: Preserve Linux I0 incomplete resource evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: landlock-i0-${{ matrix.target }}
+          path: landlock-i0.json
+          if-no-files-found: error
       - name: Qualify real pinned official tools (phase 2 only)
         env:
           ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
