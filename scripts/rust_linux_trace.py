@@ -288,7 +288,10 @@ def observe(argv: list[str], *, cwd: Path, directory: Path, verified_tools: dict
     environment = bootstrap_environment()
     def traced(command, name, timeout):
         trace = directory / (name + ".trace")
-        arguments = [tracer, "-f", "--seccomp-bpf", "-s", "65535", "-v", "-e",
+        # Use normal ptrace stops rather than seccomp-assisted filtering. The
+        # ARM runner produced an undecodable/incomplete exec during thread exit;
+        # that evidence remains rejected, never inferred from an exit record.
+        arguments = [tracer, "-f", "-s", "65535", "-v", "-e",
                      "trace=%process,%network,chdir,fchdir,unshare,chroot,setns,pivot_root,io_uring_setup,io_uring_enter", "-o", str(trace), *command]
         result = run_owned(arguments, cwd=cwd, env=environment, timeout=timeout,
                            capture_output=True, text=True)

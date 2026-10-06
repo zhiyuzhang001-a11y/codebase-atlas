@@ -43,7 +43,7 @@ class LinuxTraceTests(unittest.TestCase):
                 report = observe(["/python", "lifecycle.py"], cwd=linux_cwd, directory=base / "raw", verified_tools=self.tools())
             self.assertEqual(len(calls), 2)
             self.assertIn("-f", calls[0])
-            self.assertIn("--seccomp-bpf", calls[0])
+            self.assertNotIn("--seccomp-bpf", calls[0])
             self.assertIn("trace=%process,%network,chdir,fchdir,unshare,chroot,setns,pivot_root,io_uring_setup,io_uring_enter", calls[0])
             self.assertEqual(report["initial_cwd"], "/fixture")
             self.assertIn("cwd filesystem identity/context admission", report["not_proven"])
@@ -89,6 +89,15 @@ class LinuxTraceTests(unittest.TestCase):
                      '10 execve("/tool", ["tool"], [])\n'):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 self.summary(text)
+
+    def test_pointer_only_exec_at_thread_exit_cannot_be_inferred_as_success_or_failure(self):
+        text = ('10 execve("/tool", ["tool"], []) = 0\n'
+                '11 execve(0xab312ffd61b0, 0xab312ffd4da0, 0xab312ffc0fa0 <unfinished ...>\n'
+                '11 +++ exited with 0 +++\n')
+        with self.assertRaisesRegex(ValueError, "unresolved exec"):
+            self.summary(text)
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            cwd_execution_records(text, "/initial")
 
     def test_metadata_gate_checks_launched_argv_not_environment_or_failed_attempts(self):
         for text in (
