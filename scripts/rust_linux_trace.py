@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
@@ -103,9 +103,10 @@ def require_offline_metadata(summary: dict) -> int:
         if not isinstance(executable, str) or not isinstance(argv, list) or not argv or \
                 not all(isinstance(value, str) for value in argv):
             raise ValueError("Native exec argv has an unsupported shape")
-        if Path(executable).name != "cargo" or argv[1:2] != ["metadata"]:
+        # These are Linux strace paths, regardless of the audit host OS.
+        if PurePosixPath(executable).name != "cargo" or argv[1:2] != ["metadata"]:
             continue
-        if argv[0] != executable or not Path(executable).is_absolute():
+        if argv[0] != executable or not PurePosixPath(executable).is_absolute():
             raise ValueError("Cargo metadata executable/argv0 identity mismatch")
         flags = {"--offline", "--no-deps", "--all-features"}
         operands = {"--format-version", "--manifest-path", "--filter-platform"}
@@ -127,7 +128,7 @@ def require_offline_metadata(summary: dict) -> int:
             raise ValueError("Cargo metadata lacks required explicit options")
         if seen["--format-version"] != "1":
             raise ValueError("Unsupported cargo metadata format")
-        manifest = Path(seen["--manifest-path"])
+        manifest = PurePosixPath(seen["--manifest-path"])
         if not manifest.is_absolute() or manifest.name != "Cargo.toml":
             raise ValueError("Cargo metadata manifest must be an absolute Cargo.toml path")
         target = seen.get("--filter-platform")

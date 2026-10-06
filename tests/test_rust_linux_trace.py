@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import json
 import tempfile
 import unittest
@@ -118,6 +118,12 @@ class LinuxTraceTests(unittest.TestCase):
         for argv in invalid:
             with self.subTest(argv=argv), self.assertRaises(ValueError):
                 audit(argv)
+
+    def test_linux_trace_path_rules_do_not_depend_on_audit_host(self):
+        summary = self.summary('1 execve("/tools/cargo", ["/tools/cargo", "metadata", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", "/project/Cargo.toml"], []) = 0\n')
+        self.assertFalse(PureWindowsPath("/tools/cargo").is_absolute())
+        with patch("scripts.rust_linux_trace.Path", PureWindowsPath):
+            self.assertEqual(require_offline_metadata(summary), 1)
 
     def test_missing_truncated_detached_and_io_uring_evidence_fail(self):
         for text in ('', 'socket(AF_INET, SOCK_STREAM, 0) = 3\n',
