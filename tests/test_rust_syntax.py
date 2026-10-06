@@ -167,6 +167,20 @@ class RustSyntaxProviderTests(unittest.TestCase):
                     }))
                     self.assertEqual(correct.status, "complete_exact")
                     t2.query.assert_called_once()
+                    # A new project Cargo config changes the generation before
+                    # the provider's own runtime check can run. Do not leave the
+                    # already-started analyzer alive behind a stale response.
+                    (self.repository / ".cargo").mkdir()
+                    (self.repository / ".cargo/config.toml").write_text(
+                        '[build]\nrustc-wrapper="unapproved-wrapper"\n')
+                    stale = paired.query(QueryRequest("definition", "run", {
+                        "source_path": "src/lib.rs", "source_line": 1, "source_column": 8,
+                    }))
+                    self.assertEqual(stale.status, "stale")
+                    self.assertEqual(stale.nodes, ())
+                    t2.close.assert_called_once()
+                    self.assertFalse(paired._rust_started)
+                    t2.query.assert_called_once()
                 (self.repository / "src/lib.rs").write_text("pub fn changed() {}\n")
                 self.assertEqual(service.query(QueryRequest("definition", "run")).status, "stale")
             foreign = copy.deepcopy(staged.document)

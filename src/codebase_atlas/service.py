@@ -383,6 +383,12 @@ class AtlasService:
         if self.rust_syntax_index is not None:
             snapshot = repository_snapshot(self.repository)
             if snapshot.kind != "git" or snapshot.fingerprint != self.rust_syntax_index.document["source_fingerprint"]:
+                # A Cargo/config change can make this index stale before the
+                # provider's request-boundary validation runs. Retire its owned
+                # session rather than leave native probes watching changed files.
+                if self._rust_started and self.rust_provider is not None:
+                    self.rust_provider.close()
+                    self._rust_started = False
                 return replace(self._time_budget_response(
                     request.query_type, limits, started, reason="rust_generation_stale"
                 ), status="stale")
