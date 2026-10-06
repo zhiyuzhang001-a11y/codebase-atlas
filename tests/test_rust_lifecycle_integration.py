@@ -19,8 +19,9 @@ from scripts import rust_lifecycle_qualification as qualification
 
 class RustExecutionSentinelTests(unittest.TestCase):
     def test_active_config_change_requires_rejection_cleanup_and_preservation(self):
-        for failure in (None, "accepted", "running", "wrapper"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+        for context, failure in ((context, failure) for context in ("cargo-home", "project")
+                                 for failure in (None, "accepted", "running", "wrapper")):
+            with self.subTest(context=context, failure=failure), tempfile.TemporaryDirectory() as temporary:
                 work = Path(temporary).resolve()
                 repository = work / "project"
                 repository.mkdir()
@@ -32,24 +33,27 @@ class RustExecutionSentinelTests(unittest.TestCase):
                 process.poll.return_value = None
                 provider = SimpleNamespace(_process=process, running=True,
                                            runtime=SimpleNamespace(cargo_home=cargo_home))
+                hostile_path = ((repository / ".cargo") if context == "project" else cargo_home) / "config.toml"
                 def query():
-                    self.assertIn("rustc-wrapper", (cargo_home / "config.toml").read_text())
+                    self.assertIn("rustc-wrapper", hostile_path.read_text())
                     provider.running = failure == "running"
                     process.poll.return_value = None if provider.running else 0
                     if failure == "wrapper":
                         (work / "forbidden-wrapper").write_text("executed")
-                    return {"status": "complete_exact" if failure == "accepted" else "unavailable",
+                    return {"status": "complete_exact" if failure == "accepted" else
+                            ("stale" if context == "project" else "unavailable"),
                             "nodes": []}
                 with patch("codebase_atlas.config.AtlasConfig.load", return_value=SimpleNamespace(
                         data_dir=work, repository=repository, project="fixture")), patch(
                         "codebase_atlas.rust_project._load_index", return_value=({"generation_id": "frozen"}, None)):
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, "rejection failed"):
-                            active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query)
+                            active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query, context=context)
                     else:
-                        result = active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query)
+                        result = active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query, context=context)
                         self.assertTrue(result["analyzer_stopped"] and result["generation_preserved"])
-                self.assertFalse((cargo_home / "config.toml").exists())
+                self.assertFalse(hostile_path.exists())
+                self.assertFalse((repository / ".cargo").exists())
                 self.assertEqual((repository / ".codebase-atlas.toml").read_text(), "original")
 
     def test_active_config_change_does_not_overwrite_existing_config(self):

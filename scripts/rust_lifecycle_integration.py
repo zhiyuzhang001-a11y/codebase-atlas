@@ -187,12 +187,14 @@ def execution_sentinel_state(work: Path) -> dict[str, bool]:
     return {name: (work / name).exists() for name in ("forbidden-build-script", "forbidden-proc-macro")}
 
 
-def active_config_change_check(repository: Path, work: Path, service, query):
-    """Mutate only the isolated Cargo home after a real T2 session is warm.
+def active_config_change_check(repository: Path, work: Path, service, query, *, context="cargo-home"):
+    """Mutate only isolated fixture configuration after a real T2 session is warm.
 
     Not a continuous mutation race or OS denial proof. Never modify a preexisting
     config; keep the positive-controlled wrapper marker as forbidden evidence.
     """
+    if context not in {"cargo-home", "project"}:
+        raise ValueError("Unknown active configuration context")
     from codebase_atlas.config import AtlasConfig
     from codebase_atlas.rust_project import _load_index
     provider = service.rust_provider
@@ -207,13 +209,16 @@ def active_config_change_check(repository: Path, work: Path, service, query):
     marker = work / "forbidden-wrapper"
     if not (work / "wrapper-positive-control").is_file() or marker.exists():
         raise RuntimeError("active config check lacks a clean wrapper positive control")
-    path = provider.runtime.cargo_home / "config.toml"
+    owned_directory = repository / ".cargo" if context == "project" else None
+    if owned_directory is not None:
+        owned_directory.mkdir()  # Exclusive: never reuse foreign project config.
+    path = (owned_directory if owned_directory is not None else provider.runtime.cargo_home) / "config.toml"
     payload = ('[build]\nrustc-wrapper = ' + json.dumps(str(wrapper)) + '\n').encode()
     with path.open("xb") as stream:
         stream.write(payload)
     try:
         result = query()
-        evidence = {"status": result.get("status"), "node_count": len(result.get("nodes", [])),
+        evidence = {"context": context, "status": result.get("status"), "node_count": len(result.get("nodes", [])),
                     "process_id": process.pid, "process_exit_code": process.poll(),
                     "analyzer_stopped": not provider.running,
                     "wrapper_executed": marker.exists(),
@@ -222,7 +227,8 @@ def active_config_change_check(repository: Path, work: Path, service, query):
                     "generation_preserved": _load_index(config.data_dir, config.repository,
                                                          config.project)[0]["generation_id"] == generation,
                     "scope": "warm source-API MCP boundary; not continuous mutation or OS denial"}
-        if (evidence["status"] != "unavailable" or evidence["node_count"]
+        expected_status = "stale" if context == "project" else "unavailable"
+        if (evidence["status"] != expected_status or evidence["node_count"]
                 or not evidence["analyzer_stopped"] or evidence["process_exit_code"] is None
                 or evidence["wrapper_executed"] or not evidence["hostile_config_unchanged"]
                 or not evidence["project_config_unchanged"] or not evidence["generation_preserved"]):
@@ -233,6 +239,8 @@ def active_config_change_check(repository: Path, work: Path, service, query):
         if path.read_bytes() != payload:
             raise RuntimeError("active fixture config changed; refusing cleanup")
         path.unlink()
+        if owned_directory is not None:
+            owned_directory.rmdir()  # Refuse nonempty directories, never recursive.
 
 
 def mcp_check(repository):
@@ -287,12 +295,16 @@ def mcp_check(repository):
             raise RuntimeError("MCP generation/identity binding failed")
         _rust_verification_query(config, repository / ".codebase-atlas.toml", query=query)
         frozen_definition()
+        active_project_config = active_config_change_check(repository, repository.parent, service,
+            lambda: call("definition", {"symbol": "run", "target_path": "src/left.rs",
+                "source_path": "src/lib.rs", "source_line": 4, "source_column": 28}), context="project")
     if not processes or any(process.poll() is None for process in processes):
         raise RuntimeError("MCP owned child cleanup failed")
     return {"status": "ready", "generation_before": before, "generation_after": after["generation_id"],
             "owned_process_cleanup": "pass", "process_ids": [process.pid for process in processes],
             "frozen_crate_left_before_after": frozen_results,
             "active_cargo_config_change": active_config,
+            "active_project_cargo_config_change": active_project_config,
             "live_codex_task_tested": False}, 0
 
 
