@@ -64,6 +64,42 @@ class RustExecutionSentinelTests(unittest.TestCase):
                 self.assertEqual(bool(document["forbidden_events"]), forbidden)
                 self.assertTrue(document["config_unchanged"])
                 self.assertFalse(document["wrapper_executed"])
+                self.assertTrue(document["wrapper_positive_control"]["executed"])
+                self.assertEqual(document["wrapper_positive_control"]["exit_code"], 0)
+                self.assertTrue((work / "wrapper-positive-control").is_file())
+
+    def test_existing_wrapper_is_not_overwritten_for_positive_control(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            repository = work / "project"
+            repository.mkdir()
+            (repository / ".codebase-atlas.toml").write_text("fixture")
+            import os
+            wrapper = work / ("wrapper.cmd" if os.name == "nt" else "wrapper")
+            wrapper.write_text("foreign fixture")
+            with patch("codebase_atlas.config.AtlasConfig.load"), patch(
+                "codebase_atlas.rust_project.load_rust_service"
+            ), patch("codebase_atlas.rust_mcp_refresh.RustMcpRefreshCoordinator"), patch(
+                "scripts.rust_lifecycle_integration.run_owned"
+            ) as run:
+                with self.assertRaises(FileExistsError):
+                    hostile_hook_check(repository, work)
+                run.assert_not_called()
+            self.assertEqual(wrapper.read_text(), "foreign fixture")
+
+    def test_missing_positive_marker_blocks_hooks_before_service_start(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            repository = work / "project"
+            repository.mkdir()
+            (repository / ".codebase-atlas.toml").write_text("fixture")
+            with patch("codebase_atlas.config.AtlasConfig.load"), patch(
+                "codebase_atlas.rust_project.load_rust_service"
+            ) as load, patch("scripts.rust_lifecycle_integration.run_owned",
+                            return_value=SimpleNamespace(returncode=0)):
+                with self.assertRaisesRegex(RuntimeError, "positive control failed"):
+                    hostile_hook_check(repository, work)
+                load.assert_not_called()
 
     def test_fixture_has_real_build_script_and_proc_macro_without_executing_them(self):
         with tempfile.TemporaryDirectory() as temporary:

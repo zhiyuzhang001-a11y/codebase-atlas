@@ -15,6 +15,7 @@ from types import MappingProxyType
 from unittest.mock import patch
 import argparse
 import sys
+from codebase_atlas.rust_owned_command import run_owned
 
 
 def git_audit_launch(executable, argv, git: str | None) -> bool:
@@ -41,16 +42,37 @@ def hostile_hook_check(repository: Path, work: Path):
     from codebase_atlas.service import QueryRequest
     config_path = repository / ".codebase-atlas.toml"
     config = AtlasConfig.load(config_path)
+    marker = work / "forbidden-wrapper"
+    positive_marker = work / "wrapper-positive-control"
+    wrapper = work / ("wrapper.cmd" if os.name == "nt" else "wrapper")
+    # Separate markers distinguish the intentional diagnostic execution from
+    # forbidden normal-hook execution; never clear a marker to make a test pass.
+    if marker.exists() or positive_marker.exists():
+        raise RuntimeError("Wrapper marker already exists before qualification")
+    payload = (f'@echo off\r\nif "%~1"=="--positive-control" (\r\n'
+               f'echo executed>"{positive_marker}"\r\n) else (\r\n'
+               f'echo executed>"{marker}"\r\n)\r\n' if os.name == "nt" else
+               f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\n'
+               f'Path({str(positive_marker)!r} if sys.argv[1:] == ["--positive-control"] '
+               f'else {str(marker)!r}).write_text("executed")\n')
+    with wrapper.open("x", encoding="utf-8") as stream:
+        stream.write(payload)
+    if os.name != "nt":
+        wrapper.chmod(0o700)
+    # Only this harness-owned, non-project fixture is intentionally executed.
+    # Windows batch launch is explicit, not an inherited COMSPEC or shell=True.
+    command = ([str(Path(os.environ["SystemRoot"]) / "System32/cmd.exe"),
+                "/d", "/c", str(wrapper), "--positive-control"] if os.name == "nt"
+               else [str(wrapper), "--positive-control"])
+    control_env = {name: os.environ[name] for name in
+                   ("SystemRoot", "WINDIR", "TEMP", "TMP") if name in os.environ}
+    control = run_owned(command, cwd=work, env=control_env, timeout=5,
+                        capture_output=True, text=True, check=True)
+    if not positive_marker.is_file() or marker.exists():
+        raise RuntimeError("Wrapper executable positive control failed")
     service = load_rust_service(config)  # Cold, verified but no analyzer startup.
     service.start()  # Lazy frontend state only; T2 has not spawned.
     coordinator = RustMcpRefreshCoordinator(config, service, {}, config_path=config_path)
-    marker = work / "forbidden-wrapper"
-    wrapper = work / ("wrapper.cmd" if os.name == "nt" else "wrapper")
-    wrapper.write_text((f'@echo executed>"{marker}"\r\n' if os.name == "nt"
-                        else f'#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text("executed")\n'),
-                       encoding="utf-8")
-    if os.name != "nt":
-        wrapper.chmod(0o700)
     observer = {"active": False, "forbidden": [], "git_argv": [], "forbidden_launches": []}
     git = shutil.which("git")
     def audit(event, args):
@@ -97,6 +119,8 @@ def hostile_hook_check(repository: Path, work: Path):
         observer["active"] = False
         service.close()
         evidence = {"hooks": rows, "observer": "Python audit only; NOT whole-tree or OS network",
+                    "wrapper_positive_control": {"executed": True, "exit_code": control.returncode,
+                                                 "argv": command},
                     "forbidden_events": observer["forbidden"], "git_argv": observer["git_argv"],
                     "forbidden_launches": observer["forbidden_launches"],
                     "wrapper_executed": marker.exists(),
