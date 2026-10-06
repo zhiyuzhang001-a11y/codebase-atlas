@@ -436,6 +436,49 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.2)
 
     @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
+    def test_final_group_permission_error_requires_confirmed_retry(self):
+        provider = self.provider()
+        process = Mock(spec=subprocess.Popen, pid=12345)
+        process.poll.return_value = 0
+        process.stdin, process.stdout, process.stderr = Mock(), Mock(), Mock()
+        provider._process = process
+        with patch("codebase_atlas.providers.rust_analyzer.os.killpg",
+                   side_effect=[PermissionError("denied"), ProcessLookupError()]) as kill, patch(
+            "codebase_atlas.providers.rust_analyzer.sleep"
+        ) as pause:
+            provider._terminate()
+        self.assertEqual(kill.call_count, 2)
+        pause.assert_called_once()
+        self.assertIsNone(provider._process)
+        process.stdout.close.assert_called_once()
+
+    @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
+    def test_persistent_group_permission_error_fails_after_resource_cleanup(self):
+        provider = self.provider()
+        process = Mock(spec=subprocess.Popen, pid=12345)
+        process.poll.return_value = 0
+        process.stdin, process.stdout, process.stderr = Mock(), Mock(), Mock()
+        provider._process = process
+        provider._cleanup_deadline = .05
+        elapsed = [0.0]
+        def pause(seconds):
+            elapsed[0] += seconds
+        reader = Mock()
+        provider._reader_thread = reader
+        with patch("codebase_atlas.providers.rust_analyzer.os.killpg",
+                   side_effect=PermissionError("denied")), patch(
+            "codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: elapsed[0]
+        ), patch("codebase_atlas.providers.rust_analyzer.sleep", side_effect=pause):
+            with self.assertRaisesRegex(RustAnalyzerError, "process-group cleanup failed"):
+                provider._terminate()
+        self.assertLessEqual(elapsed[0], .05)
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        reader.join.assert_called_once_with(timeout=0.0)
+        self.assertIsNone(provider._reader_thread)
+
+    @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
     def test_cleanup_kills_worker_even_if_analyzer_parent_already_exited(self):
         provider = self.provider()
         marker = self.root / "orphan-worker-marker"

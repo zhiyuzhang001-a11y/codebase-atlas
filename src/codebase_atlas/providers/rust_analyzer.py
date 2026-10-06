@@ -707,11 +707,24 @@ class RustAnalyzerProvider:
             cleanup_failed = False
         # The parent can exit before its workers. Its owned POSIX session still
         # needs cleanup even when poll()/wait() already reported parent exit.
+        group_error = None
         if process is not None and os.name != "nt":
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            while True:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    break
+                except PermissionError as exc:
+                    # A denied signal is not proof that the group is gone.
+                    # Retry only this owned group within the existing grace;
+                    # persistent denial remains failure after pipe/thread cleanup.
+                    remaining = budget(.02)
+                    if remaining <= 0:
+                        group_error = exc
+                        break
+                    sleep(remaining)
+                else:
+                    break
         job_error = None
         if process is not None and hasattr(process, "close_owned_job"):
             try:
@@ -737,6 +750,8 @@ class RustAnalyzerProvider:
         self._semantic_ready = False
         if cleanup_failed:
             raise RustAnalyzerError("rust-analyzer did not exit within cleanup grace")
+        if group_error is not None:
+            raise RustAnalyzerError("rust-analyzer POSIX process-group cleanup failed") from group_error
         if job_error is not None:
             raise RustAnalyzerError("rust-analyzer Windows Job cleanup failed") from job_error
 
