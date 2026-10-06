@@ -194,6 +194,25 @@ class LinuxTraceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "coverage"):
             require_metadata_contexts(result, contexts=contexts, native_target=target)
 
+    def test_non_metadata_cargo_cannot_escape_checked_contexts(self):
+        target = "x86_64-unknown-linux-gnu"
+        metadata = ["/cargo", "metadata", "--format-version", "1", "--offline", "--no-deps",
+                    "--manifest-path", "/project/Cargo.toml", "--filter-platform", target]
+        contexts = {"/project": {"manifest": "/project/Cargo.toml", "all_features": False}}
+        for cwd in ("/project", "/foreign"):
+            text = ('1 execve("/cargo", ' + json.dumps(metadata) + ', []) = 0\n'
+                    f'1 chdir("{cwd}") = 0\n'
+                    '1 execve("/cargo", ["/cargo", "config", "get"], []) = 0\n')
+            result = self.summary(text)
+            result["execution_cwd_records"] = cwd_execution_records(text, "/project")
+            if cwd == "/foreign":
+                with self.assertRaisesRegex(ValueError, "Cargo.*cwd"):
+                    require_metadata_contexts(result, contexts=contexts, native_target=target)
+            else:
+                # Context binding is not argv approval of this other probe.
+                self.assertEqual(len(require_metadata_contexts(
+                    result, contexts=contexts, native_target=target)), 1)
+
     def test_verified_rust_paths_bind_every_role_and_reject_foreign_launches(self):
         text = ''.join(f'{pid} execve({json.dumps(path)}, [{json.dumps(path)}], []) = 0\n'
                        for pid, path in enumerate(self.tools(), 1))

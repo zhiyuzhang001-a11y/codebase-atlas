@@ -283,7 +283,9 @@ def require_metadata_contexts(summary: dict, *, contexts: dict, native_target: s
     """Bind recorded metadata cwd/manifest/feature/target, not filesystem aliases.
 
     Callers supply exact fixture and receipt-bound library contexts; no prefix
-    admission. This evidence gate is not a runtime exec or mutation sandbox.
+    admission. All Cargo commands must stay in those recorded cwd contexts,
+    since configuration discovery is not limited to metadata. Non-metadata
+    argv is NOT approved here. This is not a runtime exec or mutation sandbox.
     """
     count = require_offline_metadata(summary)
     if not contexts or not re.fullmatch(r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+){2,}", native_target):
@@ -313,12 +315,14 @@ def require_metadata_contexts(summary: dict, *, contexts: dict, native_target: s
         record = records.popleft()
         if record["executable"] != executable or record["argv0"] != argv[0]:
             raise ValueError("Metadata context execution/cwd identity mismatch")
-        if PurePosixPath(executable).name != "cargo" or argv[1:2] != ["metadata"]:
+        if PurePosixPath(executable).name != "cargo":
             continue
         cwd = record["cwd"]
         policy = contexts.get(cwd)
         if policy is None:
-            raise ValueError("Cargo metadata cwd is not an admitted exact context")
+            raise ValueError("Cargo command cwd is not an admitted exact context")
+        if argv[1:2] != ["metadata"]:
+            continue
         manifest = argv[argv.index("--manifest-path") + 1]
         target = (argv[argv.index("--filter-platform") + 1]
                   if "--filter-platform" in argv else None)
