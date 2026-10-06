@@ -220,6 +220,53 @@ class RustAnalyzerProviderTests(unittest.TestCase):
                 opened.assert_not_called()
             self.assertFalse(provider.running)
 
+    def test_empty_readiness_deadline_revalidates_before_return(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            process = provider._process
+            clock = [0.0]
+            provider.runtime = Mock()
+            provider.runtime.environment.side_effect = [
+                {}, {}, {}, RustRuntimeError("changed during stabilization"),
+            ]
+            def stabilization_sleep(_seconds):
+                clock[0] = .1
+            with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                       side_effect=lambda: clock[0]), patch(
+                           "codebase_atlas.providers.rust_analyzer.sleep",
+                           side_effect=stabilization_sleep), patch.object(
+                               provider, "_request", return_value=[]) as request:
+                with self.assertRaisesRegex(RustRuntimeError, "changed during stabilization"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17, timeout_ms=50)
+                self.assertEqual(request.call_count, 1)
+            self.assertFalse(provider._semantic_ready)
+            self.assertFalse(provider.running)
+            self.assertIsNotNone(process.poll())
+
+    def test_safe_empty_readiness_deadline_keeps_empty_result_contract(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            clock = [0.0]
+            provider.runtime = Mock()
+            provider.runtime.environment.return_value = {}
+            def stabilization_sleep(_seconds):
+                clock[0] = .1
+            with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                       side_effect=lambda: clock[0]), patch(
+                           "codebase_atlas.providers.rust_analyzer.sleep",
+                           side_effect=stabilization_sleep), patch.object(
+                               provider, "_request", return_value=[]) as request:
+                self.assertEqual(provider.query(
+                    "definition", "run", source_path="src/lib.rs",
+                    source_line=2, source_column=17, timeout_ms=50), ())
+                self.assertEqual(request.call_count, 1)
+            self.assertEqual(provider.runtime.environment.call_count, 4)
+            self.assertTrue(provider._semantic_ready)
+            self.assertTrue(provider.running)
+
     def test_result_uri_round_trips_native_path(self) -> None:
         provider = self.provider()
         self.assertEqual(

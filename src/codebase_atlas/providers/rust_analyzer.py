@@ -617,7 +617,7 @@ class RustAnalyzerProvider:
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
             raise ValueError("timeout_ms must be between 1 and 300000")
         deadline = monotonic() + min(timeout_ms / 1000.0, self.readiness_seconds)
-        def check_runtime() -> None:
+        def validate_runtime() -> None:
             # Startup validation alone cannot protect later requests on a live
             # analyzer. Recheck at request/result boundaries; this is NOT an
             # immutable observation window or interception of native children.
@@ -627,6 +627,9 @@ class RustAnalyzerProvider:
                 except RustRuntimeError:
                     self._terminate()
                     raise
+
+        def check_runtime() -> None:
+            validate_runtime()
             if monotonic() >= deadline:
                 self._terminate()
                 raise TimeoutError("rust-analyzer runtime validation timed out")
@@ -658,6 +661,10 @@ class RustAnalyzerProvider:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 if saw_empty:
+                    # Preserve the bounded empty-stabilization result, but do
+                    # not publish it after unsafe changes during the last sleep.
+                    # This final policy check grants no new request/retry budget.
+                    validate_runtime()
                     self._semantic_ready = True
                     return ()
                 self._terminate()
