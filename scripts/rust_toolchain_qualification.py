@@ -108,19 +108,46 @@ def qualify_preflight(report: dict, runtime, project: Path, base: Path) -> None:
         ("cargo-home-rustc-proxy", runtime.cargo_home / "bin/rustc", "untrusted proxy: never execute", {}),
         ("cargo-home-rustup-proxy", runtime.cargo_home / "bin/rustup", "untrusted download proxy: never execute", {}),
         ("tool-directory-rustup-proxy", runtime.cargo.path.parent / "rustup", "untrusted download proxy: never execute", {}),
+        ("nested-project-cargo", project / "member/.cargo/config.toml", '[build]\nrustc-wrapper="untrusted"\n', {}),
+        ("nested-project-toolchain", project / "member/rust-toolchain.toml", '[toolchain]\nchannel="nightly"\n', {}),
+        ("nested-project-analyzer", project / "member/rust-analyzer.toml", '[procMacro]\nenable=true\n', {}),
     ])
+    if getattr(runtime, "toolchain_root", None) is not None:
+        from codebase_atlas.rust_runtime import SYSROOT_LIBRARY
+        library = runtime.toolchain_root / SYSROOT_LIBRARY
+        # Add only new hostile fixture files; never overwrite official files.
+        cases.extend([
+            ("sysroot-legacy-shadow", library / ".cargo/config", "", {}),
+            ("sysroot-ancestor-cargo", library.parent / ".cargo/config.toml", '[build]\nrustc-wrapper="untrusted"\n', {}),
+            ("sysroot-analyzer", library / "rust-analyzer.toml", '[procMacro]\nenable=true\n', {}),
+            ("sysroot-toolchain", library / "rust-toolchain.toml", '[toolchain]\nchannel="nightly"\n', {}),
+        ])
     for name, path, content, overrides in cases:
         old = dict(os.environ)
         evidence = {"case": name, "observer": "Python audit events only",
                     "events": [], "rejected": False}
         report["preflight_negatives"].append(evidence)
-        if path is not None:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with path.open("x", encoding="utf-8") as output:
-                output.write(content)
-            before = path.read_bytes()
-            evidence["config_sha256"] = hashlib.sha256(before).hexdigest()
+        created_directories = []
+        identity = None
         try:
+            if path is not None:
+                missing = []
+                directory = path.parent
+                while not directory.exists():
+                    missing.append(directory)
+                    directory = directory.parent
+                for directory in reversed(missing):
+                    try:
+                        directory.mkdir(mode=0o700)
+                    except FileExistsError:
+                        pass  # Do not own a directory another actor created.
+                    else:
+                        created_directories.append(directory)
+                with path.open("x", encoding="utf-8", newline="\n") as output:
+                    identity = os.fstat(output.fileno())
+                    output.write(content)
+                before = path.read_bytes()
+                evidence["config_sha256"] = hashlib.sha256(before).hexdigest()
             os.environ.update(overrides)
             active["events"] = evidence["events"]
             try:
@@ -138,10 +165,12 @@ def qualify_preflight(report: dict, runtime, project: Path, base: Path) -> None:
             active["events"] = None
             os.environ.clear()
             os.environ.update(old)
-            if path is not None:
+            if identity is not None:
+                if not os.path.samestat(identity, os.lstat(path)):
+                    raise ValueError("Hostile fixture replaced; refusing to remove foreign file")
                 path.unlink()
-    # Remove only our now-empty fixture directory; do not touch user config.
-    (project / ".cargo").rmdir()
+            for directory in reversed(created_directories):
+                directory.rmdir()  # Empty, owned fixture dirs only; never recursive.
 
 
 def qualify(report: dict, base: Path, data_root: Path, *, allow_network: bool) -> None:
@@ -179,6 +208,9 @@ def qualify(report: dict, base: Path, data_root: Path, *, allow_network: bool) -
             result.check_returncode()
             validate_version(name, result.stdout.strip())
         qualify_preflight(report, runtime, project, base)
+        if load_toolchain_receipt(receipt, store=toolchain_store()) != document:
+            raise ValueError("Official receipt changed during preflight qualification")
+        report["post_preflight_receipt_reverified"] = True
         if list(project.iterdir()):
             raise ValueError("Version qualification unexpectedly wrote to project")
         report["project_writes"] = []

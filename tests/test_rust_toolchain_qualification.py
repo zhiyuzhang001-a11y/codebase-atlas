@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from codebase_atlas.rust_runtime import RustToolchainRuntime, VerifiedRustTool
+from codebase_atlas.rust_runtime import RustRuntimeError, RustToolchainRuntime, VerifiedRustTool
 
 
 spec = importlib.util.spec_from_file_location(
@@ -124,7 +124,7 @@ class OfficialToolQualificationTests(unittest.TestCase):
                 runtime = RustToolchainRuntime(*tools, base / "cargo", base / "rustup")
                 report = {}
                 qualification.qualify_preflight(report, runtime, project, base)
-                self.assertEqual(len(report["preflight_negatives"]), 18)
+                self.assertEqual(len(report["preflight_negatives"]), 21)
                 self.assertTrue(all(case["rejected"] and not case["events"]
                                     and case["config_unchanged"] for case in report["preflight_negatives"]))
                 self.assertEqual(list(project.iterdir()), [])
@@ -141,6 +141,40 @@ class OfficialToolQualificationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Forbidden execution"):
                 qualification.qualify_preflight(report, runtime, project, base)
             self.assertEqual(report["preflight_negatives"][0]["events"], ["os.system"])
+
+    def test_receipt_bound_sysroot_negatives_restore_original_files_and_directories(self):
+        from tests import test_rust_installation as installation_tests
+        from codebase_atlas.rust_installation import verify_existing_toolchain, _runtime_from_document
+        installation_tests.RustInstallationTests.setUp(self)
+        project = self.base / "project"
+        project.mkdir()
+        original_files = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        original_directories = {path for path in self.root.rglob("*") if path.is_dir()}
+        with qualification.isolated_environment(self.base, self.base / "data"):
+            document = verify_existing_toolchain(self.root, self.archives, "macos-arm64")
+            runtime = _runtime_from_document(document)
+            report = {}
+            qualification.qualify_preflight(report, runtime, project, self.base)
+            self.assertEqual(len(report["preflight_negatives"]), 25)
+            self.assertTrue(all(case["rejected"] and not case["events"] and case["config_unchanged"]
+                                for case in report["preflight_negatives"]))
+        self.assertEqual(list(project.iterdir()), [])
+        self.assertEqual(original_files, {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()})
+        self.assertEqual(original_directories, {path for path in self.root.rglob("*") if path.is_dir()})
+
+    def test_preexisting_fixture_config_is_not_overwritten_or_removed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            project = base / "project"
+            (project / ".cargo").mkdir(parents=True)
+            path = project / ".cargo/config.toml"
+            path.write_bytes(b"foreign configuration: preserve")
+            runtime = SimpleNamespace(cargo_home=base / "cargo", rustup_home=base / "rustup",
+                                      cargo=SimpleNamespace(path=base / "tool-bin/cargo"),
+                                      environment=lambda repo: (_ for _ in ()).throw(RustRuntimeError("review")))
+            with self.assertRaises(FileExistsError):
+                qualification.qualify_preflight({}, runtime, project, base)
+            self.assertEqual(path.read_bytes(), b"foreign configuration: preserve")
 
     def test_environment_setup_failure_also_restores_inherited_values(self):
         with tempfile.TemporaryDirectory() as temporary:
