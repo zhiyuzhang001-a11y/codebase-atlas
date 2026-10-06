@@ -49,7 +49,7 @@ def execution_results(text: str) -> list[dict]:
     return completed
 
 
-def trace_summary(path: Path) -> dict:
+def trace_summary(path: Path, *, initial_cwd: str | None = None) -> dict:
     if not path.is_file() or not 0 < path.stat().st_size <= 64 * 1024 * 1024:
         raise ValueError("Native trace missing, empty or oversized")
     raw = path.read_bytes()
@@ -61,11 +61,14 @@ def trace_summary(path: Path) -> dict:
         raise ValueError("Native observer lost coverage or encountered unobserved io_uring")
     network = [line for line in text.splitlines()
                if re.search(r"\bsocket\(AF_(?!UNIX\b)", line)]
-    return {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
+    summary = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw),
             "execution_argv_raw": executions, "non_unix_socket_attempts": network,
             "execution_results": execution_results(text),
             "exit_records": sum("+++ exited with" in line or "+++ killed by" in line
                                 for line in text.splitlines())}
+    if initial_cwd is not None:
+        summary["execution_cwd_records"] = cwd_execution_records(text, initial_cwd)
+    return summary
 
 
 def bootstrap_environment() -> dict[str, str]:
@@ -73,6 +76,102 @@ def bootstrap_environment() -> dict[str, str]:
     names = ("HOME", "USERPROFILE", "PATH", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP",
              "XDG_DATA_HOME", "CARGO_HOME", "RUSTUP_HOME")
     return {name: os.environ[name] for name in names if name in os.environ}
+
+
+def cwd_execution_records(text: str, initial_cwd: str) -> list[dict]:
+    """Reconstruct recorded absolute cwd strings, not filesystem admission.
+
+    Pair creation results before replay so a child running before its parent's
+    vfork/clone return inherits at creation, not at the later return line.
+    Unknown namespace/fd/relative or shared-cwd race cases fail closed.
+    """
+    if "superseded by execve" in text:
+        raise ValueError("Native exec thread identity replacement is unsupported")
+    def absolute(value):
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts or str(path) != value:
+            raise ValueError("Native cwd must be an unambiguous absolute POSIX path")
+        return value
+    initial_cwd = absolute(initial_cwd)
+    names = "execve|execveat|clone|clone3|fork|vfork|chdir|fchdir|unshare|chroot|setns|pivot_root"
+    pending = {}
+    events = []
+    for row, line in enumerate(text.splitlines()):
+        start = re.match(r"^(\d+)\s+(" + names + r")\(", line)
+        resume = re.match(r"^(\d+)\s+<\.\.\. (" + names + r") resumed>", line)
+        exited = re.match(r"^(\d+)\s+\+\+\+ (?:exited with|killed by)", line)
+        if exited:
+            events.append((row, row, int(exited[1]), "exit", line, ""))
+            continue
+        if start:
+            key = (int(start[1]), start[2])
+            if key in pending:
+                raise ValueError("Native cwd syscall missing its previous result")
+            if line.endswith("<unfinished ...>"):
+                pending[key] = (row, line)
+                continue
+            begin, raw = row, line
+        elif resume:
+            key = (int(resume[1]), resume[2])
+            if key not in pending:
+                raise ValueError("Native cwd syscall resumed without its start")
+            begin, raw = pending.pop(key)
+        else:
+            continue
+        result = re.search(r"\)\s+=\s+(.+)$", line)
+        if result is None:
+            raise ValueError("Native cwd syscall completion missing")
+        events.append((begin, row, key[0], key[1], raw, result[1]))
+    if pending or not events:
+        raise ValueError("Native cwd trace empty or incomplete")
+    events.sort(key=lambda event: event[0])
+    contexts = {events[0][2]: {"cwd": initial_cwd}}
+    records = []
+    for begin, end, pid, name, raw, result in events:
+        if pid not in contexts:
+            raise ValueError("Native cwd has an unobserved process parent")
+        context = contexts[pid]
+        if name == "exit":
+            del contexts[pid]
+        elif name in {"unshare", "chroot", "setns", "pivot_root"}:
+            raise ValueError("Native cwd namespace mutation is unsupported")
+        elif name in {"clone", "clone3", "fork", "vfork"}:
+            if result.startswith("-1 "):
+                continue
+            if not re.fullmatch(r"[1-9][0-9]*", result):
+                raise ValueError("Native child PID result is unsupported")
+            child = int(result)
+            if child in contexts or "CLONE_NEW" in raw:
+                raise ValueError("Native child identity/namespace is ambiguous")
+            if name in {"clone", "clone3"} and "flags=" not in raw:
+                raise ValueError("Native clone flags missing")
+            contexts[child] = context if "CLONE_FS" in raw else dict(context)
+        elif name in {"chdir", "fchdir"}:
+            if result.startswith("-1 "):
+                continue
+            if result != "0" or name == "fchdir":
+                raise ValueError("Native cwd fd/result cannot be resolved")
+            if sum(value is context for value in contexts.values()) > 1:
+                raise ValueError("Native shared cwd mutation ordering is ambiguous")
+            arguments = raw.split("chdir(", 1)[1]
+            try:
+                value, stop = json.JSONDecoder().raw_decode(arguments)
+            except ValueError as error:
+                raise ValueError("Native cwd path encoding unsupported") from error
+            if not isinstance(value, str) or not re.match(r"\s*(?:\)|<unfinished)", arguments[stop:]):
+                raise ValueError("Native cwd path truncated or ambiguous")
+            context["cwd"] = absolute(value)
+        elif result == "0":
+            executable, argv = decode_exec_argv({"syscall": name, "argv_raw": raw})
+            records.append({"pid": pid, "executable": executable,
+                            "argv0": argv[0], "cwd": context["cwd"]})
+            # exec unshares the filesystem context, even after CLONE_FS.
+            contexts[pid] = dict(context)
+        elif not result.startswith("-1 "):
+            raise ValueError("Native exec completion result is unsupported")
+    if not records:
+        raise ValueError("Native cwd trace lacks successful exec records")
+    return records
 
 
 def decode_exec_argv(entry: dict) -> tuple[str, list[str]]:
@@ -190,13 +289,13 @@ def observe(argv: list[str], *, cwd: Path, directory: Path, verified_tools: dict
     def traced(command, name, timeout):
         trace = directory / (name + ".trace")
         arguments = [tracer, "-f", "--seccomp-bpf", "-s", "65535", "-v", "-e",
-                     "trace=%process,%network,chdir,fchdir,io_uring_setup,io_uring_enter", "-o", str(trace), *command]
+                     "trace=%process,%network,chdir,fchdir,unshare,chroot,setns,pivot_root,io_uring_setup,io_uring_enter", "-o", str(trace), *command]
         result = run_owned(arguments, cwd=cwd, env=environment, timeout=timeout,
                            capture_output=True, text=True)
         (directory / (name + ".stdout")).write_text(result.stdout, encoding="utf-8")
         (directory / (name + ".stderr")).write_text(result.stderr, encoding="utf-8")
         result.check_returncode()
-        return trace_summary(trace)
+        return trace_summary(trace, initial_cwd=str(cwd.resolve()))
     # Controlled loopback only, not an external network request or project code.
     control = "import socket,subprocess,sys; s=socket.socket(); s.settimeout(1); s.connect_ex(('127.0.0.1',9)); s.close(); subprocess.run([sys.executable,'-c','pass'],check=True)"
     positive = traced([sys.executable, "-c", control], "positive-control", 20)
@@ -214,7 +313,7 @@ def observe(argv: list[str], *, cwd: Path, directory: Path, verified_tools: dict
             "initial_cwd": str(cwd.resolve()),
             "offline_metadata_launches": metadata_count,
             "verified_rust_tool_launches": verified_launches,
-            "not_proven": ["independent full argv allow-list audit", "child cwd reconstruction and admission",
+            "not_proven": ["independent full argv allow-list audit", "cwd filesystem identity/context admission",
                            "observed executable bytes/immutability", "non-Rust executable role admission",
                            "network denial", "other OS native tracing",
                            "installed-wheel", "resource gates"]}

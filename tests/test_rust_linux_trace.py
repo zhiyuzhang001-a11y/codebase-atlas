@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 import subprocess
 
-from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths
+from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths, cwd_execution_records
 
 
 class LinuxTraceTests(unittest.TestCase):
@@ -20,13 +20,14 @@ class LinuxTraceTests(unittest.TestCase):
             def run(argv, **kwargs):
                 calls.append(argv)
                 path = Path(argv[argv.index("-o") + 1])
-                text = '1 execve("/python", ["python"], []) = 0\n1 +++ exited with 0 +++\n'
+                text = '1 execve("/python", ["python"], []) = 0\n1 fork() = 2\n'
                 if "positive-control" in path.name:
                     text += '2 execve("/python", ["python", "-c", "pass"], []) = 0\n2 socket(AF_INET, SOCK_STREAM, 0) = 3\n'
                 else:
                     text += '2 execve("/cargo", ["/cargo", "metadata", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", "/project/Cargo.toml"], []) = 0\n'
-                    text += '3 execve("/rustc", ["/rustc", "--version"], []) = 0\n'
-                    text += '4 execve("/rust-analyzer", ["/rust-analyzer"], []) = 0\n'
+                    text += '1 fork() = 3\n3 execve("/rustc", ["/rustc", "--version"], []) = 0\n'
+                    text += '1 fork() = 4\n4 execve("/rust-analyzer", ["/rust-analyzer"], []) = 0\n'
+                text += '1 +++ exited with 0 +++\n'
                 path.write_text(text)
                 self.assertTrue(kwargs["capture_output"])
                 self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
@@ -38,9 +39,10 @@ class LinuxTraceTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertIn("-f", calls[0])
             self.assertIn("--seccomp-bpf", calls[0])
-            self.assertIn("trace=%process,%network,chdir,fchdir,io_uring_setup,io_uring_enter", calls[0])
+            self.assertIn("trace=%process,%network,chdir,fchdir,unshare,chroot,setns,pivot_root,io_uring_setup,io_uring_enter", calls[0])
             self.assertEqual(report["initial_cwd"], str(base))
-            self.assertIn("child cwd reconstruction and admission", report["not_proven"])
+            self.assertIn("cwd filesystem identity/context admission", report["not_proven"])
+            self.assertEqual({x["cwd"] for x in report["lifecycle"]["execution_cwd_records"]}, {str(base)})
             self.assertEqual(report["status"], "observed_no_non_unix_socket_attempts")
             self.assertEqual(report["offline_metadata_launches"], 1)
             self.assertEqual(len(report["verified_rust_tool_launches"]), 3)
@@ -166,3 +168,48 @@ class LinuxTraceTests(unittest.TestCase):
                                        "ACTIONS_RUNTIME_TOKEN":"secret", "RUSTC_WRAPPER":"foreign"}, clear=True):
             environment = bootstrap_environment()
         self.assertEqual(environment, {"HOME":"/private", "PATH":"/bin"})
+
+    def test_cwd_inheritance_at_unfinished_vfork_not_parent_return(self):
+        text = ('1 execve("/python", ["python"], []) = 0\n'
+                '1 vfork( <unfinished ...>\n'
+                '2 chdir("/project" <unfinished ...>\n'
+                '2 <... chdir resumed>) = 0\n'
+                '2 execve("/cargo", ["/cargo"], [] <unfinished ...>\n'
+                '1 <... vfork resumed>) = 2\n'
+                '2 <... execve resumed>) = 0\n'
+                '1 execve("/other", ["/other"], []) = 0\n')
+        records = cwd_execution_records(text, "/initial")
+        self.assertEqual([(r["pid"],r["cwd"]) for r in records],
+                         [(1,"/initial"),(2,"/project"),(1,"/initial")])
+
+    def test_cwd_clone_fs_is_unshared_by_exec_and_failed_chdir_does_not_change_it(self):
+        text = ('1 execve("/python", ["python"], []) = 0\n'
+                '1 clone(flags=CLONE_FS|CLONE_VM) = 2\n'
+                '2 execve("/tool", ["/tool"], []) = 0\n'
+                '2 chdir("/private") = 0\n'
+                '2 chdir("/missing") = -1 ENOENT (No such file or directory)\n'
+                '2 execve("/tool", ["/tool"], []) = 0\n'
+                '1 execve("/parent", ["/parent"], []) = 0\n')
+        records = cwd_execution_records(text, "/initial")
+        self.assertEqual([r["cwd"] for r in records],
+                         ["/initial","/initial","/private","/initial"])
+
+    def test_cwd_missing_parent_unsupported_fd_namespace_and_order_fail_closed(self):
+        prefix = '1 execve("/python", ["python"], []) = 0\n'
+        negatives = [
+            '2 execve("/tool", ["/tool"], []) = 0\n',
+            '1 fchdir(3) = 0\n', '1 chdir("relative") = 0\n',
+            '1 chdir("/project/../other") = 0\n',
+            '1 unshare(CLONE_FS) = 0\n', '1 chroot("/new") = 0\n',
+            '1 setns(3, CLONE_NEWNS) = 0\n', '1 pivot_root("/new", "/old") = 0\n',
+            '1 clone(flags=CLONE_NEWNS|SIGCHLD) = 2\n',
+            '1 clone(flags=CLONE_FS|CLONE_VM) = 2\n2 chdir("/shared") = 0\n',
+            '1 clone() = 2\n', '1 fork() = 1\n',
+            '1 vfork( <unfinished ...>\n',
+            '1 <... chdir resumed>) = 0\n',
+            '1 chdir("/new"... ) = 0\n',
+            '1 +++ exited with 0 +++\n1 execve("/tool", ["/tool"], []) = 0\n',
+        ]
+        for text in negatives:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                cwd_execution_records(prefix + text, "/initial")
