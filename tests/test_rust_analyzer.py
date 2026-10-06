@@ -195,10 +195,18 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             location = {"uri": (self.repository / "src/lib.rs").as_uri(),
                         "range": {"start": {"line": 0, "character": 7},
                                   "end": {"line": 0, "character": 10}}}
-            with patch.object(provider, "_request", return_value=[location]):
+            # This case isolates result-boundary validation, not Git snapshot
+            # latency. Slow native Windows Git must not consume the one-second
+            # query budget before the mocked response is reached. Freshness and
+            # end-to-end deadline behavior have separate regressions below.
+            with patch.object(provider, "_assert_fresh") as fresh, \
+                    patch.object(provider, "_request", return_value=[location]) as request:
                 with self.assertRaisesRegex(RustRuntimeError, "changed during request"):
                     provider.query("definition", "run", source_path="src/lib.rs",
                                    source_line=2, source_column=17)
+                fresh.assert_called_once()
+                request.assert_called_once()
+            self.assertEqual(provider.runtime.environment.call_count, 3)
             self.assertFalse(provider.running)
             self.assertIsNotNone(process.poll())
 

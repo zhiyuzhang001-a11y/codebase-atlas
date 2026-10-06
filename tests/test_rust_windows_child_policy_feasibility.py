@@ -76,6 +76,21 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(json.loads(output.read_text())["collection_status"], "failed")
 
+    def test_failed_controller_preserves_bounded_cause(self):
+        failure = probe.subprocess.CalledProcessError(1, ["owned-fixture"],
+                                                     output="partial", stderr="reason" * 2000)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "result.json"
+            with patch.object(probe, "validate_identity"), \
+                    patch.object(probe, "supported_machine", return_value=True), \
+                    patch.object(probe, "run_owned", side_effect=failure):
+                code = probe.main(["--source-sha", "a" * 40, "--target", "windows-arm64",
+                                   "--output", str(output)])
+            result = json.loads(output.read_text())
+            self.assertEqual(code, 1)
+            self.assertEqual(result["error"]["controller_stdout"], "partial")
+            self.assertEqual(len(result["error"]["controller_stderr"]), 8192)
+
 
 if __name__ == "__main__":
     unittest.main()

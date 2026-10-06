@@ -152,7 +152,12 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
         if wait(process.process, 8000) != 0:
             raise TimeoutError("Fixture process did not finish")
         code = W.DWORD()
-        if not exit_code(process.process, ctypes.byref(code)) or code.value != 0:
+        if not exit_code(process.process, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if code.value != 0:
+            if output.is_file():
+                detail = output.read_text(encoding="utf-8")[:8192]
+                raise RuntimeError(f"Fixture failed, exit code {code.value}: {detail}")
             raise RuntimeError(f"Fixture failed, exit code {code.value}")
         evidence = json.loads(output.read_text(encoding="utf-8"))
         if evidence.get("process_id") != process.pid or evidence.get("restricted") != restricted:
@@ -194,7 +199,15 @@ def main(argv=None) -> int:
         if args.fixture:
             if not (args.restricted or args.unrestricted):
                 parser.error("Fixture policy required")
-            evidence = fixture(args.fixture.resolve(strict=True), args.restricted)
+            try:
+                evidence = fixture(args.fixture.resolve(strict=True), args.restricted)
+            except Exception as exc:
+                # No inherited stderr handle: retain the owned fixture failure
+                # explicitly, without converting it to a passed policy result.
+                with (args.fixture / "fixture.json").open("x", encoding="utf-8") as output:
+                    json.dump({"status": "failed", "type": type(exc).__name__,
+                               "message": str(exc), "winerror": getattr(exc, "winerror", None)}, output)
+                return 1
             with (args.fixture / "fixture.json").open("x", encoding="utf-8") as output:
                 json.dump(evidence, output)
         else:
@@ -231,6 +244,11 @@ def main(argv=None) -> int:
         except Exception as exc:
             report["collection_status"] = "failed"
             report["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            if isinstance(exc, subprocess.CalledProcessError):
+                # Captured owned-fixture output only; no parent environment or
+                # token dump. Keep bounded diagnostics instead of losing cause.
+                report["error"]["controller_stdout"] = (exc.stdout or "")[:8192]
+                report["error"]["controller_stderr"] = (exc.stderr or "")[:8192]
         json.dump(report, output, indent=2, sort_keys=True)
         output.write("\n")
     return 0 if report["collection_status"] == "complete" else 1
