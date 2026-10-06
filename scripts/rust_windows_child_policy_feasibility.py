@@ -91,7 +91,7 @@ def armed_remaining(armed: dict, now: float, minimum: float) -> float:
     start, deadline = armed.get("armed_at"), armed.get("barrier_deadline")
     if (type(start) not in (float, int) or type(deadline) not in (float, int)
             or not math.isfinite(start) or not math.isfinite(deadline)
-            or deadline - start != 5 or now < start or deadline - now <= minimum):
+            or deadline != start + 5 or now < start or deadline - now <= minimum):
         raise ValueError("Worker barrier lifetime/remaining deadline not proven")
     return deadline - now
 

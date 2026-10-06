@@ -59,6 +59,17 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 probe.armed_remaining(record, 11, 3)
 
+    def test_armed_deadline_validates_construction_not_cancelling_subtraction(self):
+        # Across a float exponent boundary, (start + 5) - start need not equal 5.
+        start = 60.00000000000001
+        deadline = start + 5
+        self.assertNotEqual(deadline - start, 5)
+        self.assertGreater(probe.armed_remaining(
+            {"armed_at": start, "barrier_deadline": deadline}, start + 1, 3), 3)
+        with self.assertRaises(ValueError):
+            probe.armed_remaining({"armed_at": start, "barrier_deadline": deadline + 0.01},
+                                  start + 1, 3)
+
     def test_sanitized_receipts_remove_native_handle_values(self):
         record = {"worker_handle": 123, "observer_handle": 456, "job_handle": 789,
                   "process_id": 42, "exact_job_checked_at": 10.0,
@@ -121,7 +132,7 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
                 armed = probe.await_control(scratch / "worker-armed.json")
                 self.assertTrue(armed["same_domain_armed_positive"])
                 self.assertEqual(armed["barrier_deadline"], deadline)
-                self.assertEqual(deadline - armed["armed_at"], 5)
+                self.assertEqual(deadline, armed["armed_at"] + 5)
                 self.assertFalse((scratch / "after-disconnect-barrier").exists())
 
             with patch.object(probe, "await_start_barrier", side_effect=release), \
