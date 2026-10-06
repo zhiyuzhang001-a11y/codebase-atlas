@@ -5,10 +5,60 @@ import unittest
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths, cwd_execution_records, require_metadata_contexts
+from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths, cwd_execution_records, require_metadata_contexts, require_rust_argument_templates
 
 
 class LinuxTraceTests(unittest.TestCase):
+    def test_diagnostic_argument_templates_reject_extra_flags_and_foreign_targets(self):
+        target = "x86_64-unknown-linux-gnu"
+        contexts = {"/project": {"manifest": "/project/Cargo.toml", "all_features": True}}
+        metadata = ["metadata", "--format-version", "1", "--no-deps", "--all-features",
+                    "--manifest-path", "/project/Cargo.toml", "--offline", "--filter-platform", target]
+        def check(role, args, *, cwd="/project", native_target=target):
+            vectors = [("cargo", metadata), ("rustc", ["--version"]),
+                       ("rust-analyzer", []), (role, args)]
+            text = ''.join('1 execve(' + json.dumps('/' + tool) + ', '
+                           + json.dumps(['/' + tool, *arguments]) + ', []) = 0\n'
+                           for tool, arguments in vectors)
+            result = self.summary(text)
+            result["execution_cwd_records"] = cwd_execution_records(text, "/project")
+            result["execution_cwd_records"][-1]["cwd"] = cwd
+            return require_rust_argument_templates(result, verified_tools=self.tools(),
+                                                  contexts=contexts, native_target=native_target)
+        positives = [
+            ("cargo", ["--version"]),
+            ("cargo", ["locate-project", "--workspace", "--manifest-path", "/project/Cargo.toml"]),
+            ("cargo", ["-Z", "unstable-options", "config", "get", "--format", "toml", "--show-origin"]),
+            ("cargo", ["rustc", "-Z", "unstable-options", "--print", "cfg", "--target", target, "--", "-O"]),
+            ("rustc", ["--version", "--verbose"]), ("rustc", ["-vV"]),
+            ("rustc", ["--print", "sysroot"]),
+            ("rustc", ["-O", "--target", target, "--print", "cfg"]),
+            ("rust-analyzer", ["--version"]),
+        ]
+        for role, args in positives:
+            with self.subTest(role=role, args=args):
+                self.assertEqual(len(check(role, args)), 4)
+                with self.assertRaises(ValueError):
+                    check(role, args + ["--extra"])
+        negatives = [
+            ("cargo", ["build"]), ("cargo", ["rustc", "--print", "cfg"]),
+            ("cargo", ["rustc", "-Z", "unstable-options", "--print", "native-static-libs", "--target", target, "--", "-O"]),
+            ("cargo", ["locate-project", "--workspace", "--manifest-path", "/foreign/Cargo.toml"]),
+            ("rustc", ["--print", "cfg=/output"]), ("rustc", ["--print", "native-static-libs"]),
+            ("rustc", ["--emit=metadata", "project.rs"]), ("rustc", ["@response"]),
+            ("rustc", ["-O", "--target", "aarch64-unknown-linux-gnu", "--print", "cfg"]),
+            ("rust-analyzer", ["--log-file", "/output"]),
+            ("cargo", metadata + ["--offline"]),
+            ("cargo", [metadata[0], metadata[3], *metadata[1:3], *metadata[4:]]),
+        ]
+        for role, args in negatives:
+            with self.subTest(role=role, args=args), self.assertRaises(ValueError):
+                check(role, args)
+        with self.assertRaises(ValueError):
+            check("rustc", ["--version"], cwd="/foreign")
+        with self.assertRaises(ValueError):
+            check("rustc", ["--version"], native_target="arbitrary-unknown-target")
+
     def tools(self):
         return {"/" + role: {"role": role, "sha256": "a" * 64}
                 for role in ("cargo", "rustc", "rust-analyzer")}

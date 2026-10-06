@@ -337,6 +337,71 @@ def require_metadata_contexts(summary: dict, *, contexts: dict, native_target: s
     return matched
 
 
+def require_rust_argument_templates(summary: dict, *, verified_tools: dict,
+                                    contexts: dict, native_target: str) -> list[dict]:
+    """Diagnostic exact argv/cwd matching, NOT production permission or sandbox.
+
+    Env, parent/synthetic stdin provenance, immutable identity and non-Rust roles
+    remain unproved. These fixed-source reviewed templates cannot admit arbitrary
+    print flags, builds, operand substitutions or new platform/order variants.
+    """
+    if native_target not in {"aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"}:
+        raise ValueError("Argument templates require an observed Linux native target")
+    require_verified_tool_paths(summary, verified_tools)
+    require_metadata_contexts(summary, contexts=contexts, native_target=native_target)
+    records = defaultdict(deque)
+    for record in summary["execution_cwd_records"]:
+        records[record["pid"]].append(record)
+    matched = []
+    for entry in summary["execution_results"]:
+        if not entry["launched"]:
+            continue
+        executable, argv = decode_exec_argv(entry)
+        record = records[entry["pid"]].popleft()
+        if executable not in verified_tools:
+            continue  # Separate full-tree audit required, not an admission.
+        context = contexts.get(record["cwd"])
+        if context is None:
+            raise ValueError("Rust argument template cwd lacks an exact context")
+        role = verified_tools[executable]["role"]
+        templates = {}
+        def add(label, *args):
+            templates[tuple(args)] = label
+        if role == "rust-analyzer":
+            add("analyzer-server")
+            add("analyzer-version", "--version")
+        elif role == "cargo":
+            add("cargo-version", "--version")
+            add("cargo-locate", "locate-project", "--workspace", "--manifest-path", context["manifest"])
+            add("cargo-config", "-Z", "unstable-options", "config", "get", "--format", "toml", "--show-origin")
+            metadata = ["metadata", "--format-version", "1", "--no-deps"]
+            if context["all_features"]:
+                metadata.append("--all-features")
+            add("cargo-metadata", *metadata, "--manifest-path", context["manifest"],
+                "--offline", "--filter-platform", native_target)
+            add("cargo-cfg", "rustc", "-Z", "unstable-options", "--print", "cfg", "--target", native_target, "--", "-O")
+            add("cargo-target-spec", "rustc", "-Z", "unstable-options", "--print", "target-spec-json", "--target", native_target, "--", "-Z", "unstable-options")
+        else:
+            add("rustc-version", "--version")
+            add("rustc-verbose-version", "--version", "--verbose")
+            add("rustc-vV", "-vV")
+            for value in ("sysroot", "cfg", "target-libdir"):
+                add("rustc-print-" + value, "--print", value)
+            add("rustc-cfg", "-O", "--target", native_target, "--print", "cfg")
+            add("rustc-target-spec", "-Z", "unstable-options", "--target", native_target, "--print", "target-spec-json")
+            add("rustc-combined-target-query", "-", "--crate-name", "___", "--print=file-names",
+                "--target", native_target, "--crate-type", "bin", "--crate-type", "rlib",
+                "--crate-type", "dylib", "--crate-type", "cdylib", "--crate-type", "staticlib",
+                "--crate-type", "proc-macro", "--print=sysroot", "--print=split-debuginfo",
+                "--print=crate-name", "--print=cfg", "-Wwarnings")
+        label = templates.get(tuple(argv[1:]))
+        if label is None:
+            raise ValueError("Rust argv is not an exact reviewed diagnostic template")
+        matched.append({"pid": entry["pid"], "role": role, "cwd": record["cwd"],
+                        "template": label, "argv": argv})
+    return matched
+
+
 def observe(argv: list[str], *, cwd: Path, directory: Path, verified_tools: dict) -> dict:
     if not sys.platform.startswith("linux"):
         raise ValueError("Linux native observer cannot qualify another OS")

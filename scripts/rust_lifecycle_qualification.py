@@ -22,11 +22,11 @@ from codebase_atlas.rust_runtime import SYSROOT_LIBRARY
 try:
     from rust_toolchain_qualification import isolated_environment, validate_identity
     from rust_lifecycle_integration import main as lifecycle_main
-    from rust_linux_trace import observe, require_metadata_contexts
+    from rust_linux_trace import observe, require_metadata_contexts, require_rust_argument_templates
 except ModuleNotFoundError:
     from scripts.rust_toolchain_qualification import isolated_environment, validate_identity
     from scripts.rust_lifecycle_integration import main as lifecycle_main
-    from scripts.rust_linux_trace import observe, require_metadata_contexts
+    from scripts.rust_linux_trace import observe, require_metadata_contexts, require_rust_argument_templates
 
 
 def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, trace_directory: Path | None = None) -> None:
@@ -85,6 +85,10 @@ def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, tra
                 observation["metadata_context_policy"] = contexts
                 observation["context_bound_metadata_launches"] = require_metadata_contexts(
                     observation["lifecycle"], contexts=contexts, native_target=target)
+                observation["diagnostic_argument_template_matches"] = require_rust_argument_templates(
+                    observation["lifecycle"], verified_tools=report["verified_executable_map"],
+                    contexts=contexts, native_target=target)
+                observation["argument_template_scope"] = "argv/cwd diagnostic only; NOT env/parent/stdin/immutable-window approval or exec/network enforcement"
                 summary = json.loads((work / "summary.json").read_text(encoding="utf-8"))
                 report["lifecycle_summary"] = summary
             else:
