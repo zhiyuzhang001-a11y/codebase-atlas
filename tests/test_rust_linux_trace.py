@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -19,7 +20,7 @@ class LinuxTraceTests(unittest.TestCase):
                 if "positive-control" in path.name:
                     text += '2 execve("/python", ["python", "-c", "pass"], []) = 0\n2 socket(AF_INET, SOCK_STREAM, 0) = 3\n'
                 else:
-                    text += '2 execve("/cargo", ["cargo", "metadata", "--offline", "--no-deps"], []) = 0\n'
+                    text += '2 execve("/cargo", ["/cargo", "metadata", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", "/project/Cargo.toml"], []) = 0\n'
                 path.write_text(text)
                 self.assertTrue(kwargs["capture_output"])
                 self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
@@ -31,6 +32,9 @@ class LinuxTraceTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertIn("-f", calls[0])
             self.assertIn("--seccomp-bpf", calls[0])
+            self.assertIn("trace=%process,%network,chdir,fchdir,io_uring_setup,io_uring_enter", calls[0])
+            self.assertEqual(report["initial_cwd"], str(base))
+            self.assertIn("child cwd reconstruction and admission", report["not_proven"])
             self.assertEqual(report["status"], "observed_no_non_unix_socket_attempts")
             self.assertEqual(report["offline_metadata_launches"], 1)
             self.assertTrue((base / "raw/lifecycle.trace").is_file())
@@ -84,10 +88,36 @@ class LinuxTraceTests(unittest.TestCase):
                 require_offline_metadata(self.summary(text))
 
     def test_metadata_gate_handles_interleaving_and_brackets_in_paths(self):
-        summary = self.summary('1 execve("/bin/[tools]/cargo", ["cargo", "metadata", "--offline", "--no-deps", "--manifest-path", "/project/[x]/Cargo.toml"], [] <unfinished ...>\n'
+        summary = self.summary('1 execve("/bin/[tools]/cargo", ["/bin/[tools]/cargo", "metadata", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", "/project/[x]/Cargo.toml"], [] <unfinished ...>\n'
                                '2 execve("/python", ["python"], []) = 0\n'
                                '1 <... execve resumed>) = 0\n')
         self.assertEqual(require_offline_metadata(summary), 1)
+
+    def test_metadata_option_roles_fail_closed(self):
+        valid = ["/cargo", "metadata", "--format-version", "1", "--no-deps",
+                 "--all-features", "--manifest-path", "/project/Cargo.toml",
+                 "--offline", "--filter-platform", "x86_64-unknown-linux-gnu"]
+        def audit(argv):
+            return require_offline_metadata(self.summary(
+                '1 execve("/cargo", ' + json.dumps(argv) + ', []) = 0\n'))
+        self.assertEqual(audit(valid), 1)
+        invalid = [
+            ["/cargo", "metadata", "--manifest-path", "--offline", "--no-deps"],
+            ["/cargo", "metadata", "--", "--offline", "--no-deps"],
+            ["cargo", *valid[1:]],
+            [*valid, "--offline"], [*valid, "--locked"], [*valid, "@args"],
+            [*valid, "--manifest-path", "/other/Cargo.toml"],
+        ]
+        for option, value in (("--format-version", "2"),
+                              ("--manifest-path", "relative/Cargo.toml"),
+                              ("--manifest-path", "/project/other.toml"),
+                              ("--filter-platform", "/project/target.json")):
+            changed = valid.copy()
+            changed[changed.index(option) + 1] = value
+            invalid.append(changed)
+        for argv in invalid:
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                audit(argv)
 
     def test_missing_truncated_detached_and_io_uring_evidence_fail(self):
         for text in ('', 'socket(AF_INET, SOCK_STREAM, 0) = 3\n',

@@ -105,8 +105,34 @@ def require_offline_metadata(summary: dict) -> int:
             raise ValueError("Native exec argv has an unsupported shape")
         if Path(executable).name != "cargo" or argv[1:2] != ["metadata"]:
             continue
-        if "--offline" not in argv[2:] or "--no-deps" not in argv[2:]:
-            raise ValueError("Launched cargo metadata lacks explicit --offline/--no-deps")
+        if argv[0] != executable or not Path(executable).is_absolute():
+            raise ValueError("Cargo metadata executable/argv0 identity mismatch")
+        flags = {"--offline", "--no-deps", "--all-features"}
+        operands = {"--format-version", "--manifest-path", "--filter-platform"}
+        seen: dict[str, str | None] = {}
+        position = 2
+        while position < len(argv):
+            option = argv[position]
+            if option in seen or option not in flags | operands:
+                raise ValueError("Unsupported or duplicate cargo metadata option")
+            position += 1
+            value = None
+            if option in operands:
+                if position == len(argv) or argv[position].startswith(("-", "@")):
+                    raise ValueError("Cargo metadata option operand missing or ambiguous")
+                value = argv[position]
+                position += 1
+            seen[option] = value
+        if not {"--offline", "--no-deps", "--format-version", "--manifest-path"} <= seen.keys():
+            raise ValueError("Cargo metadata lacks required explicit options")
+        if seen["--format-version"] != "1":
+            raise ValueError("Unsupported cargo metadata format")
+        manifest = Path(seen["--manifest-path"])
+        if not manifest.is_absolute() or manifest.name != "Cargo.toml":
+            raise ValueError("Cargo metadata manifest must be an absolute Cargo.toml path")
+        target = seen.get("--filter-platform")
+        if target is not None and not re.fullmatch(r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+){2,}", target):
+            raise ValueError("Cargo metadata target must be a native target triple")
         count += 1
     if count == 0:
         raise ValueError("Native trace has no launched cargo metadata evidence")
@@ -124,7 +150,7 @@ def observe(argv: list[str], *, cwd: Path, directory: Path) -> dict:
     def traced(command, name, timeout):
         trace = directory / (name + ".trace")
         arguments = [tracer, "-f", "--seccomp-bpf", "-s", "65535", "-v", "-e",
-                     "trace=%process,%network,io_uring_setup,io_uring_enter", "-o", str(trace), *command]
+                     "trace=%process,%network,chdir,fchdir,io_uring_setup,io_uring_enter", "-o", str(trace), *command]
         result = run_owned(arguments, cwd=cwd, env=environment, timeout=timeout,
                            capture_output=True, text=True)
         (directory / (name + ".stdout")).write_text(result.stdout, encoding="utf-8")
@@ -144,6 +170,8 @@ def observe(argv: list[str], *, cwd: Path, directory: Path) -> dict:
     metadata_count = require_offline_metadata(actual)
     return {"status": "observed_no_non_unix_socket_attempts", "positive_control": positive,
             "lifecycle": actual, "environment_names": sorted(environment),
+            "initial_cwd": str(cwd.resolve()),
             "offline_metadata_launches": metadata_count,
-            "not_proven": ["independent full argv allow-list audit", "other OS native tracing",
+            "not_proven": ["independent full argv allow-list audit", "child cwd reconstruction and admission",
+                           "receipt-bound executable identity", "network denial", "other OS native tracing",
                            "installed-wheel", "resource gates"]}
