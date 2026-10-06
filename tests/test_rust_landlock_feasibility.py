@@ -31,7 +31,7 @@ class LandlockFeasibilityTests(unittest.TestCase):
             with patch.object(probe, "validate_identity"), \
                     patch.object(probe, "supported_machine", return_value=True), \
                     patch.object(probe, "run_owned", return_value=MagicMock(
-                        stdout=json.dumps({"status": "resource_probe_passed"}))):
+                        stdout=json.dumps({"status": "resource_probe_passed"}))) as owned:
                 code = probe.main(["--source-sha", "a" * 40, "--target", "linux-arm64",
                                    "--output", str(output)])
             result = json.loads(output.read_text())
@@ -39,6 +39,19 @@ class LandlockFeasibilityTests(unittest.TestCase):
             self.assertEqual(result["qualification_status"], "blocked")
             self.assertFalse(result["product_enforcement"])
             self.assertFalse(result["public_rust_enabled"])
+            self.assertEqual(owned.call_count, 3)
+            self.assertEqual([item["repeat"] for item in result["experiments"]], [1, 2, 3])
+
+    def test_unknown_helper_status_rejects_collection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "result.json"
+            with patch.object(probe, "validate_identity"), \
+                    patch.object(probe, "supported_machine", return_value=True), \
+                    patch.object(probe, "run_owned", return_value=MagicMock(stdout='{"status":"passed"}')):
+                code = probe.main(["--source-sha", "a" * 40, "--target", "linux-arm64",
+                                   "--output", str(output)])
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output.read_text())["collection_status"], "failed")
 
     def test_failed_child_is_not_collected_success(self):
         with tempfile.TemporaryDirectory() as temporary:

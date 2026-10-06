@@ -37,7 +37,7 @@ def experiment(scratch: Path) -> dict:
     libc.syscall.restype = ctypes.c_long
     abi = libc.syscall(444, ctypes.c_void_p(), ctypes.c_size_t(0), ctypes.c_uint(1))
     if abi < 4:
-        return {"status": "blocked", "abi": abi, "errno": ctypes.get_errno(),
+        return {"status": "blocked", "process_id": os.getpid(), "abi": abi, "errno": ctypes.get_errno(),
                 "reason": "TCP restriction requires Landlock ABI >=4"}
 
     class Ruleset(ctypes.Structure):
@@ -53,6 +53,7 @@ def experiment(scratch: Path) -> dict:
     if descriptor < 0:
         raise OSError(ctypes.get_errno(), "landlock_create_ruleset")
     directory = os.open(scratch, os.O_PATH | os.O_CLOEXEC)
+    listener = socket.socket()
     try:
         rule = PathRule(14, directory)  # Scratch may be read/written, never executed.
         if libc.syscall(445, descriptor, 1, ctypes.byref(rule), 0) != 0:
@@ -61,12 +62,23 @@ def experiment(scratch: Path) -> dict:
         with socket.socket() as control:
             control.bind(("127.0.0.1", 0))
             positive_bind = True
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        address = listener.getsockname()
+        with socket.socket() as control:
+            control.settimeout(1)
+            control.connect(address)
+        accepted, _ = listener.accept()
+        accepted.close()
         if os.spawnve(os.P_WAIT, "/bin/true", ["/bin/true"], {}) != 0:
             raise RuntimeError("OS executable positive control failed")
         if libc.prctl(38, 1, 0, 0, 0) != 0:
             raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS")
         if libc.syscall(446, descriptor, 0) != 0:
             raise OSError(ctypes.get_errno(), "landlock_restrict_self")
+    except BaseException:
+        listener.close()
+        raise
     finally:
         os.close(directory)
         os.close(descriptor)
@@ -85,6 +97,19 @@ def experiment(scratch: Path) -> dict:
             raise RuntimeError("Landlock failed to deny controlled TCP bind")
     if bind_errno not in {errno.EACCES, errno.EPERM}:
         raise RuntimeError("TCP bind failed for a reason other than policy denial")
+    try:
+        with socket.socket() as blocked:
+            blocked.settimeout(1)
+            try:
+                blocked.connect(address)
+            except OSError as exc:
+                connect_errno = exc.errno
+            else:
+                raise RuntimeError("Landlock failed to deny controlled TCP connect")
+        if connect_errno not in {errno.EACCES, errno.EPERM}:
+            raise RuntimeError("TCP connect failed for a reason other than policy denial")
+    finally:
+        listener.close()
 
     # A forked child inherits the rule before exec. Report exact exec errno via
     # an owned pipe; the target is a harmless OS program, not project code.
@@ -107,13 +132,14 @@ def experiment(scratch: Path) -> dict:
         _, status = os.waitpid(pid, 0)
     if status != 0 or value not in {b"13", b"1"}:
         raise RuntimeError("Inherited executable denial not proven")
-    return {"status": "resource_probe_passed", "abi": abi,
+    return {"status": "resource_probe_passed", "process_id": os.getpid(), "abi": abi,
             "same_domain_scratch_control": True, "loopback_bind_positive": positive_bind,
             "before_restriction_exec_positive": True,
+            "loopback_connect_positive": True, "loopback_connect_deny_errno": connect_errno,
             "loopback_bind_deny_errno": bind_errno, "fork_exec_deny_errno": int(value),
             "child_reaped": True,
             "not_proven": ["exact argv/env/parent/stdin", "official Rust compatibility",
-                           "full filesystem operations", "connect/UDP/Unix/IPC/inherited-fd/io_uring",
+                           "full filesystem operations", "UDP/Unix/IPC/inherited-fd/io_uring",
                            "immutable source/tool views", "other platforms", "product qualification"]}
 
 
@@ -140,12 +166,18 @@ def main(argv=None) -> int:
         try:
             if not supported_machine():
                 raise ValueError("Not a native Linux experimental target")
-            with tempfile.TemporaryDirectory(prefix="atlas-landlock-i0-") as temporary:
-                result = run_owned([sys.executable, str(Path(__file__).resolve()),
-                                    "--child-scratch", temporary], cwd=Path(temporary),
-                                   env={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
-                                   timeout=10, capture_output=True, text=True, check=True)
-                report["experiment"] = json.loads(result.stdout)
+            report["experiments"] = []
+            for repeat in range(3):
+                with tempfile.TemporaryDirectory(prefix="atlas-landlock-i0-") as temporary:
+                    result = run_owned([sys.executable, str(Path(__file__).resolve()),
+                                        "--child-scratch", temporary], cwd=Path(temporary),
+                                       env={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+                                       timeout=10, capture_output=True, text=True, check=True)
+                    evidence = json.loads(result.stdout)
+                    if not isinstance(evidence, dict) or evidence.get("status") not in {
+                            "resource_probe_passed", "blocked"}:
+                        raise ValueError("Unexpected helper evidence status")
+                    report["experiments"].append({"repeat": repeat + 1, **evidence})
             report["collection_status"] = "complete"
         except Exception as exc:
             report["collection_status"] = "failed"
