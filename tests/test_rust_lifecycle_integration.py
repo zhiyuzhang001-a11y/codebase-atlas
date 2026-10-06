@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import unittest
 import json
+import hashlib
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -128,6 +129,11 @@ class RustLifecycleQualificationTests(unittest.TestCase):
             scanner.write_bytes(b"fixture")
             scanner.with_name(scanner.name + ".sha256").write_text("a" * 64 + "  " + scanner.name + "\n")
             report = {"target": "macos-arm64", "source_sha": "a" * 40, "status": "failed"}
+            receipt = base / "receipt.json"
+            document = {"root": str(base / "verified"), "target": "macos-arm64",
+                        "tools": {"cargo": {"path": "bin/cargo", "sha256": "b" * 64}}}
+            raw = json.dumps(document).encode()
+            receipt.write_bytes(raw)
             def lifecycle(argv):
                 work = Path(argv[argv.index("--work-dir") + 1])
                 work.mkdir()
@@ -136,7 +142,8 @@ class RustLifecycleQualificationTests(unittest.TestCase):
                 paths = json.loads(Path(argv[argv.index("--archive-map") + 1]).read_text())
                 self.assertEqual(paths, {"cargo": str(base / "cached.tar.xz")})
                 raise RuntimeError("lifecycle failed")
-            with patch.object(qualification, "install_toolchain", return_value={"root": str(base / "verified")}) as install, \
+            with patch.object(qualification, "install_toolchain", return_value={"root": str(base / "verified"), "receipt": str(receipt)}) as install, \
+                    patch.object(qualification, "load_toolchain_receipt", return_value=document) as load, \
                     patch.object(qualification, "acquire_components", return_value={"cargo": base / "cached.tar.xz"}) as acquire, \
                     patch.object(qualification, "lifecycle_main", side_effect=lifecycle):
                 with self.assertRaisesRegex(RuntimeError, "lifecycle failed"):
@@ -145,3 +152,26 @@ class RustLifecycleQualificationTests(unittest.TestCase):
             self.assertFalse(acquire.call_args.kwargs["network_authorized"])
             self.assertEqual(report["operations"][0]["exit_code"], 1)
             self.assertEqual(report["status"], "failed")
+            load.assert_called_once()
+            self.assertEqual(report["verified_receipt"], document)
+            self.assertEqual(report["verified_receipt_sha256"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(report["verified_receipt_raw_utf8"].encode(), raw)
+            self.assertEqual(report["toolchain_source_lock"], qualification.release_lock())
+            self.assertEqual(report["verified_executable_map"][str(base / "verified/bin/cargo")],
+                             {"role": "cargo", "sha256": "b" * 64})
+
+    def test_changed_receipt_fails_before_archive_acquisition_or_lifecycle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            receipt = base / "receipt.json"
+            receipt.write_text('{"unexpected":"replacement"}')
+            report = {"target": "macos-arm64", "status": "failed"}
+            with patch.object(qualification, "install_toolchain", return_value={"root": str(base), "receipt": str(receipt)}), \
+                    patch.object(qualification, "load_toolchain_receipt", return_value={}), \
+                    patch.object(qualification, "acquire_components") as acquire, \
+                    patch.object(qualification, "lifecycle_main") as lifecycle:
+                with self.assertRaisesRegex(ValueError, "receipt changed"):
+                    qualification.qualify(report, base, base / "scanner", allow_network=False)
+                acquire.assert_not_called()
+                lifecycle.assert_not_called()
+            self.assertNotIn("verified_receipt", report)

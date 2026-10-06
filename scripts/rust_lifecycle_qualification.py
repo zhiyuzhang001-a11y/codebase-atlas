@@ -7,6 +7,7 @@ All fixture operations reuse one verified installation. No global/user deploymen
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -16,6 +17,7 @@ from codebase_atlas.release_installation import parse_checksum_manifest
 from codebase_atlas.rust_acquisition import acquire_components
 from codebase_atlas.rust_toolchain_installation import install_toolchain
 from codebase_atlas.rust_scanner_installation import scanner_lock
+from codebase_atlas.rust_installation import load_toolchain_receipt, toolchain_store, release_lock
 try:
     from rust_toolchain_qualification import isolated_environment, validate_identity
     from rust_lifecycle_integration import main as lifecycle_main
@@ -36,6 +38,21 @@ def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, tra
         report["fixture_removed_environment_names"] = removed
         installation = install_toolchain(preparation, network_authorized=allow_network)
         report["toolchain_installation"] = installation
+        receipt = Path(installation["receipt"])
+        document = load_toolchain_receipt(receipt, store=toolchain_store())
+        raw = receipt.read_bytes()
+        if json.loads(raw) != document:
+            raise ValueError("Verified receipt changed before evidence retention")
+        if document["root"] != installation["root"] or document["target"] != report["target"]:
+            raise ValueError("Lifecycle installation/receipt identity mismatch")
+        report["verified_receipt"] = document
+        report["verified_receipt_sha256"] = hashlib.sha256(raw).hexdigest()
+        report["verified_receipt_raw_utf8"] = raw.decode("utf-8", errors="strict")
+        report["toolchain_source_lock"] = release_lock()
+        report["verified_executable_map"] = {
+            str(Path(document["root"]) / tool["path"]): {"role": name, "sha256": tool["sha256"]}
+            for name, tool in document["tools"].items()
+        }
         # Offline cached archives are verified again. No aliases/copies/reinstall.
         archives = acquire_components(preparation, report["target"], network_authorized=False)
         archive_map = base / "archives.json"
