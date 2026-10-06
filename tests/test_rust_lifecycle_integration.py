@@ -13,11 +13,69 @@ from unittest.mock import patch, MagicMock
 # module-level import can retain a mock and contaminate later full-suite tests.
 from codebase_atlas import rust_mcp_refresh
 
-from scripts.rust_lifecycle_integration import install_execution_sentinels, execution_sentinel_state, hostile_hook_check, git_audit_launch
+from scripts.rust_lifecycle_integration import install_execution_sentinels, execution_sentinel_state, hostile_hook_check, git_audit_launch, active_config_change_check
 from scripts import rust_lifecycle_qualification as qualification
 
 
 class RustExecutionSentinelTests(unittest.TestCase):
+    def test_active_config_change_requires_rejection_cleanup_and_preservation(self):
+        for failure in (None, "accepted", "running", "wrapper"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                work = Path(temporary).resolve()
+                repository = work / "project"
+                repository.mkdir()
+                (repository / ".codebase-atlas.toml").write_text("original")
+                cargo_home = work / "cargo-home"
+                cargo_home.mkdir()
+                (work / "wrapper-positive-control").write_text("executed")
+                process = MagicMock(pid=123)
+                process.poll.return_value = None
+                provider = SimpleNamespace(_process=process, running=True,
+                                           runtime=SimpleNamespace(cargo_home=cargo_home))
+                def query():
+                    self.assertIn("rustc-wrapper", (cargo_home / "config.toml").read_text())
+                    provider.running = failure == "running"
+                    process.poll.return_value = None if provider.running else 0
+                    if failure == "wrapper":
+                        (work / "forbidden-wrapper").write_text("executed")
+                    return {"status": "complete_exact" if failure == "accepted" else "unavailable",
+                            "nodes": []}
+                with patch("codebase_atlas.config.AtlasConfig.load", return_value=SimpleNamespace(
+                        data_dir=work, repository=repository, project="fixture")), patch(
+                        "codebase_atlas.rust_project._load_index", return_value=({"generation_id": "frozen"}, None)):
+                    if failure:
+                        with self.assertRaisesRegex(RuntimeError, "rejection failed"):
+                            active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query)
+                    else:
+                        result = active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query)
+                        self.assertTrue(result["analyzer_stopped"] and result["generation_preserved"])
+                self.assertFalse((cargo_home / "config.toml").exists())
+                self.assertEqual((repository / ".codebase-atlas.toml").read_text(), "original")
+
+    def test_active_config_change_does_not_overwrite_existing_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary).resolve()
+            repository = work / "project"
+            repository.mkdir()
+            (repository / ".codebase-atlas.toml").write_text("original")
+            (work / "wrapper-positive-control").write_text("executed")
+            cargo_home = work / "cargo-home"
+            cargo_home.mkdir()
+            path = cargo_home / "config.toml"
+            path.write_text("foreign")
+            process = MagicMock(pid=123)
+            process.poll.return_value = None
+            provider = SimpleNamespace(_process=process, running=True,
+                                      runtime=SimpleNamespace(cargo_home=cargo_home))
+            query = MagicMock()
+            with patch("codebase_atlas.config.AtlasConfig.load", return_value=SimpleNamespace(
+                    data_dir=work, repository=repository, project="fixture")), patch(
+                    "codebase_atlas.rust_project._load_index", return_value=({"generation_id": "frozen"}, None)):
+                with self.assertRaises(FileExistsError):
+                    active_config_change_check(repository, work, SimpleNamespace(rust_provider=provider), query)
+            query.assert_not_called()
+            self.assertEqual(path.read_text(), "foreign")
+
     def test_windows_audit_none_executable_only_allows_exact_git_token(self):
         git = r"C:\Program Files\Git\cmd\git.exe"
         self.assertTrue(git_audit_launch(None, 'git -C "C:\\fixture" rev-parse HEAD', git))

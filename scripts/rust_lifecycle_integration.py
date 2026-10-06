@@ -187,6 +187,54 @@ def execution_sentinel_state(work: Path) -> dict[str, bool]:
     return {name: (work / name).exists() for name in ("forbidden-build-script", "forbidden-proc-macro")}
 
 
+def active_config_change_check(repository: Path, work: Path, service, query):
+    """Mutate only the isolated Cargo home after a real T2 session is warm.
+
+    Not a continuous mutation race or OS denial proof. Never modify a preexisting
+    config; keep the positive-controlled wrapper marker as forbidden evidence.
+    """
+    from codebase_atlas.config import AtlasConfig
+    from codebase_atlas.rust_project import _load_index
+    provider = service.rust_provider
+    process = provider._process
+    if process is None or process.poll() is not None or not provider.running:
+        raise RuntimeError("active config check requires a running analyzer")
+    config_path = repository / ".codebase-atlas.toml"
+    original_config = config_path.read_bytes()
+    config = AtlasConfig.load(config_path)
+    generation = _load_index(config.data_dir, config.repository, config.project)[0]["generation_id"]
+    wrapper = work / ("wrapper.cmd" if os.name == "nt" else "wrapper")
+    marker = work / "forbidden-wrapper"
+    if not (work / "wrapper-positive-control").is_file() or marker.exists():
+        raise RuntimeError("active config check lacks a clean wrapper positive control")
+    path = provider.runtime.cargo_home / "config.toml"
+    payload = ('[build]\nrustc-wrapper = ' + json.dumps(str(wrapper)) + '\n').encode()
+    with path.open("xb") as stream:
+        stream.write(payload)
+    try:
+        result = query()
+        evidence = {"status": result.get("status"), "node_count": len(result.get("nodes", [])),
+                    "process_id": process.pid, "process_exit_code": process.poll(),
+                    "analyzer_stopped": not provider.running,
+                    "wrapper_executed": marker.exists(),
+                    "hostile_config_unchanged": path.read_bytes() == payload,
+                    "project_config_unchanged": config_path.read_bytes() == original_config,
+                    "generation_preserved": _load_index(config.data_dir, config.repository,
+                                                         config.project)[0]["generation_id"] == generation,
+                    "scope": "warm source-API MCP boundary; not continuous mutation or OS denial"}
+        if (evidence["status"] != "unavailable" or evidence["node_count"]
+                or not evidence["analyzer_stopped"] or evidence["process_exit_code"] is None
+                or evidence["wrapper_executed"] or not evidence["hostile_config_unchanged"]
+                or not evidence["project_config_unchanged"] or not evidence["generation_preserved"]):
+            raise RuntimeError("active Cargo configuration rejection failed: " + json.dumps(evidence))
+        return evidence
+    finally:
+        # Only the exact fixture bytes exclusively created above are ours to remove.
+        if path.read_bytes() != payload:
+            raise RuntimeError("active fixture config changed; refusing cleanup")
+        path.unlink()
+
+
 def mcp_check(repository):
     from codebase_atlas.config import AtlasConfig
     from codebase_atlas.rust_project import load_rust_service
@@ -228,6 +276,9 @@ def mcp_check(repository):
         before = first["generation_id"]
         _rust_verification_query(config, repository / ".codebase-atlas.toml", query=query)
         frozen_definition()
+        active_config = active_config_change_check(repository, repository.parent, service,
+            lambda: call("definition", {"symbol": "run", "target_path": "src/left.rs",
+                "source_path": "src/lib.rs", "source_line": 4, "source_column": 28}))
         refreshed = call("refresh_index", {"mode": "fast", "timeout_ms": 60000})
         if refreshed["status"] != "refreshed":
             raise RuntimeError("MCP refresh did not publish")
@@ -241,6 +292,7 @@ def mcp_check(repository):
     return {"status": "ready", "generation_before": before, "generation_after": after["generation_id"],
             "owned_process_cleanup": "pass", "process_ids": [process.pid for process in processes],
             "frozen_crate_left_before_after": frozen_results,
+            "active_cargo_config_change": active_config,
             "live_codex_task_tested": False}, 0
 
 
