@@ -36,10 +36,68 @@ class RustRuntimePreflightTests(unittest.TestCase):
             path.write_bytes(b"sentinel: do not execute")
             self.tools.append(VerifiedRustTool(path, hashlib.sha256(path.read_bytes()).hexdigest()))
 
-    def check(self, environment=None):
+    def check(self, environment=None, *, toolchain_root=None):
         return rust_runtime_environment(self.repo, cargo=self.tools[0], rustc=self.tools[1],
                                         analyzer=self.tools[2], cargo_home=self.root / "cargo-home",
-                                        rustup_home=self.root / "rustup-home", environment=environment or {})
+                                        rustup_home=self.root / "rustup-home", environment=environment or {},
+                                        toolchain_root=toolchain_root)
+
+    def prepare_sysroot(self):
+        root = self.root / "verified-toolchain"
+        (root / "bin").mkdir(parents=True)
+        tools = []
+        for tool in self.tools:
+            path = root / "bin" / tool.path.name
+            path.write_bytes(tool.path.read_bytes())
+            tools.append(VerifiedRustTool(path, tool.sha256))
+        self.tools = tools
+        source = root / "lib/rustlib/src/rust"
+        (source / "library/core").mkdir(parents=True)
+        return root, source
+
+    def test_verified_sysroot_and_nested_source_config_are_checked_without_execution(self):
+        root, source = self.prepare_sysroot()
+        self.check(toolchain_root=root)
+        for directory in (source / "library/core", source, root / "lib/rustlib", root):
+            with self.subTest(directory=directory):
+                config = directory / ".cargo/config.toml"
+                config.parent.mkdir(parents=True, exist_ok=True)
+                config.write_text('[build]\nrustc-wrapper="sysroot-execution-trap"\n')
+                before = config.read_bytes()
+                with self.assertRaisesRegex(RustRuntimeError, "Cargo configuration"):
+                    self.check(toolchain_root=root)
+                self.assertEqual(config.read_bytes(), before)
+                config.unlink()
+        config = source / "library/core/rust-analyzer.toml"
+        config.write_text('[procMacro]\nenable=true\n')
+        with self.assertRaisesRegex(RustRuntimeError, "analyzer configuration"):
+            self.check(toolchain_root=root)
+        config.unlink()
+        config = source / "library/rust-toolchain"
+        config.write_text("nightly\n")
+        with self.assertRaisesRegex(RustRuntimeError, "toolchain selection"):
+            self.check(toolchain_root=root)
+        config.unlink()
+        self.check(toolchain_root=root)
+
+    def test_sysroot_context_cannot_be_inferred_from_foreign_tools_or_missing_source(self):
+        root, source = self.prepare_sysroot()
+        with self.assertRaisesRegex(RustRuntimeError, "sysroot configuration context"):
+            self.check(toolchain_root=self.root)
+        source.rename(source.parent / "removed-rust-src")
+        with self.assertRaisesRegex(RustRuntimeError, "sysroot configuration context"):
+            self.check(toolchain_root=root)
+
+    def test_rustup_override_of_verified_sysroot_requires_review(self):
+        root, source = self.prepare_sysroot()
+        home = self.root / "rustup-home"
+        home.mkdir()
+        config = home / "settings.toml"
+        config.write_text('[overrides]\n' + json.dumps(str(source / "library")) + '="nightly"\n')
+        before = config.read_bytes()
+        with self.assertRaisesRegex(RustRuntimeError, "repository override"):
+            self.check(toolchain_root=root)
+        self.assertEqual(config.read_bytes(), before)
 
     def test_returns_minimum_environment_without_executing_sentinels(self):
         result = self.check({"PATH": "/untrusted", "SECRET": "must_not_leak"})

@@ -55,11 +55,13 @@ class RustToolchainRuntime:
     analyzer: VerifiedRustTool
     cargo_home: Path
     rustup_home: Path
+    toolchain_root: Path | None = None
 
     def environment(self, repository: Path) -> dict[str, str]:
         return rust_runtime_environment(
             repository, cargo=self.cargo, rustc=self.rustc, analyzer=self.analyzer,
             cargo_home=self.cargo_home, rustup_home=self.rustup_home,
+            toolchain_root=self.toolchain_root,
         )
 
 
@@ -141,6 +143,7 @@ def rust_runtime_environment(
     analyzer: VerifiedRustTool,
     cargo_home: Path,
     rustup_home: Path,
+    toolchain_root: Path | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Validate all configuration before returning a child env; executes nothing.
@@ -175,9 +178,29 @@ No files, toolchains or global environment variables are changed.
                 continue
             raise RustRuntimeError("Rust execution environment override requires review")
 
+    context_directories = _project_configuration_directories(repo)
+    context_directories.extend(repo.parents)
+    verified_root = None
+    if toolchain_root is not None:
+        # Production receipts provide this exact root, never PATH inference or
+        # a project-selected rust-src location. Analyzer runs Cargo from rust-src
+        # as well as workspace members, so both contexts need preflight.
+        verified_root = toolchain_root.absolute()
+        source = verified_root / "lib/rustlib/src/rust"
+        try:
+            if (verified_root.resolve(strict=True) != verified_root
+                    or not verified_root.is_dir()
+                    or any(path.parent != verified_root / "bin" for path in paths)
+                    or source.resolve(strict=True) != source or not source.is_dir()):
+                raise RustRuntimeError("Rust verified sysroot configuration context is unsafe")
+        except OSError as exc:
+            raise RustRuntimeError("Rust verified sysroot configuration context is unavailable") from exc
+        context_directories.extend(_project_configuration_directories(source))
+        context_directories.extend(source.parents)
+
     config_paths = [cargo_home / "config", cargo_home / "config.toml"]
     analyzer_config_paths = []
-    for directory in (*_project_configuration_directories(repo), *repo.parents):
+    for directory in dict.fromkeys(context_directories):
         config_paths.extend((directory / ".cargo/config", directory / ".cargo/config.toml"))
         analyzer_config_paths.append(directory / "rust-analyzer.toml")
         for name in ("rust-toolchain", "rust-toolchain.toml"):
@@ -229,7 +252,8 @@ No files, toolchains or global environment variables are changed.
             if not isinstance(directory, str):
                 raise RustRuntimeError("Rustup override path is invalid")
             target = Path(directory).resolve()
-            if target == repo or target in repo.parents or repo in target.parents:
+            roots = (repo,) if verified_root is None else (repo, verified_root)
+            if any(target == root or target in root.parents or root in target.parents for root in roots):
                 raise RustRuntimeError("Rustup repository override requires reviewed preparation")
 
     # No arbitrary inherited PATH, wrapper, preload or registry variables.

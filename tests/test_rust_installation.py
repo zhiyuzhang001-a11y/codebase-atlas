@@ -126,6 +126,7 @@ class RustInstallationTests(unittest.TestCase):
             with patch("codebase_atlas.release_installation.current_platform_target", return_value="macos-arm64"):
                 runtime = runtime_from_receipt(path, repository=repository)
                 self.assertEqual(runtime.analyzer.path, self.root / "bin/rust-analyzer")
+                self.assertEqual(runtime.toolchain_root, self.root)
             with patch("codebase_atlas.release_installation.current_platform_target", return_value="linux-arm64"):
                 with self.assertRaisesRegex(RustRuntimeError, "platform"):
                     runtime_from_receipt(path, repository=repository)

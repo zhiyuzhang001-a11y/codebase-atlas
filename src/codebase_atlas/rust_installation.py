@@ -57,6 +57,7 @@ def _runtime_from_document(document: dict) -> RustToolchainRuntime:
         cargo=tools["cargo"], rustc=tools["rustc"], analyzer=tools["rust-analyzer"],
         cargo_home=Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))),
         rustup_home=Path(os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup"))),
+        toolchain_root=root,
     )
 
 
