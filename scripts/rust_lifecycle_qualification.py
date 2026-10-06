@@ -18,14 +18,15 @@ from codebase_atlas.rust_acquisition import acquire_components
 from codebase_atlas.rust_toolchain_installation import install_toolchain
 from codebase_atlas.rust_scanner_installation import scanner_lock
 from codebase_atlas.rust_installation import load_toolchain_receipt, toolchain_store, release_lock
+from codebase_atlas.rust_runtime import SYSROOT_LIBRARY
 try:
     from rust_toolchain_qualification import isolated_environment, validate_identity
     from rust_lifecycle_integration import main as lifecycle_main
-    from rust_linux_trace import observe
+    from rust_linux_trace import observe, require_metadata_contexts
 except ModuleNotFoundError:
     from scripts.rust_toolchain_qualification import isolated_environment, validate_identity
     from scripts.rust_lifecycle_integration import main as lifecycle_main
-    from scripts.rust_linux_trace import observe
+    from scripts.rust_linux_trace import observe, require_metadata_contexts
 
 
 def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, trace_directory: Path | None = None) -> None:
@@ -72,6 +73,18 @@ def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, tra
                     [sys.executable, str(Path(__file__).with_name("rust_lifecycle_integration.py")), *lifecycle_args],
                     cwd=Path(__file__).resolve().parents[1], directory=trace_directory,
                     verified_tools=report["verified_executable_map"])
+                project = work.resolve() / "project"
+                library = Path(document["root"]) / SYSROOT_LIBRARY
+                contexts = {
+                    str(project): {"manifest": str(project / "Cargo.toml"), "all_features": True},
+                    str(library): {"manifest": str(library / "Cargo.toml"), "all_features": False},
+                }
+                target = {"linux-x86_64": "x86_64-unknown-linux-gnu",
+                          "linux-arm64": "aarch64-unknown-linux-gnu"}[report["target"]]
+                observation = report["linux_native_observation"]
+                observation["metadata_context_policy"] = contexts
+                observation["context_bound_metadata_launches"] = require_metadata_contexts(
+                    observation["lifecycle"], contexts=contexts, native_target=target)
                 summary = json.loads((work / "summary.json").read_text(encoding="utf-8"))
                 report["lifecycle_summary"] = summary
             else:

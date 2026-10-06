@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths, cwd_execution_records
+from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths, cwd_execution_records, require_metadata_contexts
 
 
 class LinuxTraceTests(unittest.TestCase):
@@ -147,6 +147,52 @@ class LinuxTraceTests(unittest.TestCase):
         self.assertFalse(PureWindowsPath("/tools/cargo").is_absolute())
         with patch("scripts.rust_linux_trace.Path", PureWindowsPath):
             self.assertEqual(require_offline_metadata(summary), 1)
+
+    def test_metadata_context_binds_cwd_manifest_native_target_and_features(self):
+        target = "x86_64-unknown-linux-gnu"
+        contexts = {"/project": {"manifest": "/project/Cargo.toml", "all_features": True}}
+        argv = ["/cargo", "metadata", "--format-version", "1", "--offline", "--no-deps",
+                "--manifest-path", "/project/Cargo.toml", "--filter-platform", target, "--all-features"]
+        def summary(arguments, cwd="/project"):
+            text = '1 execve("/cargo", ' + json.dumps(arguments) + ', []) = 0\n'
+            result = self.summary(text)
+            result["execution_cwd_records"] = cwd_execution_records(text, cwd)
+            return result
+        self.assertEqual(len(require_metadata_contexts(summary(argv), contexts=contexts, native_target=target)), 1)
+        vectors = [(argv, "/foreign"), (argv[:-1], "/project")]
+        for operand, replacement in (("/project/Cargo.toml", "/foreign/Cargo.toml"),
+                                     (target, "aarch64-unknown-linux-gnu")):
+            changed = argv.copy()
+            changed[changed.index(operand)] = replacement
+            vectors.append((changed, "/project"))
+        for arguments, cwd in vectors:
+            with self.subTest(arguments=arguments, cwd=cwd), self.assertRaises(ValueError):
+                require_metadata_contexts(summary(arguments, cwd), contexts=contexts, native_target=target)
+        for malformed in ({}, {"/project/../foreign": contexts["/project"]},
+                          {"/project": {"manifest": "/project/Cargo.toml", "all_features": "true"}}):
+            with self.assertRaises(ValueError):
+                require_metadata_contexts(summary(argv), contexts=malformed, native_target=target)
+        missing = summary(argv)
+        missing.pop("execution_cwd_records")
+        with self.assertRaises(ValueError):
+            require_metadata_contexts(missing, contexts=contexts, native_target=target)
+
+    def test_metadata_context_tracks_repeated_execs_and_requires_all_expected_contexts(self):
+        target = "x86_64-unknown-linux-gnu"
+        def argv(manifest, features):
+            return ["/cargo", "metadata", "--format-version", "1", "--offline", "--no-deps",
+                    "--manifest-path", manifest, "--filter-platform", target] + (["--all-features"] if features else [])
+        text = ('1 execve("/cargo", ' + json.dumps(argv("/project/Cargo.toml", True)) + ', []) = 0\n'
+                '1 chdir("/sysroot/library") = 0\n'
+                '1 execve("/cargo", ' + json.dumps(argv("/sysroot/library/Cargo.toml", False)) + ', []) = 0\n')
+        result = self.summary(text)
+        result["execution_cwd_records"] = cwd_execution_records(text, "/project")
+        contexts = {"/project": {"manifest": "/project/Cargo.toml", "all_features": True},
+                    "/sysroot/library": {"manifest": "/sysroot/library/Cargo.toml", "all_features": False}}
+        self.assertEqual(len(require_metadata_contexts(result, contexts=contexts, native_target=target)), 2)
+        result["execution_cwd_records"].append(dict(result["execution_cwd_records"][-1]))
+        with self.assertRaisesRegex(ValueError, "coverage"):
+            require_metadata_contexts(result, contexts=contexts, native_target=target)
 
     def test_verified_rust_paths_bind_every_role_and_reject_foreign_launches(self):
         text = ''.join(f'{pid} execve({json.dumps(path)}, [{json.dumps(path)}], []) = 0\n'

@@ -6,6 +6,7 @@ allow-list audit; collecting them alone does not close the full phase-2 gate.
 from __future__ import annotations
 
 import hashlib
+from collections import defaultdict, deque
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -276,6 +277,60 @@ def require_offline_metadata(summary: dict) -> int:
     if count == 0:
         raise ValueError("Native trace has no launched cargo metadata evidence")
     return count
+
+
+def require_metadata_contexts(summary: dict, *, contexts: dict, native_target: str) -> list[dict]:
+    """Bind recorded metadata cwd/manifest/feature/target, not filesystem aliases.
+
+    Callers supply exact fixture and receipt-bound library contexts; no prefix
+    admission. This evidence gate is not a runtime exec or mutation sandbox.
+    """
+    count = require_offline_metadata(summary)
+    if not contexts or not re.fullmatch(r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+){2,}", native_target):
+        raise ValueError("Metadata context policy is incomplete")
+    for cwd, policy in contexts.items():
+        path = PurePosixPath(cwd)
+        if (not path.is_absolute() or str(path) != cwd or ".." in path.parts
+                or not isinstance(policy, dict) or set(policy) != {"manifest", "all_features"}
+                or policy["manifest"] != str(path / "Cargo.toml")
+                or type(policy["all_features"]) is not bool):
+            raise ValueError("Metadata context policy is not exact and canonical")
+    recorded = summary.get("execution_cwd_records")
+    if not isinstance(recorded, list) or not recorded:
+        raise ValueError("Metadata context lacks execution cwd evidence")
+    by_pid = defaultdict(deque)
+    for record in recorded:
+        by_pid[record["pid"]].append(record)
+    matched = []
+    used = set()
+    for entry in summary["execution_results"]:
+        if not entry["launched"]:
+            continue
+        executable, argv = decode_exec_argv(entry)
+        records = by_pid[entry["pid"]]
+        if not records:
+            raise ValueError("Metadata context execution/cwd record missing")
+        record = records.popleft()
+        if record["executable"] != executable or record["argv0"] != argv[0]:
+            raise ValueError("Metadata context execution/cwd identity mismatch")
+        if PurePosixPath(executable).name != "cargo" or argv[1:2] != ["metadata"]:
+            continue
+        cwd = record["cwd"]
+        policy = contexts.get(cwd)
+        if policy is None:
+            raise ValueError("Cargo metadata cwd is not an admitted exact context")
+        manifest = argv[argv.index("--manifest-path") + 1]
+        target = (argv[argv.index("--filter-platform") + 1]
+                  if "--filter-platform" in argv else None)
+        features = "--all-features" in argv
+        if manifest != policy["manifest"] or target != native_target or features != policy["all_features"]:
+            raise ValueError("Cargo metadata manifest/target/features context mismatch")
+        used.add(cwd)
+        matched.append({"pid": entry["pid"], "cwd": cwd, "manifest": manifest,
+                        "target": target, "all_features": features})
+    if any(by_pid.values()) or len(matched) != count or used != set(contexts):
+        raise ValueError("Metadata context evidence coverage is incomplete")
+    return matched
 
 
 def observe(argv: list[str], *, cwd: Path, directory: Path, verified_tools: dict) -> dict:
