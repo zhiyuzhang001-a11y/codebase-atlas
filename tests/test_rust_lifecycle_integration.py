@@ -58,7 +58,9 @@ class RustExecutionSentinelTests(unittest.TestCase):
                         result, code = hostile_hook_check(repository, work)
                         self.assertEqual(code, 0)
                         self.assertEqual([h["hook"] for h in result["hooks"]],
-                                         ["enable", "doctor", "cold_query", "refresh"])
+                                         ["enable", "doctor", "cold_query", "refresh"] * 2)
+                        self.assertEqual([h["case"] for h in result["hooks"]],
+                                         ["wrapper"] * 4 + ["rustup-download-entry"] * 4)
                 service.close.assert_called_once()
                 document = json.loads((work / "hostile-hooks.json").read_text())
                 self.assertEqual(bool(document["forbidden_events"]), forbidden)
@@ -67,6 +69,9 @@ class RustExecutionSentinelTests(unittest.TestCase):
                 self.assertTrue(document["wrapper_positive_control"]["executed"])
                 self.assertEqual(document["wrapper_positive_control"]["exit_code"], 0)
                 self.assertTrue((work / "wrapper-positive-control").is_file())
+                self.assertTrue(document["rustup_positive_control"]["executed"])
+                self.assertFalse(document["rustup_download_entry_executed"])
+                self.assertTrue((work / "rustup-positive-control").is_file())
 
     def test_existing_wrapper_is_not_overwritten_for_positive_control(self):
         with tempfile.TemporaryDirectory() as temporary:

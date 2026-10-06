@@ -34,21 +34,17 @@ def git_audit_launch(executable, argv, git: str | None) -> bool:
     return isinstance(argv, (tuple, list)) and bool(argv) and str(argv[0]) in allowed
 
 
-def hostile_hook_check(repository: Path, work: Path):
-    """Real normal hooks with hostile env; Python audit only, NOT OS tracing."""
-    from codebase_atlas.config import AtlasConfig, diagnose
-    from codebase_atlas.rust_project import load_rust_service, _load_index
-    from codebase_atlas.rust_mcp_refresh import RustMcpRefreshCoordinator
-    from codebase_atlas.service import QueryRequest
-    config_path = repository / ".codebase-atlas.toml"
-    config = AtlasConfig.load(config_path)
-    marker = work / "forbidden-wrapper"
-    positive_marker = work / "wrapper-positive-control"
-    wrapper = work / ("wrapper.cmd" if os.name == "nt" else "wrapper")
+def executable_trap(work: Path, name: str):
+    """Harness-owned program with distinct positive/forbidden markers, no network."""
+    if name not in {"wrapper", "rustup"}:
+        raise ValueError("Unknown diagnostic executable trap")
+    marker = work / ("forbidden-" + name)
+    positive_marker = work / (name + "-positive-control")
+    wrapper = work / (name + ".cmd" if os.name == "nt" else name)
     # Separate markers distinguish the intentional diagnostic execution from
     # forbidden normal-hook execution; never clear a marker to make a test pass.
     if marker.exists() or positive_marker.exists():
-        raise RuntimeError("Wrapper marker already exists before qualification")
+        raise RuntimeError(name + " marker already exists before qualification")
     payload = (f'@echo off\r\nif "%~1"=="--positive-control" (\r\n'
                f'echo executed>"{positive_marker}"\r\n) else (\r\n'
                f'echo executed>"{marker}"\r\n)\r\n' if os.name == "nt" else
@@ -63,13 +59,31 @@ def hostile_hook_check(repository: Path, work: Path):
     # Windows batch launch is explicit, not an inherited COMSPEC or shell=True.
     command = ([str(Path(os.environ["SystemRoot"]) / "System32/cmd.exe"),
                 "/d", "/c", str(wrapper), "--positive-control"] if os.name == "nt"
-               else [str(wrapper), "--positive-control"])
+               else ([sys.executable, str(wrapper), "--positive-control"] if name == "rustup"
+                     else [str(wrapper), "--positive-control"]))
+    # Validate the rustup sentinel payload with an explicit interpreter; do not
+    # relax the native observer's blanket ban on any actual rustup exec, even
+    # for this control. Direct-entry execution remains forbidden in all hooks.
     control_env = {name: os.environ[name] for name in
                    ("SystemRoot", "WINDIR", "TEMP", "TMP") if name in os.environ}
     control = run_owned(command, cwd=work, env=control_env, timeout=5,
                         capture_output=True, text=True, check=True)
     if not positive_marker.is_file() or marker.exists():
-        raise RuntimeError("Wrapper executable positive control failed")
+        raise RuntimeError(name + " executable positive control failed")
+    return wrapper, marker, {"executed": True, "exit_code": control.returncode, "argv": command,
+                            "scope": "harness payload control; not permission to launch rustup"}
+
+
+def hostile_hook_check(repository: Path, work: Path):
+    """Real normal hooks with hostile env; Python audit only, NOT OS tracing."""
+    from codebase_atlas.config import AtlasConfig, diagnose
+    from codebase_atlas.rust_project import load_rust_service, _load_index
+    from codebase_atlas.rust_mcp_refresh import RustMcpRefreshCoordinator
+    from codebase_atlas.service import QueryRequest
+    config_path = repository / ".codebase-atlas.toml"
+    config = AtlasConfig.load(config_path)
+    wrapper, marker, wrapper_control = executable_trap(work, "wrapper")
+    rustup, rustup_marker, rustup_control = executable_trap(work, "rustup")
     service = load_rust_service(config)  # Cold, verified but no analyzer startup.
     service.start()  # Lazy frontend state only; T2 has not spawned.
     coordinator = RustMcpRefreshCoordinator(config, service, {}, config_path=config_path)
@@ -94,40 +108,48 @@ def hostile_hook_check(repository: Path, work: Path):
     original_generation = _load_index(config.data_dir, config.repository, config.project)[0]["generation_id"]
     rows = []
     try:
-        with patch.dict(os.environ, {"RUSTC_WRAPPER": str(wrapper)}):
-            observer["active"] = True
-            payload, code = enable_project(repository, language="rust")
-            rows.append({"hook": "enable", "exit_code": code, "result": payload})
-            if code == 0:
-                raise RuntimeError("enable accepted hostile wrapper")
-            checks = diagnose(config)
-            rows.append({"hook": "doctor", "checks": checks})
-            if not any(c["name"] == "rust_toolchain" and not c["ok"] for c in checks):
-                raise RuntimeError("doctor accepted hostile wrapper")
-            response = service.query(QueryRequest("definition", "run", {
-                "source_path": "src/lib.rs", "source_line": 4, "source_column": 28,
-                "target_path": "src/left.rs"}))
-            rows.append({"hook": "cold_query", "status": response.status,
-                         "completeness": response.completeness, "node_count": len(response.nodes)})
-            if response.status != "unavailable" or response.nodes:
-                raise RuntimeError("cold query accepted hostile wrapper")
-            result = coordinator.refresh(timeout_ms=60000)
-            rows.append({"hook": "refresh", "result": result})
-            if result.get("status") != "failed" or not result.get("previous_generation_preserved"):
-                raise RuntimeError("refresh accepted hostile wrapper")
+        traps = (("wrapper", {"RUSTC_WRAPPER": str(wrapper)}),
+                 ("rustup-download-entry", {
+                     "RUSTUP_TOOLCHAIN": "atlas-unavailable-download-trap",
+                     "PATH": str(rustup.parent) + os.pathsep + os.environ.get("PATH", ""),
+                 }))
+        for case, environment in traps:
+            with patch.dict(os.environ, environment):
+                observer["active"] = True
+                payload, code = enable_project(repository, language="rust")
+                rows.append({"case": case, "hook": "enable", "exit_code": code, "result": payload})
+                if code == 0:
+                    raise RuntimeError("enable accepted hostile " + case)
+                checks = diagnose(config)
+                rows.append({"case": case, "hook": "doctor", "checks": checks})
+                if not any(c["name"] == "rust_toolchain" and not c["ok"] for c in checks):
+                    raise RuntimeError("doctor accepted hostile " + case)
+                response = service.query(QueryRequest("definition", "run", {
+                    "source_path": "src/lib.rs", "source_line": 4, "source_column": 28,
+                    "target_path": "src/left.rs"}))
+                rows.append({"case": case, "hook": "cold_query", "status": response.status,
+                             "completeness": response.completeness, "node_count": len(response.nodes)})
+                if response.status != "unavailable" or response.nodes:
+                    raise RuntimeError("cold query accepted hostile " + case)
+                result = coordinator.refresh(timeout_ms=60000)
+                rows.append({"case": case, "hook": "refresh", "result": result})
+                if result.get("status") != "failed" or not result.get("previous_generation_preserved"):
+                    raise RuntimeError("refresh accepted hostile " + case)
     finally:
         observer["active"] = False
         service.close()
         evidence = {"hooks": rows, "observer": "Python audit only; NOT whole-tree or OS network",
-                    "wrapper_positive_control": {"executed": True, "exit_code": control.returncode,
-                                                 "argv": command},
+                    "wrapper_positive_control": wrapper_control,
+                    "rustup_positive_control": rustup_control,
+                    "rustup_trap_scope": "executable download-entry marker, not actual network denial",
+                    "rustup_download_entry_executed": rustup_marker.exists(),
                     "forbidden_events": observer["forbidden"], "git_argv": observer["git_argv"],
                     "forbidden_launches": observer["forbidden_launches"],
                     "wrapper_executed": marker.exists(),
                     "config_unchanged": config_path.read_bytes() == original_config,
                     "generation_preserved": _load_index(config.data_dir, config.repository, config.project)[0]["generation_id"] == original_generation}
         (work / "hostile-hooks.json").write_text(json.dumps(evidence, indent=2), encoding="utf-8")
-    if (evidence["forbidden_events"] or evidence["wrapper_executed"]
+    if (evidence["forbidden_events"] or evidence["wrapper_executed"] or evidence["rustup_download_entry_executed"]
             or not evidence["config_unchanged"] or not evidence["generation_preserved"]):
         raise RuntimeError("hostile hooks changed config or attempted forbidden execution")
     return {"status": "ready", **evidence}, 0
