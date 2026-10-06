@@ -40,6 +40,46 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 probe.await_start_barrier(Path(temporary), timeout=0)
 
+    def test_control_record_is_published_complete_and_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "control.json"
+            probe.publish_control(path, b'{"owned": true}')
+            self.assertEqual(probe.await_control(path), {"owned": True})
+            self.assertFalse(path.with_name(path.name + ".staging").exists())
+            with self.assertRaises(ValueError):
+                probe.publish_control(path, b'{"foreign": true}')
+            self.assertEqual(probe.await_control(path), {"owned": True})
+
+    def test_missing_control_record_is_not_a_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(TimeoutError):
+                probe.await_control(Path(temporary) / "missing", timeout=0)
+
+    def test_parent_exit_requires_native_windows_before_loading_api(self):
+        with patch.object(probe, "supported_machine", return_value=False), \
+                patch.object(probe.ctypes, "WinDLL", create=True) as native:
+            with self.assertRaises(ValueError):
+                probe.parent_exit_experiment(Path("unused"), True)
+            native.assert_not_called()
+
+    def test_handoff_launcher_requires_explicit_policy(self):
+        with self.assertRaises(SystemExit), patch.object(probe, "launch_fixture") as launch:
+            probe.main(["--handoff-launcher", "unused"])
+        launch.assert_not_called()
+
+    def test_duplicate_handle_is_non_inheritable_and_object_bound(self):
+        native = MagicMock()
+        native.GetCurrentProcess.return_value = 123
+
+        def duplicate(source_process, source_handle, target_process, output, access, inherit, options):
+            self.assertEqual((source_process, source_handle, target_process), (123, 456, 789))
+            self.assertEqual((access, inherit, options), (0, False, 2))
+            output._obj.value = 987
+            return True
+
+        native.DuplicateHandle.side_effect = duplicate
+        self.assertEqual(probe.duplicate_to(native, 456, 789), 987)
+
     def test_controller_retains_baseline_when_restricted_launch_fails(self):
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(probe, "launch_fixture", side_effect=[
@@ -96,6 +136,7 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "result.json"
             with patch.object(probe, "validate_identity"), patch.object(probe, "supported_machine", return_value=True), \
+                    patch.object(probe, "parent_exit_experiment", return_value={"fixture_reaped": True}) as parent_exit, \
                     patch.object(probe, "run_owned", return_value=MagicMock(
                         stdout='{"status":"deny_all_probe_passed"}', returncode=0)) as owned:
                 code = probe.main(["--source-sha", "a" * 40, "--target", "windows-arm64",
@@ -106,6 +147,9 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             self.assertFalse(result["product_enforcement"])
             self.assertFalse(result["public_rust_enabled"])
             self.assertEqual(owned.call_count, 3)
+            self.assertEqual(parent_exit.call_count, 6)
+            self.assertEqual([call.args[1] for call in parent_exit.call_args_list], [False, True] * 3)
+            self.assertEqual(len(result["parent_exit_experiments"]), 6)
 
     def test_parent_retains_failed_partial_fixture_report(self):
         partial = {"status": "failed", "failed_restricted": True,
@@ -123,6 +167,24 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             self.assertEqual(result["collection_status"], "failed")
             self.assertEqual(result["qualification_status"], "blocked")
             self.assertEqual(len(result["experiments"][0]["fixtures"]), 1)
+
+    def test_parent_exit_failure_keeps_gate_blocked_and_prior_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "result.json"
+            with patch.object(probe, "validate_identity"), \
+                    patch.object(probe, "supported_machine", return_value=True), \
+                    patch.object(probe, "run_owned", return_value=MagicMock(
+                        stdout='{"status":"deny_all_probe_passed"}', returncode=0)), \
+                    patch.object(probe, "parent_exit_experiment", side_effect=RuntimeError("worker exited early")):
+                code = probe.main(["--source-sha", "a" * 40, "--target", "windows-arm64",
+                                   "--output", str(output)])
+            result = json.loads(output.read_text())
+            self.assertEqual(code, 1)
+            self.assertEqual(result["collection_status"], "failed")
+            self.assertEqual(result["qualification_status"], "blocked")
+            self.assertEqual(len(result["experiments"]), 3)
+            self.assertEqual(result["parent_exit_experiments"], [])
+            self.assertIn("worker exited early", result["error"]["message"])
 
     def test_failed_controller_is_not_success(self):
         with tempfile.TemporaryDirectory() as temporary:

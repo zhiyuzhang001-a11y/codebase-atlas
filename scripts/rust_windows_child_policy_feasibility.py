@@ -41,6 +41,42 @@ def await_start_barrier(scratch: Path, timeout: float = 5) -> None:
         raise ValueError("Invalid owned start barrier")
 
 
+def publish_control(path: Path, content: bytes) -> None:
+    """Own temporary IPC: readers never observe a partially written record."""
+    staging = path.with_name(path.name + ".staging")
+    with staging.open("xb") as output:
+        output.write(content)
+    if path.exists():
+        raise ValueError("Control record already exists")
+    staging.rename(path)
+
+
+def await_control(path: Path, timeout: float = 5) -> dict:
+    deadline = monotonic() + timeout
+    while not path.exists():
+        if monotonic() >= deadline:
+            raise TimeoutError("Owned control record missing")
+        sleep(0.01)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def native_function(native, name, arguments, result=W.BOOL):
+    function = getattr(native, name)
+    function.argtypes, function.restype = arguments, result
+    return function
+
+
+def duplicate_to(native, source_handle, target_process) -> int:
+    current = native_function(native, "GetCurrentProcess", [], W.HANDLE)
+    duplicate = native_function(native, "DuplicateHandle", [
+        W.HANDLE, W.HANDLE, W.HANDLE, ctypes.POINTER(W.HANDLE), W.DWORD, W.BOOL, W.DWORD])
+    result = W.HANDLE()
+    if not duplicate(current(), source_handle, target_process, ctypes.byref(result),
+                     0, False, 2):  # SAME_ACCESS, non-inheritable; owned fixture only.
+        raise ctypes.WinError(ctypes.get_last_error())
+    return result.value
+
+
 def supported_machine() -> bool:
     return os.name == "nt"
 
@@ -120,7 +156,7 @@ def fixture(scratch: Path, restricted: bool) -> dict:
             "same_domain_scratch_control": True, "attempts": attempts}
 
 
-def launch_fixture(scratch: Path, restricted: bool) -> dict:
+def launch_fixture(scratch: Path, restricted: bool, *, handoff=None) -> dict:
     """Experimental native launcher only; no production launcher modifications."""
     if not supported_machine():
         raise ValueError("Native Windows required")
@@ -188,15 +224,17 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
         raise ctypes.WinError(ctypes.get_last_error())
     process = Process()
     owned_job = None
+    handed_off = False
+    remote_worker = None
     try:
         # A private unnamed nested Job provides an exact handle, not "any Job".
         # No inherited Job handle and no breakaway; outer run_owned remains owner.
-        owned_job = create_job(None, None)
+        owned_job = handoff["job_handle"] if handoff else create_job(None, None)
         if not owned_job:
             raise ctypes.WinError(ctypes.get_last_error())
         limit = ExtendedLimit()
         limit.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE only.
-        if not set_job(owned_job, 9, ctypes.byref(limit), ctypes.sizeof(limit)):
+        if not handoff and not set_job(owned_job, 9, ctypes.byref(limit), ctypes.sizeof(limit)):
             raise ctypes.WinError(ctypes.get_last_error())
         jobs = (W.HANDLE * 1)(owned_job)
         if not update(buffer, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None):
@@ -222,8 +260,18 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
             raise ctypes.WinError(ctypes.get_last_error())
         if not exact_member.value:
             raise RuntimeError("Fixture does not belong to the exact owned Job")
-        with (scratch / "membership-checked").open("xb") as barrier:
-            barrier.write(b"exact-job-checked")
+        if handoff:
+            # Retain the actual worker object in the live supervisor, not a PID
+            # reopened after parent exit. Do NOT release the payload barrier here.
+            remote_worker = duplicate_to(native, process.process, handoff["observer_handle"])
+            evidence = {"worker_handle": remote_worker, "process_id": process.pid,
+                        "launcher_id": os.getpid(), "restricted": restricted,
+                        "policy_at_creation": policy.value,
+                        "creation_flags": FIXTURE_CREATION_FLAGS}
+            publish_control(scratch / "handoff.json", json.dumps(evidence).encode("utf-8"))
+            handed_off = True
+            return evidence
+        publish_control(scratch / "membership-checked", b"exact-job-checked")
         if wait(process.process, 8000) != 0:
             raise TimeoutError("Fixture process did not finish")
         code = W.DWORD()
@@ -243,17 +291,91 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
                 "exact_owned_job_member_before_payload": True,
                 "job_assigned_at_creation": True, "job_handle_inherited": False}
     finally:
-        if owned_job:
+        if owned_job and not handed_off:
             kill_job(owned_job, 1)
         if process.process:
-            terminate(process.process, 1)  # Only our handle; outer Job owns descendants.
-            wait(process.process, 1000)
+            if not handed_off:
+                terminate(process.process, 1)  # Only our handle; outer Job owns descendants.
+                wait(process.process, 1000)
             close(process.process)
         if process.thread:
             close(process.thread)
         if owned_job:
             close(owned_job)
+        if handoff:
+            if remote_worker and not handed_off:
+                duplicate = native_function(native, "DuplicateHandle", [
+                    W.HANDLE, W.HANDLE, W.HANDLE, ctypes.POINTER(W.HANDLE),
+                    W.DWORD, W.BOOL, W.DWORD])
+                duplicate(handoff["observer_handle"], remote_worker, None, None, 0, False, 1)
+            close(handoff["observer_handle"])
         delete(buffer)
+
+
+def parent_exit_experiment(scratch: Path, restricted: bool) -> dict:
+    """Own launcher exits; live supervisor retains Job and exact worker handle."""
+    if not supported_machine():
+        raise ValueError("Native Windows required")
+    from codebase_atlas.windows_owned_process import WindowsOwnedProcess
+    native = ctypes.WinDLL("kernel32.dll", use_last_error=True, winmode=0x800)
+    current = native_function(native, "GetCurrentProcess", [], W.HANDLE)
+    member = native_function(native, "IsProcessInJob", [
+        W.HANDLE, W.HANDLE, ctypes.POINTER(W.BOOL)])
+    get_pid = native_function(native, "GetProcessId", [W.HANDLE], W.DWORD)
+    wait = native_function(native, "WaitForSingleObject", [W.HANDLE, W.DWORD], W.DWORD)
+    exit_code = native_function(native, "GetExitCodeProcess", [W.HANDLE, ctypes.POINTER(W.DWORD)])
+    close = native_function(native, "CloseHandle", [W.HANDLE])
+    launcher = WindowsOwnedProcess([
+        sys.executable, str(Path(__file__).resolve()), "--handoff-launcher", str(scratch),
+        "--restricted" if restricted else "--unrestricted"],
+        cwd=scratch, env=controller_environment())
+    worker = None
+    evidence = None
+    try:
+        launcher.stdin.close()
+        job_in_launcher = duplicate_to(native, launcher._job, launcher._process)
+        observer_in_launcher = duplicate_to(native, current(), launcher._process)
+        publish_control(scratch / "launcher-control.json", json.dumps({
+            "job_handle": job_in_launcher, "observer_handle": observer_in_launcher
+        }).encode("utf-8"))
+        if launcher.wait(timeout=8) != 0:
+            raise RuntimeError("Owned handoff launcher failed: " +
+                               launcher.stderr.read(8192).decode("utf-8", errors="replace"))
+        handoff = await_control(scratch / "handoff.json")
+        worker = handoff["worker_handle"]
+        if (handoff["launcher_id"] != launcher.pid or handoff["restricted"] != restricted
+                or get_pid(worker) != handoff["process_id"]):
+            raise ValueError("Parent-exit worker/launcher identity mismatch")
+        exact_member = W.BOOL()
+        if not member(worker, launcher._job, ctypes.byref(exact_member)) or not exact_member.value:
+            raise RuntimeError("Worker is not in the supervisor's exact Job after parent exit")
+        if wait(worker, 0) != 258:
+            raise RuntimeError("Worker did not remain alive at the parent-exit barrier")
+        publish_control(scratch / "membership-checked", b"exact-job-checked")
+        if wait(worker, 8000) != 0:
+            raise TimeoutError("Parent-exit fixture did not finish")
+        code = W.DWORD()
+        if not exit_code(worker, ctypes.byref(code)) or code.value != 0:
+            raise RuntimeError("Parent-exit fixture failed")
+        result = await_control(scratch / "fixture.json")
+        if result.get("process_id") != handoff["process_id"] or result.get("restricted") != restricted:
+            raise ValueError("Parent-exit fixture result identity mismatch")
+        evidence = {**result, "launcher_id": launcher.pid,
+                    "parent_exit_before_payload": True, "parent_exit_code": 0,
+                    "worker_alive_after_parent_exit": True,
+                    "exact_supervisor_job_member_after_parent_exit": True,
+                    "policy_at_creation": handoff["policy_at_creation"],
+                    "creation_flags": handoff["creation_flags"], "fixture_reaped": True,
+                    "case": "launcher-exit-holder-alive"}
+    finally:
+        try:
+            launcher.close_owned_job(10)
+        finally:
+            if worker:
+                close(worker)
+            for stream in (launcher.stdin, launcher.stdout, launcher.stderr):
+                stream.close()
+    return {**evidence, "owned_job_cleanup_completed": True}
 
 
 def controller(scratch: Path) -> dict:
@@ -277,13 +399,22 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--controller", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--fixture", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--handoff-launcher", type=Path, help=argparse.SUPPRESS)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--restricted", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--unrestricted", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.controller or args.fixture:
-        if args.source_sha or args.target or args.output or (args.controller and args.fixture):
+    if args.controller or args.fixture or args.handoff_launcher:
+        if (args.source_sha or args.target or args.output
+                or sum(bool(item) for item in (args.controller, args.fixture, args.handoff_launcher)) != 1):
             parser.error("Internal modes cannot accept evidence arguments")
+        if args.handoff_launcher:
+            if not (args.restricted or args.unrestricted):
+                parser.error("Fixture policy required")
+            scratch = args.handoff_launcher.resolve(strict=True)
+            launch_fixture(scratch, args.restricted,
+                           handoff=await_control(scratch / "launcher-control.json"))
+            return 0
         if args.fixture:
             if not (args.restricted or args.unrestricted):
                 parser.error("Fixture policy required")
@@ -313,9 +444,9 @@ def main(argv=None) -> int:
               "public_rust_enabled": False, "product_enforcement": False,
               "not_proven": ["selective exact argv/env/parent/stdin enforcement",
                              "official Rust compatibility", "network/filesystem isolation",
-                             "parent-exit/controller-disconnect adversarial cases",
+                             "full parent-exit/controller-disconnect adversarial coverage",
                              "immutable source/tool views", "product qualification"],
-              "experiments": []}
+              "experiments": [], "parent_exit_experiments": []}
     with args.output.open("x", encoding="utf-8") as output:
         try:
             if not supported_machine():
@@ -333,6 +464,11 @@ def main(argv=None) -> int:
                                                   "owned_job_cleanup_completed": True})
                     if result.returncode != 0 or evidence["status"] != "deny_all_probe_passed":
                         raise RuntimeError("Controller experiment failed; partial fixtures retained")
+            for repeat in range(3):
+                for restricted in (False, True):
+                    with tempfile.TemporaryDirectory(prefix="atlas-win-parent-exit-i0-") as temporary:
+                        evidence = parent_exit_experiment(Path(temporary), restricted)
+                        report["parent_exit_experiments"].append({"repeat": repeat + 1, **evidence})
             report["collection_status"] = "complete"
         except Exception as exc:
             report["collection_status"] = "failed"
