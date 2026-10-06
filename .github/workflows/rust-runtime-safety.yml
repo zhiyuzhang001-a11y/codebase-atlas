@@ -13,6 +13,8 @@ on:
       - 'scripts/rust_toolchain_qualification.py'
       - 'scripts/rust_landlock_feasibility.py'
       - 'scripts/rust_windows_child_policy_feasibility.py'
+      - 'scripts/rust_cooperative_broker_protocol.py'
+      - 'scripts/rust_broker_command_feasibility.py'
       - 'pyproject.toml'
 
 permissions:
@@ -52,7 +54,26 @@ jobs:
       - name: Run internal source/receipt/transaction and native ownership regressions
         run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_toolchain_installation tests.test_rust_toolchain_qualification tests.test_rust_scanner_installation tests.test_rust_scanner_acquisition tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
       - name: Test I0 experiment evidence collection (NOT qualification)
-        run: python -m unittest tests.test_rust_landlock_feasibility tests.test_rust_windows_child_policy_feasibility -v
+        run: python -m unittest tests.test_rust_landlock_feasibility tests.test_rust_windows_child_policy_feasibility tests.test_rust_cooperative_broker_protocol tests.test_rust_broker_command_feasibility -v
+      - name: Collect I0 controller-command precursor (NOT cooperative broker qualification)
+        if: runner.os != 'Windows'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_broker_command_feasibility.py --source-sha "$ATLAS_SOURCE_SHA" --target "$ATLAS_EXPECTED_TARGET" --output broker-command-i0.json
+      - name: Collect I0 controller-command precursor (Windows, NOT broker qualification)
+        if: runner.os == 'Windows'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_broker_command_feasibility.py --source-sha "$env:ATLAS_SOURCE_SHA" --target "$env:ATLAS_EXPECTED_TARGET" --output broker-command-i0.json
+      - name: Preserve I0 incomplete controller-command evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: broker-command-i0-${{ matrix.target }}
+          path: broker-command-i0.json
+          if-no-files-found: error
       # Native Windows tests must execute on both Windows targets. Non-Windows
       # skips are expected here and are not installed-wheel product evidence.
       - name: Collect Linux I0 resource experiment (NOT isolation qualification)

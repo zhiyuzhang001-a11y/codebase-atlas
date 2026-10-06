@@ -83,11 +83,12 @@ def own_fixture_command(python: str, scratch: str, *, system_root: str | None = 
     for path in (python, scratch):
         if type(path) is not str or "\0" in path or not Path(path).is_absolute():
             raise ProtocolDenied("invalid-controller-path")
-    environment = ()
+    # Fixed locale avoids CPython inserting a platform-dependent LC_CTYPE.
+    environment = (("LC_ALL", "C"),)
     if system_root is not None:
         if type(system_root) is not str or "\0" in system_root or not Path(system_root).is_absolute():
             raise ProtocolDenied("invalid-controller-os-root")
-        environment = (("SystemRoot", system_root),)
+        environment += (("SystemRoot", system_root),)
     return Command((python, "-I", "-c", FIXED_PROGRAM, FIXTURE), scratch,
                    environment, FIXED_STDIN)
 

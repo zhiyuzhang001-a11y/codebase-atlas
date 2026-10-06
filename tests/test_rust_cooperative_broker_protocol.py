@@ -57,12 +57,13 @@ class CooperativeBrokerProtocolTests(unittest.TestCase):
             command.stdin = b"project-code"
 
     def test_parent_environment_never_enters_command(self):
+        expected = (("LC_ALL", "C"),)
         with patch.dict(os.environ, {"GITHUB_TOKEN": "foreign", "PATH": "foreign",
                                      "RUSTC_WRAPPER": "foreign"}):
-            self.assertEqual(self.command().environment, ())
+            self.assertEqual(self.command().environment, expected)
         root = str(Path.cwd())
         self.assertEqual(protocol.own_fixture_command(sys.executable, root, system_root=root).environment,
-                         (("SystemRoot", root),))
+                         expected + (("SystemRoot", root),))
 
     def test_replay_invalidates_prior_approval(self):
         session = protocol.Session(self.command())
