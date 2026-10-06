@@ -75,34 +75,73 @@ def bootstrap_environment() -> dict[str, str]:
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
+def decode_exec_argv(entry: dict) -> tuple[str, list[str]]:
+    """Decode one native exec without guessing at unsupported encodings."""
+    if entry["syscall"] != "execve":
+        raise ValueError("Unsupported native exec syscall for argv audit")
+    decoder = json.JSONDecoder()
+    try:
+        arguments = entry["argv_raw"].split("execve(", 1)[1]
+        executable, end = decoder.raw_decode(arguments)
+        remainder = arguments[end:].lstrip()
+        if not remainder.startswith(","):
+            raise ValueError("Native exec argv separator missing")
+        vector = remainder[1:].lstrip()
+        argv, end = decoder.raw_decode(vector)
+        if not vector[end:].lstrip().startswith(","):
+            raise ValueError("Native exec argv terminator missing")
+    except (ValueError, IndexError) as error:
+        raise ValueError("Native exec argv cannot be decoded completely") from error
+    if not isinstance(executable, str) or not isinstance(argv, list) or not argv or \
+            not all(isinstance(value, str) for value in argv):
+        raise ValueError("Native exec argv has an unsupported shape")
+    return executable, argv
+
+
+def require_verified_tool_paths(summary: dict, verified_tools: dict) -> list[dict]:
+    """Bind launched Rust tool paths to a retained, production-verified receipt.
+
+    This is not argv/cwd admission, exec interception, or a file-mutation guard.
+    Non-Rust executable roles still require their separate full-tree audit.
+    """
+    roles = {"cargo", "rustc", "rust-analyzer"}
+    if len(verified_tools) != 3 or {v.get("role") for v in verified_tools.values()} != roles:
+        raise ValueError("Verified Rust tool map must contain the exact three roles")
+    for executable, identity in verified_tools.items():
+        path = PurePosixPath(executable)
+        if not path.is_absolute() or path.name != identity["role"] or \
+                str(path) != executable or ".." in path.parts or \
+                not re.fullmatch(r"[0-9a-f]{64}", identity.get("sha256", "")):
+            raise ValueError("Verified Rust tool map has an invalid path/hash")
+    matched = []
+    for entry in summary["execution_results"]:
+        if not entry["launched"]:
+            continue
+        executable, argv = decode_exec_argv(entry)
+        if PurePosixPath(executable).name == "rustup":
+            raise ValueError("Native lifecycle launched forbidden rustup")
+        if PurePosixPath(executable).name not in roles:
+            continue
+        if executable not in verified_tools or argv[0] != executable:
+            raise ValueError("Launched Rust tool path/argv0 differs from verified receipt")
+        matched.append({"pid": entry["pid"], "executable": executable,
+                        **verified_tools[executable]})
+    if {entry["role"] for entry in matched} != roles:
+        raise ValueError("Native trace lacks one or more verified Rust tool roles")
+    return matched
+
+
 def require_offline_metadata(summary: dict) -> int:
     """Check real launched argv, never an environment string or failed attempt.
 
     This narrow gate does not qualify other probes or the complete allow-list.
     Unsupported strace string encodings/syscalls fail closed rather than guessing.
     """
-    decoder = json.JSONDecoder()
     count = 0
     for entry in summary["execution_results"]:
         if not entry["launched"]:
             continue
-        if entry["syscall"] != "execve":
-            raise ValueError("Unsupported native exec syscall for metadata audit")
-        arguments = entry["argv_raw"].split("execve(", 1)[1]
-        try:
-            executable, end = decoder.raw_decode(arguments)
-            remainder = arguments[end:].lstrip()
-            if not remainder.startswith(","):
-                raise ValueError("Native exec argv separator missing")
-            vector = remainder[1:].lstrip()
-            argv, end = decoder.raw_decode(vector)
-            if not vector[end:].lstrip().startswith(","):
-                raise ValueError("Native exec argv terminator missing")
-        except (ValueError, IndexError) as error:
-            raise ValueError("Native exec argv cannot be decoded completely") from error
-        if not isinstance(executable, str) or not isinstance(argv, list) or not argv or \
-                not all(isinstance(value, str) for value in argv):
-            raise ValueError("Native exec argv has an unsupported shape")
+        executable, argv = decode_exec_argv(entry)
         # These are Linux strace paths, regardless of the audit host OS.
         if PurePosixPath(executable).name != "cargo" or argv[1:2] != ["metadata"]:
             continue
@@ -140,7 +179,7 @@ def require_offline_metadata(summary: dict) -> int:
     return count
 
 
-def observe(argv: list[str], *, cwd: Path, directory: Path) -> dict:
+def observe(argv: list[str], *, cwd: Path, directory: Path, verified_tools: dict) -> dict:
     if not sys.platform.startswith("linux"):
         raise ValueError("Linux native observer cannot qualify another OS")
     tracer = shutil.which("strace")
@@ -169,10 +208,13 @@ def observe(argv: list[str], *, cwd: Path, directory: Path) -> dict:
     if actual["exit_records"] == 0:
         raise ValueError("Native trace lacks process exit evidence")
     metadata_count = require_offline_metadata(actual)
+    verified_launches = require_verified_tool_paths(actual, verified_tools)
     return {"status": "observed_no_non_unix_socket_attempts", "positive_control": positive,
             "lifecycle": actual, "environment_names": sorted(environment),
             "initial_cwd": str(cwd.resolve()),
             "offline_metadata_launches": metadata_count,
+            "verified_rust_tool_launches": verified_launches,
             "not_proven": ["independent full argv allow-list audit", "child cwd reconstruction and admission",
-                           "receipt-bound executable identity", "network denial", "other OS native tracing",
+                           "observed executable bytes/immutability", "non-Rust executable role admission",
+                           "network denial", "other OS native tracing",
                            "installed-wheel", "resource gates"]}

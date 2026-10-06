@@ -70,7 +70,8 @@ def qualify(report: dict, base: Path, scanner: Path, *, allow_network: bool, tra
             if trace_directory is not None:
                 report["linux_native_observation"] = observe(
                     [sys.executable, str(Path(__file__).with_name("rust_lifecycle_integration.py")), *lifecycle_args],
-                    cwd=Path(__file__).resolve().parents[1], directory=trace_directory)
+                    cwd=Path(__file__).resolve().parents[1], directory=trace_directory,
+                    verified_tools=report["verified_executable_map"])
                 summary = json.loads((work / "summary.json").read_text(encoding="utf-8"))
                 report["lifecycle_summary"] = summary
             else:

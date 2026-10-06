@@ -5,10 +5,14 @@ import unittest
 from unittest.mock import patch
 import subprocess
 
-from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata
+from scripts.rust_linux_trace import bootstrap_environment, trace_summary, observe, require_offline_metadata, require_verified_tool_paths
 
 
 class LinuxTraceTests(unittest.TestCase):
+    def tools(self):
+        return {"/" + role: {"role": role, "sha256": "a" * 64}
+                for role in ("cargo", "rustc", "rust-analyzer")}
+
     def test_native_observer_runs_positive_control_before_lifecycle(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
@@ -21,6 +25,8 @@ class LinuxTraceTests(unittest.TestCase):
                     text += '2 execve("/python", ["python", "-c", "pass"], []) = 0\n2 socket(AF_INET, SOCK_STREAM, 0) = 3\n'
                 else:
                     text += '2 execve("/cargo", ["/cargo", "metadata", "--offline", "--no-deps", "--format-version", "1", "--manifest-path", "/project/Cargo.toml"], []) = 0\n'
+                    text += '3 execve("/rustc", ["/rustc", "--version"], []) = 0\n'
+                    text += '4 execve("/rust-analyzer", ["/rust-analyzer"], []) = 0\n'
                 path.write_text(text)
                 self.assertTrue(kwargs["capture_output"])
                 self.assertNotIn("GITHUB_TOKEN", kwargs["env"])
@@ -28,7 +34,7 @@ class LinuxTraceTests(unittest.TestCase):
             with patch("scripts.rust_linux_trace.sys.platform", "linux"), \
                     patch("scripts.rust_linux_trace.shutil.which", return_value="/usr/bin/strace"), \
                     patch("scripts.rust_linux_trace.run_owned", side_effect=run):
-                report = observe(["/python", "lifecycle.py"], cwd=base, directory=base / "raw")
+                report = observe(["/python", "lifecycle.py"], cwd=base, directory=base / "raw", verified_tools=self.tools())
             self.assertEqual(len(calls), 2)
             self.assertIn("-f", calls[0])
             self.assertIn("--seccomp-bpf", calls[0])
@@ -37,6 +43,7 @@ class LinuxTraceTests(unittest.TestCase):
             self.assertIn("child cwd reconstruction and admission", report["not_proven"])
             self.assertEqual(report["status"], "observed_no_non_unix_socket_attempts")
             self.assertEqual(report["offline_metadata_launches"], 1)
+            self.assertEqual(len(report["verified_rust_tool_launches"]), 3)
             self.assertTrue((base / "raw/lifecycle.trace").is_file())
 
     def summary(self, text):
@@ -124,6 +131,27 @@ class LinuxTraceTests(unittest.TestCase):
         self.assertFalse(PureWindowsPath("/tools/cargo").is_absolute())
         with patch("scripts.rust_linux_trace.Path", PureWindowsPath):
             self.assertEqual(require_offline_metadata(summary), 1)
+
+    def test_verified_rust_paths_bind_every_role_and_reject_foreign_launches(self):
+        text = ''.join(f'{pid} execve({json.dumps(path)}, [{json.dumps(path)}], []) = 0\n'
+                       for pid, path in enumerate(self.tools(), 1))
+        matched = require_verified_tool_paths(self.summary(text), self.tools())
+        self.assertEqual({x["role"] for x in matched}, {"cargo", "rustc", "rust-analyzer"})
+        negatives = [text.replace('"/cargo"', '"/foreign/cargo"'),
+                     text.replace('["/cargo"]', '["cargo"]'),
+                     text.replace('"/rustc"', '"/foreign/../rustc"'),
+                     text + '4 execve("/rustup", ["/rustup"], []) = 0\n',
+                     text.replace('3 execve("/rust-analyzer", ["/rust-analyzer"], []) = 0\n', ''),
+                     text + '4 execveat(3, "cargo", ["cargo"], [], 0) = 0\n']
+        for value in negatives:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                require_verified_tool_paths(self.summary(value), self.tools())
+        failed = text + '4 execve("/rustup", ["/rustup"], []) = -1 ENOENT (No such file or directory)\n'
+        self.assertEqual(len(require_verified_tool_paths(self.summary(failed), self.tools())), 3)
+        for tools in ({}, {**self.tools(), "/rustup": {"role": "rustup", "sha256": "a" * 64}},
+                      {**self.tools(), "/cargo": {"role": "cargo", "sha256": "bad"}}):
+            with self.subTest(tools=tools), self.assertRaises(ValueError):
+                require_verified_tool_paths(self.summary(text), tools)
 
     def test_missing_truncated_detached_and_io_uring_evidence_fail(self):
         for text in ('', 'socket(AF_INET, SOCK_STREAM, 0) = 3\n',
