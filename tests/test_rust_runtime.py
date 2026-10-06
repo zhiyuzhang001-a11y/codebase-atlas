@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from codebase_atlas.rust_runtime import RustRuntimeError, VerifiedRustTool, rust_runtime_environment
 
@@ -97,6 +98,54 @@ class RustRuntimePreflightTests(unittest.TestCase):
         path.write_text('[toolchain]\nchannel="1.98.0"\n')
         self.check()
 
+    def test_nested_workspace_configuration_is_checked_before_any_probe(self):
+        member = self.repo / "ignored-or-untracked" / "member"
+        member.mkdir(parents=True)
+        vectors = {
+            ".cargo/config": '[build]\nrustc-wrapper="sentinel"\n',
+            ".cargo/config.toml": '[env]\nRUSTC_WRAPPER="sentinel"\n',
+            "rust-toolchain": "nightly\n",
+            "rust-toolchain.toml": '[toolchain]\nchannel="nightly"\n',
+            "rust-analyzer.toml": '[cargo.buildScripts]\nenable=true\n',
+        }
+        for name, content in vectors.items():
+            with self.subTest(name=name):
+                config = member / name
+                config.parent.mkdir(parents=True, exist_ok=True)
+                config.write_text(content)
+                before = config.read_bytes()
+                with self.assertRaises(RustRuntimeError):
+                    self.check()
+                self.assertEqual(config.read_bytes(), before)
+                for tool in self.tools:
+                    self.assertEqual(tool.path.read_bytes(), b"sentinel: do not execute")
+                config.unlink()
+        (member / ".cargo/config.toml").write_text('[net]\noffline=true\n')
+        (member / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.98.0"\n')
+        self.check()
+
+    def test_project_discovery_is_bounded_and_does_not_ignore_configuration(self):
+        (self.repo / "first").mkdir()
+        (self.repo / "second").mkdir()
+        with patch("codebase_atlas.rust_runtime.MAX_PROJECT_ENTRIES", 1):
+            with self.assertRaisesRegex(RustRuntimeError, "discovery limit"):
+                self.check()
+        self.assertEqual({p.name for p in self.repo.iterdir()}, {"first", "second"})
+
+    def test_directory_aliases_and_ancestor_config_aliases_require_review(self):
+        foreign = self.root / "foreign"
+        foreign.mkdir()
+        (foreign / "config.toml").write_text("")
+        alias = self.repo / "member"
+        alias.symlink_to(foreign, target_is_directory=True)
+        with self.assertRaisesRegex(RustRuntimeError, "directory alias"):
+            self.check()
+        alias.unlink()
+        (self.root / ".cargo").symlink_to(foreign, target_is_directory=True)
+        with self.assertRaisesRegex(RustRuntimeError, "configuration is unsafe"):
+            self.check()
+        self.assertEqual((foreign / "config.toml").read_bytes(), b"")
+
     def test_server_config_cannot_reenable_project_execution(self):
         path = self.repo / "rust-analyzer.toml"
         path.write_text('[cargo.buildScripts]\nenable=true\n')
@@ -128,6 +177,18 @@ class RustRuntimePreflightTests(unittest.TestCase):
         (home / "settings.toml").write_text('[overrides]\n"' + root + '"="stable"\n')
         with self.assertRaises(RustRuntimeError):
             self.check()
+
+    def test_nested_member_rustup_override_requires_review(self):
+        member = self.repo / "member"
+        member.mkdir()
+        home = self.root / "rustup-home"
+        home.mkdir()
+        config = home / "settings.toml"
+        config.write_text('[overrides]\n' + json.dumps(str(member)) + '="stable"\n')
+        before = config.read_bytes()
+        with self.assertRaisesRegex(RustRuntimeError, "repository override"):
+            self.check()
+        self.assertEqual(config.read_bytes(), before)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from typing import Mapping
 
 PINNED_TOOLCHAIN = "1.98.0"
 MAX_CONFIG_BYTES = 1024 * 1024
+MAX_PROJECT_ENTRIES = 100_000
 
 
 class RustRuntimeError(ValueError):
@@ -65,16 +66,51 @@ class RustToolchainRuntime:
 def _read_config(path: Path) -> dict | None:
     try:
         metadata = os.lstat(path)
+        canonical = path.resolve() == path.absolute()
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise RustRuntimeError("Rust configuration is inaccessible") from exc
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_CONFIG_BYTES:
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_CONFIG_BYTES
+            or not canonical):
         raise RustRuntimeError("Rust configuration is unsafe or oversized")
     try:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise RustRuntimeError("Rust configuration cannot be safely parsed") from exc
+
+
+def _project_configuration_directories(repository: Path) -> list[Path]:
+    """Read-only, bounded discovery; do not silently skip nested Cargo contexts.
+
+    Analyzer probes can change cwd to a workspace member. Checking only the
+    initial repository cwd does not cover that member's configuration. No
+    ignore rules are used: ignored/untracked configuration still affects Cargo.
+    Directory aliases need reviewed preparation rather than following them
+    outside this repository. This is preflight, not an immutable OS sandbox.
+    """
+    pending = [repository]
+    directories = []
+    entries = 0
+    while pending:
+        directory = pending.pop()
+        directories.append(directory)
+        try:
+            # resolve also catches native Windows junctions, not just symlinks.
+            if directory.resolve() != directory.absolute():
+                raise RustRuntimeError("Rust project directory alias requires reviewed preparation")
+            with os.scandir(directory) as children:
+                for child in children:
+                    entries += 1
+                    if entries > MAX_PROJECT_ENTRIES:
+                        raise RustRuntimeError("Rust project configuration discovery limit requires review")
+                    if child.is_symlink() and child.is_dir():
+                        raise RustRuntimeError("Rust project directory alias requires reviewed preparation")
+                    if child.is_dir(follow_symlinks=False):
+                        pending.append(Path(child.path))
+        except OSError as exc:
+            raise RustRuntimeError("Rust project configuration discovery is inaccessible") from exc
+    return directories
 
 
 def _reject_unverified_tool_proxies(paths: list[Path], cargo_home: Path) -> None:
@@ -141,7 +177,7 @@ No files, toolchains or global environment variables are changed.
 
     config_paths = [cargo_home / "config", cargo_home / "config.toml"]
     analyzer_config_paths = []
-    for directory in (repo, *repo.parents):
+    for directory in (*_project_configuration_directories(repo), *repo.parents):
         config_paths.extend((directory / ".cargo/config", directory / ".cargo/config.toml"))
         analyzer_config_paths.append(directory / "rust-analyzer.toml")
         for name in ("rust-toolchain", "rust-toolchain.toml"):
@@ -149,7 +185,9 @@ No files, toolchains or global environment variables are changed.
             if toolchain_path.exists() or toolchain_path.is_symlink():
                 if name == "rust-toolchain":
                     try:
-                        if not stat.S_ISREG(os.lstat(toolchain_path).st_mode) or toolchain_path.stat().st_size > MAX_CONFIG_BYTES:
+                        if (not stat.S_ISREG(os.lstat(toolchain_path).st_mode)
+                                or toolchain_path.stat().st_size > MAX_CONFIG_BYTES
+                                or toolchain_path.resolve() != toolchain_path.absolute()):
                             raise RustRuntimeError("Rust toolchain configuration is unsafe")
                         channel = toolchain_path.read_text(encoding="utf-8").strip()
                     except (OSError, UnicodeError) as exc:
@@ -191,7 +229,7 @@ No files, toolchains or global environment variables are changed.
             if not isinstance(directory, str):
                 raise RustRuntimeError("Rustup override path is invalid")
             target = Path(directory).resolve()
-            if target == repo or target in repo.parents:
+            if target == repo or target in repo.parents or repo in target.parents:
                 raise RustRuntimeError("Rustup repository override requires reviewed preparation")
 
     # No arbitrary inherited PATH, wrapper, preload or registry variables.
