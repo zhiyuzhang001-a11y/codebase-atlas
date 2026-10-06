@@ -170,6 +170,56 @@ class RustAnalyzerProviderTests(unittest.TestCase):
                 runtime=runtime, arguments=(str(self.analyzer),),
             )
 
+    def test_active_runtime_rejection_stops_session_before_query_request(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            process = provider._process
+            provider.runtime = Mock()
+            provider.runtime.environment.side_effect = RustRuntimeError("changed unsafe config")
+            with patch.object(provider, "_request") as request:
+                with self.assertRaisesRegex(RustRuntimeError, "changed unsafe config"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17)
+                request.assert_not_called()
+            self.assertFalse(provider.running)
+            self.assertIsNotNone(process.poll())
+
+    def test_runtime_change_during_response_discards_nodes_and_stops_session(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            process = provider._process
+            provider.runtime = Mock()
+            provider.runtime.environment.side_effect = [{}, {}, RustRuntimeError("changed during request")]
+            location = {"uri": (self.repository / "src/lib.rs").as_uri(),
+                        "range": {"start": {"line": 0, "character": 7},
+                                  "end": {"line": 0, "character": 10}}}
+            with patch.object(provider, "_request", return_value=[location]):
+                with self.assertRaisesRegex(RustRuntimeError, "changed during request"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17)
+            self.assertFalse(provider.running)
+            self.assertIsNotNone(process.poll())
+
+    def test_active_runtime_validation_consumes_existing_query_deadline(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            elapsed = [0.0]
+            provider.runtime = Mock()
+            def validation(_repository):
+                elapsed[0] += .2
+                return {}
+            provider.runtime.environment.side_effect = validation
+            with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                       side_effect=lambda: elapsed[0]), patch.object(provider, "_open") as opened:
+                with self.assertRaisesRegex(TimeoutError, "runtime validation timed out"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17, timeout_ms=50)
+                opened.assert_not_called()
+            self.assertFalse(provider.running)
+
     def test_result_uri_round_trips_native_path(self) -> None:
         provider = self.provider()
         self.assertEqual(

@@ -21,7 +21,7 @@ from urllib.request import url2pathname
 
 from ..contracts import EvidenceProvenance, Node, SourceRange, repository_path
 from ..index_state import repository_snapshot
-from ..rust_runtime import RustToolchainRuntime
+from ..rust_runtime import RustToolchainRuntime, RustRuntimeError
 from ..rust_owned_command import run_owned
 from ..rust_scope import (
     RustScopeError,
@@ -617,6 +617,20 @@ class RustAnalyzerProvider:
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
             raise ValueError("timeout_ms must be between 1 and 300000")
         deadline = monotonic() + min(timeout_ms / 1000.0, self.readiness_seconds)
+        def check_runtime() -> None:
+            # Startup validation alone cannot protect later requests on a live
+            # analyzer. Recheck at request/result boundaries; this is NOT an
+            # immutable observation window or interception of native children.
+            if self.runtime is not None:
+                try:
+                    self.runtime.environment(self.repository)
+                except RustRuntimeError:
+                    self._terminate()
+                    raise
+            if monotonic() >= deadline:
+                self._terminate()
+                raise TimeoutError("rust-analyzer runtime validation timed out")
+        check_runtime()
         self._assert_fresh()
         source = self._open(source_path)
         lines = source.splitlines()
@@ -649,9 +663,11 @@ class RustAnalyzerProvider:
                 self._terminate()
                 raise TimeoutError("rust-analyzer readiness retry timed out")
             try:
-                nodes = self._nodes(
-                    self._request(method, params, remaining), query_type, symbol
-                )
+                check_runtime()
+                remaining = deadline - monotonic()
+                response = self._request(method, params, remaining)
+                check_runtime()
+                nodes = self._nodes(response, query_type, symbol)
                 if nodes or self._semantic_ready:
                     self._semantic_ready = True
                     return nodes
