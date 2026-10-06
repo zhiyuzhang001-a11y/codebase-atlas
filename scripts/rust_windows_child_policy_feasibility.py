@@ -29,6 +29,28 @@ def supported_machine() -> bool:
     return os.name == "nt"
 
 
+def windows_directory() -> str:
+    """Read the OS directory through the native API, not parent environment."""
+    if not supported_machine():
+        raise ValueError("Native Windows required")
+    native = ctypes.WinDLL("kernel32.dll", use_last_error=True, winmode=0x800)
+    function = native.GetWindowsDirectoryW
+    function.argtypes, function.restype = [W.LPWSTR, W.UINT], W.UINT
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = function(buffer, len(buffer))
+    if not 0 < length < len(buffer):
+        raise RuntimeError("Windows directory unavailable or truncated")
+    return buffer.value
+
+
+def controller_environment() -> dict[str, str]:
+    # Supply a minimal OS loader environment for CREATE_NO_WINDOW fixtures.
+    # Whether it resolves the observed DLL-init failure requires native evidence.
+    # Both controls receive the same root; never copy PATH/tokens/wrappers.
+    return {"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            "SystemRoot": windows_directory()}
+
+
 def fixture(scratch: Path, restricted: bool) -> dict:
     """Same executable/identity/scratch and payload for both controls."""
     if not supported_machine():
@@ -158,7 +180,8 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
             if output.is_file():
                 detail = output.read_text(encoding="utf-8")[:8192]
                 raise RuntimeError(f"Fixture failed, exit code {code.value}: {detail}")
-            raise RuntimeError(f"Fixture failed, exit code {code.value}")
+            raise RuntimeError(f"Fixture failed, restricted={restricted}, "
+                               f"exit code {code.value} (0x{code.value:08X})")
         evidence = json.loads(output.read_text(encoding="utf-8"))
         if evidence.get("process_id") != process.pid or evidence.get("restricted") != restricted:
             raise ValueError("Fixture identity mismatch")
@@ -233,7 +256,7 @@ def main(argv=None) -> int:
                 with tempfile.TemporaryDirectory(prefix="atlas-win-policy-i0-") as temporary:
                     result = run_owned([sys.executable, str(Path(__file__).resolve()),
                                         "--controller", temporary], cwd=temporary,
-                                       env={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+                                       env=controller_environment(),
                                        timeout=20, capture_output=True, text=True, check=True)
                     evidence = json.loads(result.stdout)
                     if evidence.get("status") != "deny_all_probe_passed":

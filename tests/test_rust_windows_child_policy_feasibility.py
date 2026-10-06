@@ -8,6 +8,19 @@ from scripts import rust_windows_child_policy_feasibility as probe
 
 
 class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
+    def setUp(self):
+        directory = patch.object(probe, "windows_directory", return_value="C:\\Windows")
+        directory.start()
+        self.addCleanup(directory.stop)
+
+    def test_environment_is_narrow_and_uses_os_root(self):
+        with patch.dict(probe.os.environ, {"SystemRoot": "foreign", "PATH": "foreign",
+                                          "RUSTC_WRAPPER": "foreign", "GITHUB_TOKEN": "foreign"}):
+            environment = probe.controller_environment()
+        self.assertEqual(set(environment), {"PYTHONPATH", "SystemRoot"})
+        self.assertEqual(environment["SystemRoot"], "C:\\Windows")
+        probe.windows_directory.assert_called_once()
+
     def test_restricted_fixture_requires_exact_native_denial(self):
         denied = OSError("blocked")
         denied.winerror = 367
