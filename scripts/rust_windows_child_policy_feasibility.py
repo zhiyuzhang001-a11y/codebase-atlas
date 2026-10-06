@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from time import monotonic, sleep
 
 from codebase_atlas.rust_owned_command import run_owned
 try:
@@ -26,6 +27,18 @@ except ModuleNotFoundError:
 
 
 FIXTURE_CREATION_FLAGS = 0x80000 | 0x8  # Extended startup + DETACHED_PROCESS.
+
+
+def await_start_barrier(scratch: Path, timeout: float = 5) -> None:
+    """Owned fixture only: do not execute the payload before native membership check."""
+    deadline = monotonic() + timeout
+    barrier = scratch / "membership-checked"
+    while not barrier.exists():
+        if monotonic() >= deadline:
+            raise TimeoutError("Exact Job membership barrier was not released")
+        sleep(0.01)
+    if barrier.read_bytes() != b"exact-job-checked":
+        raise ValueError("Invalid owned start barrier")
 
 
 def supported_machine() -> bool:
@@ -133,6 +146,23 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
     exit_code = api("GetExitCodeProcess", [W.HANDLE, ctypes.POINTER(W.DWORD)])
     terminate = api("TerminateProcess", [W.HANDLE, W.UINT])
     close = api("CloseHandle", [W.HANDLE])
+    create_job = api("CreateJobObjectW", [pointer, W.LPCWSTR], W.HANDLE)
+    set_job = api("SetInformationJobObject", [W.HANDLE, ctypes.c_int, pointer, W.DWORD])
+    kill_job = api("TerminateJobObject", [W.HANDLE, W.UINT])
+
+    class BasicLimit(ctypes.Structure):
+        _fields_ = [("process_time", ctypes.c_int64), ("job_time", ctypes.c_int64),
+                    ("flags", W.DWORD), ("minimum", size), ("maximum", size),
+                    ("active_limit", W.DWORD), ("affinity", size), ("priority", W.DWORD),
+                    ("scheduling", W.DWORD)]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "read_ops", "write_ops", "other_ops", "read_bytes", "write_bytes", "other_bytes")]
+
+    class ExtendedLimit(ctypes.Structure):
+        _fields_ = [("basic", BasicLimit), ("io", IoCounters), ("process_memory", size),
+                    ("job_memory", size), ("peak_process", size), ("peak_job", size)]
 
     class Startup(ctypes.Structure):
         _fields_ = [("cb", W.DWORD), ("reserved", W.LPWSTR), ("desktop", W.LPWSTR),
@@ -150,14 +180,27 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
                     ("pid", W.DWORD), ("tid", W.DWORD)]
 
     length = size()
-    initialize(None, 1, 0, ctypes.byref(length))
+    initialize(None, 2, 0, ctypes.byref(length))
     if not 0 < length.value <= 65536:
         raise RuntimeError("Invalid attribute buffer size")
     buffer = ctypes.create_string_buffer(length.value)
-    if not initialize(buffer, 1, 0, ctypes.byref(length)):
+    if not initialize(buffer, 2, 0, ctypes.byref(length)):
         raise ctypes.WinError(ctypes.get_last_error())
     process = Process()
+    owned_job = None
     try:
+        # A private unnamed nested Job provides an exact handle, not "any Job".
+        # No inherited Job handle and no breakaway; outer run_owned remains owner.
+        owned_job = create_job(None, None)
+        if not owned_job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limit = ExtendedLimit()
+        limit.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE only.
+        if not set_job(owned_job, 9, ctypes.byref(limit), ctypes.sizeof(limit)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        jobs = (W.HANDLE * 1)(owned_job)
+        if not update(buffer, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
         policy = W.DWORD(1 if restricted else 0)
         # WinSDK WinBase.h: input attribute number14 (0x20000 |14), DWORD policy.
         if not update(buffer, 0, 0x2000E, ctypes.byref(policy), ctypes.sizeof(policy), None, None):
@@ -174,6 +217,13 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
         if not create(args[0], command, None, None, False, FIXTURE_CREATION_FLAGS,
                       None, str(scratch), ctypes.byref(startup), ctypes.byref(process)):
             raise ctypes.WinError(ctypes.get_last_error())
+        exact_member = W.BOOL()
+        if not in_job(process.process, owned_job, ctypes.byref(exact_member)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not exact_member.value:
+            raise RuntimeError("Fixture does not belong to the exact owned Job")
+        with (scratch / "membership-checked").open("xb") as barrier:
+            barrier.write(b"exact-job-checked")
         if wait(process.process, 8000) != 0:
             raise TimeoutError("Fixture process did not finish")
         code = W.DWORD()
@@ -189,14 +239,20 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
         if evidence.get("process_id") != process.pid or evidence.get("restricted") != restricted:
             raise ValueError("Fixture identity mismatch")
         return {**evidence, "policy_at_creation": policy.value, "fixture_reaped": True,
-                "creation_flags": FIXTURE_CREATION_FLAGS}
+                "creation_flags": FIXTURE_CREATION_FLAGS,
+                "exact_owned_job_member_before_payload": True,
+                "job_assigned_at_creation": True, "job_handle_inherited": False}
     finally:
+        if owned_job:
+            kill_job(owned_job, 1)
         if process.process:
             terminate(process.process, 1)  # Only our handle; outer Job owns descendants.
             wait(process.process, 1000)
             close(process.process)
         if process.thread:
             close(process.thread)
+        if owned_job:
+            close(owned_job)
         delete(buffer)
 
 
@@ -232,6 +288,7 @@ def main(argv=None) -> int:
             if not (args.restricted or args.unrestricted):
                 parser.error("Fixture policy required")
             try:
+                await_start_barrier(args.fixture.resolve(strict=True))
                 evidence = fixture(args.fixture.resolve(strict=True), args.restricted)
             except Exception as exc:
                 # No inherited stderr handle: retain the owned fixture failure

@@ -26,6 +26,20 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
         self.assertFalse(probe.FIXTURE_CREATION_FLAGS & 0x01000000)
         self.assertFalse(probe.FIXTURE_CREATION_FLAGS & 0x08000000)
 
+    def test_barrier_requires_exact_checked_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            (scratch / "membership-checked").write_bytes(b"exact-job-checked")
+            probe.await_start_barrier(scratch)
+            (scratch / "membership-checked").write_bytes(b"any-job")
+            with self.assertRaises(ValueError):
+                probe.await_start_barrier(scratch)
+
+    def test_unreleased_membership_barrier_times_out(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(TimeoutError):
+                probe.await_start_barrier(Path(temporary), timeout=0)
+
     def test_controller_retains_baseline_when_restricted_launch_fails(self):
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(probe, "launch_fixture", side_effect=[
