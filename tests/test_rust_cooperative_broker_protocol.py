@@ -3,9 +3,14 @@ import json
 import os
 from pathlib import Path
 import sys
+import signal
+import subprocess
+import tempfile
+import threading
+from time import monotonic
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts import rust_cooperative_broker_protocol as protocol
 
@@ -138,3 +143,168 @@ class CooperativeBrokerProtocolTests(unittest.TestCase):
                 protocol.own_fixture_command(sys.executable, value)
         with self.assertRaises(protocol.ProtocolDenied):
             protocol.Session(replace(self.command(), environment=[("PATH", "foreign")]))
+
+    def claimed_session(self, command=None):
+        command = command or self.command()
+        session = protocol.Session(command)
+        session.claim(session.approve(frame()))
+        return session, command
+
+    def test_claim_to_launch_barrier_disconnect_prevents_create(self):
+        session, command = self.claimed_session()
+        at_barrier, release = threading.Event(), threading.Event()
+        create, cleanup = Mock(), Mock()
+        result = []
+
+        def worker():
+            at_barrier.set()
+            if not release.wait(2):
+                result.append("barrier-timeout")
+                return
+            try:
+                session.launch(command, create, cleanup)
+            except protocol.ProtocolDenied:
+                result.append("denied")
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            self.assertTrue(at_barrier.wait(2))
+            session.disconnect()
+        finally:
+            release.set()
+            thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, ["denied"])
+        create.assert_not_called()
+        cleanup.assert_not_called()
+
+    def test_live_replay_reclaims_resource_and_cleanup_failure_retains_ownership(self):
+        session, command = self.claimed_session()
+        resource = object()
+        cleanup = Mock(side_effect=[RuntimeError("cleanup failed"), None])
+        self.assertIs(session.launch(command, lambda _: resource, cleanup), resource)
+        with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+            session.disconnect()
+        session.disconnect()
+        session.disconnect()
+        self.assertEqual(cleanup.call_count, 2)
+        with self.assertRaises(protocol.ProtocolDenied):
+            session.launch(command, Mock(), cleanup)
+        session, command = self.claimed_session()
+        cleanup = Mock()
+        session.launch(command, lambda _: resource, cleanup)
+        with self.assertRaises(protocol.ProtocolDenied):
+            session.approve(frame())
+        cleanup.assert_called_once_with(resource)
+
+    def test_disconnect_ack_waits_for_starting_creation_and_cleanup(self):
+        session, command = self.claimed_session()
+        creating, release, cancelling, acknowledged = [threading.Event() for _ in range(4)]
+        resource, outcomes = object(), []
+        cleanup = Mock()
+
+        def create(_):
+            creating.set()
+            if not release.wait(2):
+                raise TimeoutError("creation test barrier")
+            return resource
+
+        def launch():
+            try:
+                session.launch(command, create, cleanup)
+                outcomes.append("created")
+            except BaseException as exc:
+                outcomes.append(type(exc).__name__)
+
+        def disconnect():
+            cancelling.set()
+            session.disconnect()
+            acknowledged.set()
+
+        starter, canceller = threading.Thread(target=launch), threading.Thread(target=disconnect)
+        starter.start()
+        try:
+            self.assertTrue(creating.wait(2))
+            canceller.start()
+            self.assertTrue(cancelling.wait(2))
+            self.assertFalse(acknowledged.is_set())
+        finally:
+            release.set()
+            starter.join(2)
+            if canceller.ident is not None:
+                canceller.join(2)
+        self.assertFalse(starter.is_alive())
+        self.assertFalse(canceller.is_alive())
+        self.assertEqual(outcomes, ["created"])
+        self.assertTrue(acknowledged.is_set())
+        cleanup.assert_called_once_with(resource)
+
+    def test_creation_errors_and_invalid_callbacks_fail_closed(self):
+        for create, cleanup, error in (
+                (Mock(side_effect=RuntimeError("own spawn failure")), Mock(), RuntimeError),
+                (Mock(return_value=None), Mock(), protocol.ProtocolDenied),
+                (None, Mock(), protocol.ProtocolDenied),
+                (Mock(), None, protocol.ProtocolDenied)):
+            with self.subTest(create=create):
+                session, command = self.claimed_session()
+                with self.assertRaises(error):
+                    session.launch(command, create, cleanup)
+                retry = Mock()
+                with self.assertRaises(protocol.ProtocolDenied):
+                    session.launch(command, retry, Mock())
+                retry.assert_not_called()
+                session.disconnect()
+        session, command = self.claimed_session()
+        cleanup, retry, resource = Mock(), Mock(), object()
+        session.launch(command, lambda _: resource, cleanup)
+        with self.assertRaises(protocol.ProtocolDenied):
+            session.launch(command, retry, cleanup)
+        retry.assert_not_called()
+        cleanup.assert_called_once_with(resource)
+
+    def test_native_started_child_disconnect_reaps_owned_process(self):
+        # Native owned child ONLY, not restricted requester/IPC or full I0 proof.
+        from scripts.rust_windows_child_policy_feasibility import windows_directory
+        with tempfile.TemporaryDirectory(prefix="atlas-gate-own-") as scratch:
+            command = protocol.own_fixture_command(str(Path(sys.executable).resolve()),
+                str(Path(scratch).resolve()),
+                system_root=windows_directory() if os.name == "nt" else None)
+            session, command = self.claimed_session(command)
+
+            def create(fixed):
+                if os.name == "nt":
+                    from codebase_atlas.windows_owned_process import WindowsOwnedProcess
+                    return WindowsOwnedProcess(fixed.argv, cwd=fixed.cwd, env=dict(fixed.environment))
+                return subprocess.Popen(fixed.argv, cwd=fixed.cwd, env=dict(fixed.environment),
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    close_fds=True, start_new_session=True)
+
+            def cleanup(process):
+                try:
+                    if os.name == "nt":
+                        # Cache actual exit while the retained native handle is
+                        # still valid; close_owned_job closes that handle.
+                        deadline = monotonic() + 5
+                        try:
+                            process.terminate()
+                            process.wait(timeout=max(0, deadline - monotonic()))
+                        finally:
+                            process.close_owned_job(max(0, deadline - monotonic()))
+                    else:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait(timeout=5)
+                finally:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        stream.close()
+
+            process = session.launch(command, create, cleanup)
+            try:
+                self.assertIsNone(process.poll())  # Fixture waits for controller stdin EOF.
+                session.disconnect()
+                self.assertIsNotNone(process.poll())
+            finally:
+                session.disconnect()

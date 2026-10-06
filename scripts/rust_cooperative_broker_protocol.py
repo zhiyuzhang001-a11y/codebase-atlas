@@ -96,8 +96,11 @@ def own_fixture_command(python: str, scratch: str, *, system_root: str | None = 
 class Session:
     """Single-use protocol state, no execution authority or native handles.
 
-    claim() is NOT atomic with an OS launch; that unresolved boundary must be
-    tested by the native harness, not claimed from this state-machine test.
+    claim() alone is NOT launch authority. launch() serializes trusted native
+    creation with acknowledged disconnect; disconnect arriving after creation
+    starts waits for creation and owned cleanup. Callbacks must not reenter this
+    session and must bound their own work. This is NOT native peer authentication,
+    an interruptible creation deadline or a restriction on requester OS rights.
     """
     def __init__(self, command: Command):
         if (type(command) is not Command or type(command.argv) is not tuple
@@ -111,11 +114,25 @@ class Session:
         self._command = command
         self._state = "open"
         self._lock = Lock()
+        self._resource = None
+        self._cleanup = None
+
+    def _close_locked(self):
+        self._state = "closed"
+        if self._resource is not None:
+            # Retain ownership if cleanup fails, so a later disconnect can retry.
+            try:
+                self._cleanup(self._resource)
+            except BaseException:
+                self._state = "cleanup-failed"
+                raise
+            self._resource = None
+            self._cleanup = None
 
     def approve(self, frame: bytes) -> Command:
         with self._lock:
             if self._state != "open":
-                self._state = "closed"
+                self._close_locked()
                 raise ProtocolDenied("replayed-or-disconnected")
             try:
                 decode_request(frame)
@@ -128,11 +145,36 @@ class Session:
     def claim(self, command: Command) -> Command:
         with self._lock:
             if self._state != "approved" or command is not self._command:
-                self._state = "closed"
+                self._close_locked()
                 raise ProtocolDenied("unapproved-or-disconnected")
             self._state = "consumed"
             return self._command
 
+    def launch(self, command: Command, create, cleanup):
+        """Controller-only callbacks; no callable/path comes from decoded IPC.
+
+        Cancellation linearizes when disconnect acquires this lock, not when a
+        remote peer closes a pipe (there is no peer/pipe monitor here yet). If
+        create raises it is responsible for reclaiming partial native resources.
+        The returned resource remains controller-owned, never requester-owned.
+        """
+        with self._lock:
+            if (self._state != "consumed" or command is not self._command
+                    or not callable(create) or not callable(cleanup)):
+                self._close_locked()
+                raise ProtocolDenied("launch-unapproved-or-disconnected")
+            self._state = "starting"
+            try:
+                resource = create(self._command)
+                if resource is None:
+                    raise ProtocolDenied("native-resource-missing")
+            except BaseException:
+                self._state = "closed"
+                raise
+            self._resource, self._cleanup = resource, cleanup
+            self._state = "live"
+            return resource
+
     def disconnect(self) -> None:
         with self._lock:
-            self._state = "closed"
+            self._close_locked()
