@@ -7,7 +7,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from codebase_atlas.rust_runtime import RustRuntimeError, VerifiedRustTool, rust_runtime_environment
+from codebase_atlas.rust_runtime import (
+    RustRuntimeError, VerifiedRustTool, rust_runtime_environment, SYSROOT_LIBRARY,
+)
+
+OFFICIAL_VENDOR_CONFIG = ('[source.crates-io]\nreplace-with = "vendored-sources"\n\n'
+                          '[source.vendored-sources]\ndirectory = "vendor"\n')
 
 
 class RustRuntimePreflightTests(unittest.TestCase):
@@ -53,22 +58,32 @@ class RustRuntimePreflightTests(unittest.TestCase):
         self.tools = tools
         source = root / "lib/rustlib/src/rust"
         (source / "library/core").mkdir(parents=True)
+        (source / "library/vendor").mkdir()
+        (source / "library/.cargo").mkdir()
+        (source / "library/.cargo/config.toml").write_bytes(OFFICIAL_VENDOR_CONFIG.encode())
+        manifest = b'[workspace]\nmembers=[]\n'
+        (source / "library/Cargo.toml").write_bytes(manifest)
+        patcher = patch.dict("codebase_atlas.rust_runtime.SYSROOT_FILE_SHA256", {
+            SYSROOT_LIBRARY + "/Cargo.toml": hashlib.sha256(manifest).hexdigest(),
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return root, source
 
     def test_verified_sysroot_and_nested_source_config_are_checked_without_execution(self):
         root, source = self.prepare_sysroot()
         self.check(toolchain_root=root)
-        for directory in (source / "library/core", source, root / "lib/rustlib", root):
+        for directory in (source / "library", source, root / "lib/rustlib", root):
             with self.subTest(directory=directory):
-                config = directory / ".cargo/config.toml"
+                config = directory / ".cargo/config"
                 config.parent.mkdir(parents=True, exist_ok=True)
                 config.write_text('[build]\nrustc-wrapper="sysroot-execution-trap"\n')
                 before = config.read_bytes()
-                with self.assertRaisesRegex(RustRuntimeError, "Cargo configuration"):
+                with self.assertRaises(RustRuntimeError):
                     self.check(toolchain_root=root)
                 self.assertEqual(config.read_bytes(), before)
                 config.unlink()
-        config = source / "library/core/rust-analyzer.toml"
+        config = source / "library/rust-analyzer.toml"
         config.write_text('[procMacro]\nenable=true\n')
         with self.assertRaisesRegex(RustRuntimeError, "analyzer configuration"):
             self.check(toolchain_root=root)
@@ -79,6 +94,70 @@ class RustRuntimePreflightTests(unittest.TestCase):
             self.check(toolchain_root=root)
         config.unlink()
         self.check(toolchain_root=root)
+
+    def test_official_sysroot_config_bytes_not_just_equivalent_toml_are_required(self):
+        root, source = self.prepare_sysroot()
+        path = source / "library/.cargo/config.toml"
+        original = path.read_bytes()
+        for content in (original + b"\n", original.replace(b'vendor"', b'foreign"'),
+                        original + b'[build]\nrustc-wrapper="trap"\n'):
+            with self.subTest(content=content):
+                path.write_bytes(content)
+                with self.assertRaisesRegex(RustRuntimeError, "checksum mismatch"):
+                    self.check(toolchain_root=root)
+                self.assertEqual(path.read_bytes(), content)
+        # Even an independently supplied hash cannot admit extra executable keys.
+        with patch.dict("codebase_atlas.rust_runtime.SYSROOT_FILE_SHA256", {
+                SYSROOT_LIBRARY + "/.cargo/config.toml": hashlib.sha256(content).hexdigest()}):
+            with self.assertRaisesRegex(RustRuntimeError, "vendoring configuration differs"):
+                self.check(toolchain_root=root)
+        path.write_bytes(original)
+        self.check(toolchain_root=root)
+
+    def test_sysroot_vendor_alias_and_missing_context_files_are_rejected(self):
+        root, source = self.prepare_sysroot()
+        vendor = source / "library/vendor"
+        outside = self.root / "foreign-vendor"
+        outside.mkdir()
+        vendor.rmdir()
+        vendor.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(RustRuntimeError, "sysroot configuration context"):
+            self.check(toolchain_root=root)
+        vendor.unlink()
+        vendor.mkdir()
+        for name in ("Cargo.toml", ".cargo/config.toml"):
+            path = source / "library" / name
+            original = path.read_bytes()
+            path.unlink()
+            with self.assertRaisesRegex(RustRuntimeError, "context file is missing"):
+                self.check(toolchain_root=root)
+            path.write_bytes(original)
+        self.check(toolchain_root=root)
+
+    def test_non_cwd_vendored_toolchain_files_do_not_select_analyzer_toolchain(self):
+        root, source = self.prepare_sysroot()
+        path = source / "library/vendor/package/rust-toolchain"
+        path.parent.mkdir()
+        path.write_text('[toolchain]\nchannel="nightly"\n')
+        self.check(toolchain_root=root)
+
+    def test_empty_or_offline_legacy_config_cannot_shadow_official_sysroot_config(self):
+        root, source = self.prepare_sysroot()
+        path = source / "library/.cargo/config"
+        for content in (b"", b"[net]\noffline=true\n"):
+            path.write_bytes(content)
+            with self.assertRaisesRegex(RustRuntimeError, "legacy configuration"):
+                self.check(toolchain_root=root)
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_sysroot_config_directory_alias_is_rejected(self):
+        root, source = self.prepare_sysroot()
+        directory = source / "library/.cargo"
+        moved = self.root / "foreign-cargo-config"
+        directory.rename(moved)
+        directory.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(RustRuntimeError, "configuration is unsafe"):
+            self.check(toolchain_root=root)
 
     def test_sysroot_context_cannot_be_inferred_from_foreign_tools_or_missing_source(self):
         root, source = self.prepare_sysroot()

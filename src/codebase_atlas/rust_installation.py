@@ -50,6 +50,10 @@ def runtime_from_receipt(path: Path, *, repository: Path) -> RustToolchainRuntim
 
 def _runtime_from_document(document: dict) -> RustToolchainRuntime:
     """Construct only from a verified document; also used before publication."""
+    from .rust_runtime import SYSROOT_FILE_SHA256
+    for relative, digest in SYSROOT_FILE_SHA256.items():
+        if document.get("files", {}).get(relative) != {"resolved": relative, "sha256": digest}:
+            raise RustRuntimeError("Rust receipt official sysroot context identity mismatch")
     root = Path(document["root"])
     tools = {name: VerifiedRustTool(root / value["path"], value["sha256"])
              for name, value in document["tools"].items()}

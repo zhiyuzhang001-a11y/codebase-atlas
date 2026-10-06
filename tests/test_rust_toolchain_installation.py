@@ -76,7 +76,7 @@ class RustToolchainInstallationTests(unittest.TestCase):
         receipt = Path(result["receipt"])
         document = load_toolchain_receipt(receipt, store=self.store)
         root = Path(document["root"])
-        self.assertEqual(len(document["files"]), 5)
+        self.assertEqual(len(document["files"]), 8)
         self.assertEqual(len(document["managed_licenses"]), 10)
         self.assertEqual(root, self.destination / "toolchain")
         self.assertEqual((root / "lib/rustlib/target/lib/libstd.rlib").read_bytes(), b"sentinel bytes for rust-std")

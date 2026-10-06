@@ -48,7 +48,7 @@ class RustPreparationTests(unittest.TestCase):
         original = {path: path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
         plan = plan_existing_toolchain(self.repo, self.root, archives=self.archives)
         self.assertEqual(plan["status"], "planned")
-        self.assertEqual(plan["verified_files"], 5)
+        self.assertEqual(plan["verified_files"], 8)
         self.assertFalse(self.store.exists())
         result = self.prepare()
         self.assertEqual(result["status"], "prepared")
@@ -157,7 +157,7 @@ class RustPreparationTests(unittest.TestCase):
         self.assertEqual(results[0]["receipt"], results[1]["receipt"])
         receipt = Path(results[0]["receipt"])
         self.assertEqual(list(receipt.parent.iterdir()), [receipt])
-        self.assertEqual(len(json.loads(receipt.read_text())["files"]), 5)
+        self.assertEqual(len(json.loads(receipt.read_text())["files"]), 8)
 
     def test_cli_gate_remains_closed_without_preparation_side_effects(self):
         output = StringIO()

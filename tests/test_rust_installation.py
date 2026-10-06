@@ -13,7 +13,7 @@ from codebase_atlas.rust_installation import (
     load_toolchain_receipt, save_toolchain_receipt, verify_existing_toolchain,
     runtime_from_receipt,
 )
-from codebase_atlas.rust_runtime import RustRuntimeError
+from codebase_atlas.rust_runtime import RustRuntimeError, SYSROOT_LIBRARY
 
 
 class RustInstallationTests(unittest.TestCase):
@@ -30,15 +30,37 @@ class RustInstallationTests(unittest.TestCase):
             "cargo": "bin/cargo", "rustc": "bin/rustc", "rust-analyzer-preview": "bin/rust-analyzer",
             "rust-std": "lib/rustlib/target/lib/libstd.rlib", "rust-src": "lib/rustlib/src/rust/library/core/lib.rs",
         }
+        # Minimal TOML manifest for fake archives; the production pinned manifest
+        # identity is never changed. Use the real official vendor-config bytes.
+        manifest = b'[workspace]\nmembers=[]\n'
+        sysroot_files = {
+            SYSROOT_LIBRARY + "/Cargo.toml": manifest,
+            SYSROOT_LIBRARY + "/.cargo/config.toml": (
+                b'[source.crates-io]\nreplace-with = "vendored-sources"\n\n'
+                b'[source.vendored-sources]\ndirectory = "vendor"\n'),
+            SYSROOT_LIBRARY + "/vendor/fixture": b"vendored fixture",
+        }
+        identity_patcher = patch.dict("codebase_atlas.rust_runtime.SYSROOT_FILE_SHA256", {
+            SYSROOT_LIBRARY + "/Cargo.toml": hashlib.sha256(manifest).hexdigest(),
+        })
+        identity_patcher.start()
+        self.addCleanup(identity_patcher.stop)
         for component, relative in mapping.items():
             payload = ("sentinel bytes for " + component).encode()
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(payload)
             archive = self.base / (component + ".tar.xz")
+            entries = {relative: payload}
+            if component == "rust-src":
+                entries.update(sysroot_files)
+                for name, value in sysroot_files.items():
+                    path = self.root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(value)
             with tarfile.open(archive, "w:xz") as bundle:
                 for name, value in {
-                    "package/" + component + "/" + relative: payload,
+                    **{"package/" + component + "/" + name: value for name, value in entries.items()},
                     "package/LICENSE-MIT": b"MIT license",
                     "package/LICENSE-APACHE": b"Apache license",
                 }.items():
@@ -61,7 +83,7 @@ class RustInstallationTests(unittest.TestCase):
 
     def test_receipt_compares_official_bytes_and_is_reusable_without_execution(self):
         document = self.verify()
-        self.assertEqual(len(document["files"]), 5)
+        self.assertEqual(len(document["files"]), 8)
         path = save_toolchain_receipt(document, self.store)
         before = path.read_bytes()
         self.assertEqual(load_toolchain_receipt(path, store=self.store), document)
@@ -135,6 +157,19 @@ class RustInstallationTests(unittest.TestCase):
         with patch("codebase_atlas.rust_installation.toolchain_store", return_value=self.base / "store"):
             with self.assertRaisesRegex(RustRuntimeError, "project-local"):
                 runtime_from_receipt(self.base / "receipt.json", repository=self.base)
+
+    def test_factory_rejects_missing_or_alias_sysroot_receipt_identity(self):
+        from codebase_atlas.rust_installation import _runtime_from_document
+        from codebase_atlas.rust_runtime import SYSROOT_FILE_SHA256
+        document = self.verify()
+        relative = next(iter(SYSROOT_FILE_SHA256))
+        identity = document["files"].pop(relative)
+        with self.assertRaisesRegex(RustRuntimeError, "sysroot context identity"):
+            _runtime_from_document(document)
+        document["files"][relative] = identity
+        document["files"][relative]["resolved"] = "foreign/Cargo.toml"
+        with self.assertRaisesRegex(RustRuntimeError, "sysroot context identity"):
+            _runtime_from_document(document)
 
 
 if __name__ == "__main__":

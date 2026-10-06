@@ -18,6 +18,16 @@ from typing import Mapping
 PINNED_TOOLCHAIN = "1.98.0"
 MAX_CONFIG_BYTES = 1024 * 1024
 MAX_PROJECT_ENTRIES = 100_000
+# Fixed rust-src 1.98.0 bytes, verified against the locked official archive.
+SYSROOT_LIBRARY = "lib/rustlib/src/rust/library"
+SYSROOT_FILE_SHA256 = {
+    SYSROOT_LIBRARY + "/Cargo.toml": "b346ae33bd9648949894510a2bcc1d1f8b78c7301c3110e4a98b68bacd3b4584",
+    SYSROOT_LIBRARY + "/.cargo/config.toml": "77e9219c27274120197571fd165cbe4121963b5ad3bc0b20b383c86ef0ce6c2b",
+}
+SYSROOT_VENDOR_CONFIG = {"source": {
+    "crates-io": {"replace-with": "vendored-sources"},
+    "vendored-sources": {"directory": "vendor"},
+}}
 
 
 class RustRuntimeError(ValueError):
@@ -65,7 +75,7 @@ class RustToolchainRuntime:
         )
 
 
-def _read_config(path: Path) -> dict | None:
+def _read_config(path: Path, *, expected_sha256: str | None = None) -> dict | None:
     try:
         metadata = os.lstat(path)
         canonical = path.resolve() == path.absolute()
@@ -77,7 +87,13 @@ def _read_config(path: Path) -> dict | None:
             or not canonical):
         raise RustRuntimeError("Rust configuration is unsafe or oversized")
     try:
-        return tomllib.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            content = stream.read(MAX_CONFIG_BYTES + 1)
+        if len(content) > MAX_CONFIG_BYTES:
+            raise RustRuntimeError("Rust configuration is unsafe or oversized")
+        if expected_sha256 is not None and hashlib.sha256(content).hexdigest() != expected_sha256:
+            raise RustRuntimeError("Rust official sysroot configuration checksum mismatch")
+        return tomllib.loads(content.decode("utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise RustRuntimeError("Rust configuration cannot be safely parsed") from exc
 
@@ -186,16 +202,27 @@ No files, toolchains or global environment variables are changed.
         # a project-selected rust-src location. Analyzer runs Cargo from rust-src
         # as well as workspace members, so both contexts need preflight.
         verified_root = toolchain_root.absolute()
-        source = verified_root / "lib/rustlib/src/rust"
+        source = verified_root / SYSROOT_LIBRARY
+        vendor = source / "vendor"
         try:
             if (verified_root.resolve(strict=True) != verified_root
                     or not verified_root.is_dir()
                     or any(path.parent != verified_root / "bin" for path in paths)
-                    or source.resolve(strict=True) != source or not source.is_dir()):
+                    or source.resolve(strict=True) != source or not source.is_dir()
+                    or vendor.resolve(strict=True) != vendor or not vendor.is_dir()):
                 raise RustRuntimeError("Rust verified sysroot configuration context is unsafe")
         except OSError as exc:
             raise RustRuntimeError("Rust verified sysroot configuration context is unavailable") from exc
-        context_directories.extend(_project_configuration_directories(source))
+        # Fixed RA uses this exact library cwd; vendored package toolchain files
+        # below it are not Cargo's cwd/ancestor configuration. This is not an
+        # admission rule for arbitrary source subdirectories or foreign cwd.
+        for relative, digest in SYSROOT_FILE_SHA256.items():
+            document = _read_config(verified_root / relative, expected_sha256=digest)
+            if document is None:
+                raise RustRuntimeError("Rust official sysroot context file is missing")
+            if relative.endswith("/.cargo/config.toml") and document != SYSROOT_VENDOR_CONFIG:
+                raise RustRuntimeError("Rust official sysroot vendoring configuration differs")
+        context_directories.append(source)
         context_directories.extend(source.parents)
 
     config_paths = [cargo_home / "config", cargo_home / "config.toml"]
@@ -224,7 +251,19 @@ No files, toolchains or global environment variables are changed.
                 if channel != PINNED_TOOLCHAIN:
                     raise RustRuntimeError("Rust toolchain selection differs from verified toolchain")
     for path in dict.fromkeys(config_paths):
+        official_config = (verified_root / SYSROOT_LIBRARY / ".cargo/config.toml"
+                           if verified_root is not None else None)
+        if path == official_config:
+            document = _read_config(path, expected_sha256=SYSROOT_FILE_SHA256[SYSROOT_LIBRARY + "/.cargo/config.toml"])
+            if document != SYSROOT_VENDOR_CONFIG:
+                raise RustRuntimeError("Rust official sysroot vendoring configuration differs")
+            continue
         document = _read_config(path)
+        if (official_config is not None and path == official_config.with_name("config")
+                and document is not None):
+            # Cargo prefers legacy config over config.toml. Even an empty file
+            # would silently disable the authenticated official vendor mapping.
+            raise RustRuntimeError("Rust sysroot legacy configuration requires review")
         if document is not None and document not in ({}, {"net": {"offline": True}}):
             raise RustRuntimeError("Cargo configuration requires reviewed safe preparation")
 
