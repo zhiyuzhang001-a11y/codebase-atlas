@@ -94,6 +94,52 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 probe.await_control(Path(temporary) / "missing", timeout=0)
 
+    def test_control_retries_only_explicit_windows_sharing_errors(self):
+        for code in (32, 33):
+            error = PermissionError(13, "controlled sharing conflict")
+            error.winerror = code
+            path = MagicMock()
+            path.exists.return_value = True
+            path.read_text.side_effect = [error, '{"owned": true}']
+            with patch.object(probe, "sleep"):
+                self.assertEqual(probe.await_control(path), {"owned": True})
+            self.assertEqual(path.read_text.call_count, 2)
+        for code in (None, 5):
+            error = PermissionError(13, "controlled access denial")
+            error.winerror = code
+            path = MagicMock()
+            path.exists.return_value = True
+            path.read_text.side_effect = error
+            with self.assertRaises(PermissionError):
+                probe.await_control(path)
+            self.assertEqual(path.read_text.call_count, 1)
+
+    def test_control_sharing_retry_does_not_reset_deadline(self):
+        error = PermissionError(13, "controlled sharing conflict")
+        error.winerror = 32
+        path = MagicMock()
+        path.exists.return_value = True
+        path.read_text.side_effect = error
+        with patch.object(probe, "monotonic", side_effect=[0, 0, 0, 5]), \
+                patch.object(probe, "sleep"):
+            with self.assertRaises(TimeoutError):
+                probe.await_control(path, timeout=5)
+        self.assertEqual(path.read_text.call_count, 1)
+
+    def test_control_late_read_and_invalid_json_are_not_accepted(self):
+        path = MagicMock()
+        path.exists.return_value = True
+        path.read_text.return_value = '{"owned": true}'
+        with patch.object(probe, "monotonic", side_effect=[0, 0, 5]):
+            with self.assertRaises(TimeoutError):
+                probe.await_control(path, timeout=5)
+        with patch.object(probe, "monotonic", side_effect=[0, 0, 0, 5]):
+            with self.assertRaises(TimeoutError):
+                probe.await_control(path, timeout=5)
+        path.read_text.return_value = '{'
+        with self.assertRaises(json.JSONDecodeError):
+            probe.await_control(path)
+
     def test_parent_exit_requires_native_windows_before_loading_api(self):
         with patch.object(probe, "supported_machine", return_value=False), \
                 patch.object(probe.ctypes, "WinDLL", create=True) as native:

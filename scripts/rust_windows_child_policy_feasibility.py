@@ -56,11 +56,25 @@ def publish_control(path: Path, content: bytes) -> None:
 
 def await_control(path: Path, timeout: float = 5) -> dict:
     deadline = monotonic() + timeout
-    while not path.exists():
+    while True:
         if monotonic() >= deadline:
-            raise TimeoutError("Owned control record missing")
-        sleep(0.01)
-    return json.loads(path.read_text(encoding="utf-8"))
+            raise TimeoutError("Owned control record unavailable within deadline")
+        if path.exists():
+            try:
+                content = path.read_text(encoding="utf-8")
+            except PermissionError as exc:
+                # Only explicit Windows sharing/lock conflicts may retry.
+                # ERROR_ACCESS_DENIED or absent winerror remains a real failure.
+                if getattr(exc, "winerror", None) not in (32, 33):
+                    raise
+            else:
+                if monotonic() >= deadline:
+                    raise TimeoutError("Owned control read exceeded deadline")
+                record = json.loads(content)
+                if monotonic() >= deadline:
+                    raise TimeoutError("Owned control parsing exceeded deadline")
+                return record
+        sleep(min(0.01, max(0, deadline - monotonic())))
 
 
 def native_function(native, name, arguments, result=W.BOOL):
@@ -679,7 +693,9 @@ def main(argv=None) -> int:
             report["collection_status"] = "complete"
         except Exception as exc:
             report["collection_status"] = "failed"
-            report["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            report["error"] = {"type": type(exc).__name__, "message": str(exc),
+                               "errno": getattr(exc, "errno", None),
+                               "winerror": getattr(exc, "winerror", None)}
             if isinstance(exc, subprocess.CalledProcessError):
                 # Captured owned-fixture output only; no parent environment or
                 # token dump. Keep bounded diagnostics instead of losing cause.
