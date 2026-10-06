@@ -229,12 +229,14 @@ def launch_fixture(scratch: Path, restricted: bool, *, handoff=None) -> dict:
     try:
         # A private unnamed nested Job provides an exact handle, not "any Job".
         # No inherited Job handle and no breakaway; outer run_owned remains owner.
-        owned_job = handoff["job_handle"] if handoff else create_job(None, None)
+        holder_loss = bool(handoff and handoff.get("holder_loss"))
+        new_job = not handoff or holder_loss
+        owned_job = create_job(None, None) if new_job else handoff["job_handle"]
         if not owned_job:
             raise ctypes.WinError(ctypes.get_last_error())
         limit = ExtendedLimit()
         limit.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE only.
-        if not handoff and not set_job(owned_job, 9, ctypes.byref(limit), ctypes.sizeof(limit)):
+        if new_job and not set_job(owned_job, 9, ctypes.byref(limit), ctypes.sizeof(limit)):
             raise ctypes.WinError(ctypes.get_last_error())
         jobs = (W.HANDLE * 1)(owned_job)
         if not update(buffer, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None):
@@ -249,6 +251,8 @@ def launch_fixture(scratch: Path, restricted: bool, *, handoff=None) -> dict:
         output = scratch / "fixture.json"
         args = [sys.executable, str(Path(__file__).resolve()), "--fixture", str(scratch),
                 "--restricted" if restricted else "--unrestricted"]
+        if holder_loss:
+            args.append("--disconnect-worker")
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(args))
         # No console or inherited handles. Environment is the explicit owned
         # controller environment; no BREAKAWAY flag, so the owned Job is inherited.
@@ -267,9 +271,18 @@ def launch_fixture(scratch: Path, restricted: bool, *, handoff=None) -> dict:
             evidence = {"worker_handle": remote_worker, "process_id": process.pid,
                         "launcher_id": os.getpid(), "restricted": restricted,
                         "policy_at_creation": policy.value,
-                        "creation_flags": FIXTURE_CREATION_FLAGS}
+                        "creation_flags": FIXTURE_CREATION_FLAGS,
+                        "exact_owned_job_member_before_payload": True,
+                        "tested_job_created_by_holder": holder_loss,
+                        "tested_job_handle_transferred": False}
             publish_control(scratch / "handoff.json", json.dumps(evidence).encode("utf-8"))
             handed_off = True
+            if holder_loss:
+                # Keep the sole tested-Job handle here. Forced process termination
+                # must close it via the OS, NOT an explicit cleanup call.
+                finish = await_control(scratch / "holder-finish.json", timeout=15)
+                if finish != {"worker_finished": True}:
+                    raise ValueError("Invalid holder completion control")
             return evidence
         publish_control(scratch / "membership-checked", b"exact-job-checked")
         if wait(process.process, 8000) != 0:
@@ -378,6 +391,129 @@ def parent_exit_experiment(scratch: Path, restricted: bool) -> dict:
     return {**evidence, "owned_job_cleanup_completed": True}
 
 
+def disconnect_worker(scratch: Path, restricted: bool) -> dict:
+    """Arm in the same token/scratch, then block until observer releases payload."""
+    positive = scratch / "armed-positive"
+    positive.write_bytes(b"armed-positive")
+    if positive.read_bytes() != b"armed-positive":
+        raise RuntimeError("Disconnect scratch positive failed")
+    publish_control(scratch / "worker-armed.json", json.dumps({
+        "process_id": os.getpid(), "restricted": restricted,
+        "same_domain_armed_positive": True}).encode("utf-8"))
+    await_start_barrier(scratch)
+    (scratch / "after-disconnect-barrier").write_bytes(b"executed-after-barrier")
+    return {**fixture(scratch, restricted), "after_barrier_executed": True}
+
+
+def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict:
+    """Outside observer owns worker PROCESS handle, never the tested Job handle.
+
+    A distinct outer safety Job stays alive until verification ends. Crash uses
+    TerminateProcess(holder), never TerminateJobObject or close_owned_job first.
+    """
+    if not supported_machine():
+        raise ValueError("Native Windows required")
+    from codebase_atlas.windows_owned_process import WindowsOwnedProcess
+    native = ctypes.WinDLL("kernel32.dll", use_last_error=True, winmode=0x800)
+    current = native_function(native, "GetCurrentProcess", [], W.HANDLE)
+    get_pid = native_function(native, "GetProcessId", [W.HANDLE], W.DWORD)
+    wait = native_function(native, "WaitForSingleObject", [W.HANDLE, W.DWORD], W.DWORD)
+    exit_code = native_function(native, "GetExitCodeProcess", [W.HANDLE, ctypes.POINTER(W.DWORD)])
+    terminate = native_function(native, "TerminateProcess", [W.HANDLE, W.UINT])
+    close = native_function(native, "CloseHandle", [W.HANDLE])
+    holder = WindowsOwnedProcess([
+        sys.executable, str(Path(__file__).resolve()), "--loss-holder", str(scratch),
+        "--restricted" if restricted else "--unrestricted"],
+        cwd=scratch, env=controller_environment())
+    worker = None
+    evidence = None
+    try:
+        holder.stdin.close()
+        observer_in_holder = duplicate_to(native, current(), holder._process)
+        publish_control(scratch / "launcher-control.json", json.dumps({
+            "observer_handle": observer_in_holder, "holder_loss": True
+        }).encode("utf-8"))  # Deliberately NO Job handle in either direction.
+        handoff = await_control(scratch / "handoff.json")
+        worker = handoff["worker_handle"]
+        if (handoff["launcher_id"] != holder.pid or get_pid(worker) != handoff["process_id"]
+                or handoff["restricted"] != restricted
+                or not handoff["exact_owned_job_member_before_payload"]
+                or not handoff["tested_job_created_by_holder"]
+                or handoff["tested_job_handle_transferred"]):
+            raise ValueError("Holder/worker/tested-Job identity mismatch")
+        armed = await_control(scratch / "worker-armed.json")
+        if (armed != {"process_id": handoff["process_id"], "restricted": restricted,
+                      "same_domain_armed_positive": True}
+                or (scratch / "armed-positive").read_bytes() != b"armed-positive"
+                or wait(worker, 0) != 258 or holder.poll() is not None
+                or (scratch / "membership-checked").exists()
+                or (scratch / "after-disconnect-barrier").exists()):
+            raise RuntimeError("Live holder/worker armed barrier not proven")
+        if crash:
+            started = monotonic()
+            if not terminate(holder._process, 93):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if holder.wait(timeout=3) != 93:
+                raise RuntimeError("Holder did not exit by the owned process termination")
+            if wait(worker, 3000) != 0:
+                raise TimeoutError("Last-handle loss did not terminate the worker")
+            elapsed = monotonic() - started
+            if elapsed > 3:
+                raise TimeoutError("Holder-loss termination exceeded three-second budget")
+            code = W.DWORD()
+            if not exit_code(worker, ctypes.byref(code)) or code.value == 259:
+                raise RuntimeError("Worker termination code unavailable")
+            # Worker is already signaled before release; no sampling/sleep-only
+            # absence claim and no cleanup call has touched the outer safety Job.
+            publish_control(scratch / "membership-checked", b"exact-job-checked")
+            if (scratch / "after-disconnect-barrier").exists():
+                raise RuntimeError("Worker executed past disconnect barrier")
+            evidence = {"worker_exit_code": code.value, "holder_exit_code": 93,
+                        "worker_signaled_before_barrier_release": True,
+                        "termination_seconds": elapsed, "after_barrier_executed": False}
+        else:
+            publish_control(scratch / "membership-checked", b"exact-job-checked")
+            if wait(worker, 8000) != 0:
+                raise TimeoutError("Live-holder positive control did not finish")
+            code = W.DWORD()
+            if not exit_code(worker, ctypes.byref(code)) or code.value != 0:
+                raise RuntimeError("Live-holder worker positive control failed")
+            result = await_control(scratch / "fixture.json")
+            if (result.get("process_id") != handoff["process_id"]
+                    or result.get("restricted") != restricted
+                    or result.get("after_barrier_executed") is not True
+                    or (scratch / "after-disconnect-barrier").read_bytes() != b"executed-after-barrier"):
+                raise ValueError("Live-holder barrier observer control failed")
+            publish_control(scratch / "holder-finish.json", b'{"worker_finished":true}')
+            if holder.wait(timeout=3) != 0:
+                raise RuntimeError("Live holder did not finish normally")
+            evidence = {**result, "worker_exit_code": 0, "holder_exit_code": 0}
+        evidence.update({"case": "last-holder-crash" if crash else "live-holder-control",
+                         "restricted": restricted, "process_id": handoff["process_id"],
+                         "holder_id": holder.pid, "same_domain_armed_positive": True,
+                         "exact_holder_job_member_before_payload": True,
+                         "observer_has_tested_job_handle": False,
+                         "worker_has_tested_job_handle": False,
+                         "policy_at_creation": handoff["policy_at_creation"],
+                         "outer_cleanup_only_after_worker_signaled": True,
+                         "fixture_reaped": True})
+    except Exception as exc:
+        code = holder.poll()
+        if code is not None:
+            detail = holder.stderr.read(8192).decode("utf-8", errors="replace")
+            raise RuntimeError(f"Holder-loss fixture failed: {exc}; holder exit={code}; {detail}") from exc
+        raise
+    finally:
+        try:
+            holder.close_owned_job(10)
+        finally:
+            if worker:
+                close(worker)
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                stream.close()
+    return {**evidence, "owned_job_cleanup_completed": True}
+
+
 def controller(scratch: Path) -> dict:
     results = []
     for restricted in (False, True):
@@ -400,18 +536,23 @@ def main(argv=None) -> int:
     parser.add_argument("--controller", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--fixture", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--handoff-launcher", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--loss-holder", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--disconnect-worker", action="store_true", help=argparse.SUPPRESS)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--restricted", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--unrestricted", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if args.controller or args.fixture or args.handoff_launcher:
+    if args.disconnect_worker and not args.fixture:
+        parser.error("Disconnect worker requires fixture mode")
+    if args.controller or args.fixture or args.handoff_launcher or args.loss_holder:
         if (args.source_sha or args.target or args.output
-                or sum(bool(item) for item in (args.controller, args.fixture, args.handoff_launcher)) != 1):
+                or sum(bool(item) for item in (args.controller, args.fixture,
+                                              args.handoff_launcher, args.loss_holder)) != 1):
             parser.error("Internal modes cannot accept evidence arguments")
-        if args.handoff_launcher:
+        if args.handoff_launcher or args.loss_holder:
             if not (args.restricted or args.unrestricted):
                 parser.error("Fixture policy required")
-            scratch = args.handoff_launcher.resolve(strict=True)
+            scratch = (args.handoff_launcher or args.loss_holder).resolve(strict=True)
             launch_fixture(scratch, args.restricted,
                            handoff=await_control(scratch / "launcher-control.json"))
             return 0
@@ -419,8 +560,11 @@ def main(argv=None) -> int:
             if not (args.restricted or args.unrestricted):
                 parser.error("Fixture policy required")
             try:
-                await_start_barrier(args.fixture.resolve(strict=True))
-                evidence = fixture(args.fixture.resolve(strict=True), args.restricted)
+                if args.disconnect_worker:
+                    evidence = disconnect_worker(args.fixture.resolve(strict=True), args.restricted)
+                else:
+                    await_start_barrier(args.fixture.resolve(strict=True))
+                    evidence = fixture(args.fixture.resolve(strict=True), args.restricted)
             except Exception as exc:
                 # No inherited stderr handle: retain the owned fixture failure
                 # explicitly, without converting it to a passed policy result.
@@ -446,7 +590,7 @@ def main(argv=None) -> int:
                              "official Rust compatibility", "network/filesystem isolation",
                              "full parent-exit/controller-disconnect adversarial coverage",
                              "immutable source/tool views", "product qualification"],
-              "experiments": [], "parent_exit_experiments": []}
+              "experiments": [], "parent_exit_experiments": [], "holder_loss_experiments": []}
     with args.output.open("x", encoding="utf-8") as output:
         try:
             if not supported_machine():
@@ -469,6 +613,12 @@ def main(argv=None) -> int:
                     with tempfile.TemporaryDirectory(prefix="atlas-win-parent-exit-i0-") as temporary:
                         evidence = parent_exit_experiment(Path(temporary), restricted)
                         report["parent_exit_experiments"].append({"repeat": repeat + 1, **evidence})
+            for repeat in range(3):
+                for restricted in (False, True):
+                    for crash in (False, True):
+                        with tempfile.TemporaryDirectory(prefix="atlas-win-holder-loss-i0-") as temporary:
+                            evidence = holder_loss_experiment(Path(temporary), restricted, crash)
+                            report["holder_loss_experiments"].append({"repeat": repeat + 1, **evidence})
             report["collection_status"] = "complete"
         except Exception as exc:
             report["collection_status"] = "failed"
