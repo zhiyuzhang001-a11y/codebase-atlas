@@ -40,6 +40,34 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 probe.await_start_barrier(Path(temporary), timeout=0)
 
+    def test_expired_barrier_cannot_run_even_if_receipt_present(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            (scratch / "membership-checked").write_bytes(b"exact-job-checked")
+            with patch.object(probe, "monotonic", return_value=10), self.assertRaises(TimeoutError):
+                probe.await_start_barrier(scratch, deadline=9)
+
+    def test_armed_deadline_requires_remaining_crash_budget(self):
+        record = {"armed_at": 10.0, "barrier_deadline": 15.0}
+        self.assertEqual(probe.armed_remaining(record, 11, 3), 4)
+        for now in (9, 12, 15):
+            with self.assertRaises(ValueError):
+                probe.armed_remaining(record, now, 3)
+        for record in ({}, {"armed_at": float("nan"), "barrier_deadline": 15},
+                       {"armed_at": True, "barrier_deadline": 6},
+                       {"armed_at": 10, "barrier_deadline": 16}):
+            with self.assertRaises(ValueError):
+                probe.armed_remaining(record, 11, 3)
+
+    def test_sanitized_receipts_remove_native_handle_values(self):
+        record = {"worker_handle": 123, "observer_handle": 456, "job_handle": 789,
+                  "process_id": 42, "exact_job_checked_at": 10.0,
+                  "tested_job_handle_transferred": False}
+        self.assertEqual(probe.sanitized_control(record), {
+            "process_id": 42, "exact_job_checked_at": 10.0,
+            "tested_job_handle_transferred": False})
+        self.assertEqual(record["worker_handle"], 123)
+
     def test_control_record_is_published_complete_and_not_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "control.json"
@@ -87,11 +115,13 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             scratch = Path(temporary)
 
-            def release(path):
+            def release(path, *, deadline):
                 self.assertEqual(path, scratch)
                 self.assertEqual((scratch / "armed-positive").read_bytes(), b"armed-positive")
                 armed = probe.await_control(scratch / "worker-armed.json")
                 self.assertTrue(armed["same_domain_armed_positive"])
+                self.assertEqual(armed["barrier_deadline"], deadline)
+                self.assertEqual(deadline - armed["armed_at"], 5)
                 self.assertFalse((scratch / "after-disconnect-barrier").exists())
 
             with patch.object(probe, "await_start_barrier", side_effect=release), \
@@ -123,6 +153,18 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
 
         native.DuplicateHandle.side_effect = duplicate
         self.assertEqual(probe.duplicate_to(native, 456, 789), 987)
+
+    def test_observer_handle_can_be_limited_to_duplication_access(self):
+        native = MagicMock()
+        native.GetCurrentProcess.return_value = 123
+
+        def duplicate(source, handle, target, output, access, inherit, options):
+            self.assertEqual((access, inherit, options), (0x40, False, 0))
+            output._obj.value = 987
+            return True
+
+        native.DuplicateHandle.side_effect = duplicate
+        self.assertEqual(probe.duplicate_to(native, 456, 789, desired_access=0x40), 987)
 
     def test_controller_retains_baseline_when_restricted_launch_fails(self):
         with tempfile.TemporaryDirectory() as temporary, \

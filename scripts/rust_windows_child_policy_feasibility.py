@@ -11,6 +11,7 @@ import argparse
 import ctypes
 from ctypes import wintypes as W
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -29,14 +30,16 @@ except ModuleNotFoundError:
 FIXTURE_CREATION_FLAGS = 0x80000 | 0x8  # Extended startup + DETACHED_PROCESS.
 
 
-def await_start_barrier(scratch: Path, timeout: float = 5) -> None:
+def await_start_barrier(scratch: Path, timeout: float = 5, *, deadline=None) -> None:
     """Owned fixture only: do not execute the payload before native membership check."""
-    deadline = monotonic() + timeout
+    deadline = monotonic() + timeout if deadline is None else deadline
     barrier = scratch / "membership-checked"
     while not barrier.exists():
         if monotonic() >= deadline:
             raise TimeoutError("Exact Job membership barrier was not released")
         sleep(0.01)
+    if monotonic() >= deadline:
+        raise TimeoutError("Exact Job membership barrier arrived after deadline")
     if barrier.read_bytes() != b"exact-job-checked":
         raise ValueError("Invalid owned start barrier")
 
@@ -66,15 +69,31 @@ def native_function(native, name, arguments, result=W.BOOL):
     return function
 
 
-def duplicate_to(native, source_handle, target_process) -> int:
+def duplicate_to(native, source_handle, target_process, *, desired_access=None) -> int:
     current = native_function(native, "GetCurrentProcess", [], W.HANDLE)
     duplicate = native_function(native, "DuplicateHandle", [
         W.HANDLE, W.HANDLE, W.HANDLE, ctypes.POINTER(W.HANDLE), W.DWORD, W.BOOL, W.DWORD])
     result = W.HANDLE()
     if not duplicate(current(), source_handle, target_process, ctypes.byref(result),
-                     0, False, 2):  # SAME_ACCESS, non-inheritable; owned fixture only.
+                     0 if desired_access is None else desired_access, False,
+                     2 if desired_access is None else 0):
         raise ctypes.WinError(ctypes.get_last_error())
     return result.value
+
+
+def sanitized_control(record: dict) -> dict:
+    """Retain own fixture exchanges without transferable native handle values."""
+    return {key: value for key, value in record.items()
+            if key not in {"worker_handle", "observer_handle", "job_handle"}}
+
+
+def armed_remaining(armed: dict, now: float, minimum: float) -> float:
+    start, deadline = armed.get("armed_at"), armed.get("barrier_deadline")
+    if (type(start) not in (float, int) or type(deadline) not in (float, int)
+            or not math.isfinite(start) or not math.isfinite(deadline)
+            or deadline - start != 5 or now < start or deadline - now <= minimum):
+        raise ValueError("Worker barrier lifetime/remaining deadline not proven")
+    return deadline - now
 
 
 def supported_machine() -> bool:
@@ -274,7 +293,8 @@ def launch_fixture(scratch: Path, restricted: bool, *, handoff=None) -> dict:
                         "creation_flags": FIXTURE_CREATION_FLAGS,
                         "exact_owned_job_member_before_payload": True,
                         "tested_job_created_by_holder": holder_loss,
-                        "tested_job_handle_transferred": False}
+                        "tested_job_handle_transferred": False,
+                        "exact_job_checked_at": monotonic()}
             publish_control(scratch / "handoff.json", json.dumps(evidence).encode("utf-8"))
             handed_off = True
             if holder_loss:
@@ -347,13 +367,15 @@ def parent_exit_experiment(scratch: Path, restricted: bool) -> dict:
     try:
         launcher.stdin.close()
         job_in_launcher = duplicate_to(native, launcher._job, launcher._process)
-        observer_in_launcher = duplicate_to(native, current(), launcher._process)
+        observer_in_launcher = duplicate_to(native, current(), launcher._process, desired_access=0x40)
         publish_control(scratch / "launcher-control.json", json.dumps({
-            "job_handle": job_in_launcher, "observer_handle": observer_in_launcher
+            "job_handle": job_in_launcher, "observer_handle": observer_in_launcher,
+            "observer_process_access": 0x40
         }).encode("utf-8"))
         if launcher.wait(timeout=8) != 0:
             raise RuntimeError("Owned handoff launcher failed: " +
                                launcher.stderr.read(8192).decode("utf-8", errors="replace"))
+        parent_exited_at = monotonic()
         handoff = await_control(scratch / "handoff.json")
         worker = handoff["worker_handle"]
         if (handoff["launcher_id"] != launcher.pid or handoff["restricted"] != restricted
@@ -365,8 +387,10 @@ def parent_exit_experiment(scratch: Path, restricted: bool) -> dict:
         if wait(worker, 0) != 258:
             raise RuntimeError("Worker did not remain alive at the parent-exit barrier")
         publish_control(scratch / "membership-checked", b"exact-job-checked")
+        released_at = monotonic()
         if wait(worker, 8000) != 0:
             raise TimeoutError("Parent-exit fixture did not finish")
+        signaled_at = monotonic()
         code = W.DWORD()
         if not exit_code(worker, ctypes.byref(code)) or code.value != 0:
             raise RuntimeError("Parent-exit fixture failed")
@@ -379,10 +403,18 @@ def parent_exit_experiment(scratch: Path, restricted: bool) -> dict:
                     "exact_supervisor_job_member_after_parent_exit": True,
                     "policy_at_creation": handoff["policy_at_creation"],
                     "creation_flags": handoff["creation_flags"], "fixture_reaped": True,
-                    "case": "launcher-exit-holder-alive"}
+                    "case": "launcher-exit-holder-alive",
+                    "control_receipts": {"handoff": sanitized_control(handoff),
+                                         "observer_process_access": 0x40},
+                    "timeline": {"parent_exited_at": parent_exited_at,
+                                 "barrier_released_at": released_at, "worker_signaled_at": signaled_at}}
     finally:
         try:
+            if evidence is not None:
+                evidence["timeline"]["outer_cleanup_started_at"] = monotonic()
             launcher.close_owned_job(10)
+            if evidence is not None:
+                evidence["timeline"]["outer_cleanup_completed_at"] = monotonic()
         finally:
             if worker:
                 close(worker)
@@ -397,10 +429,13 @@ def disconnect_worker(scratch: Path, restricted: bool) -> dict:
     positive.write_bytes(b"armed-positive")
     if positive.read_bytes() != b"armed-positive":
         raise RuntimeError("Disconnect scratch positive failed")
+    armed_at = monotonic()
+    deadline = armed_at + 5
     publish_control(scratch / "worker-armed.json", json.dumps({
         "process_id": os.getpid(), "restricted": restricted,
-        "same_domain_armed_positive": True}).encode("utf-8"))
-    await_start_barrier(scratch)
+        "same_domain_armed_positive": True,
+        "armed_at": armed_at, "barrier_deadline": deadline}).encode("utf-8"))
+    await_start_barrier(scratch, deadline=deadline)
     (scratch / "after-disconnect-barrier").write_bytes(b"executed-after-barrier")
     return {**fixture(scratch, restricted), "after_barrier_executed": True}
 
@@ -429,9 +464,10 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
     evidence = None
     try:
         holder.stdin.close()
-        observer_in_holder = duplicate_to(native, current(), holder._process)
+        observer_in_holder = duplicate_to(native, current(), holder._process, desired_access=0x40)
         publish_control(scratch / "launcher-control.json", json.dumps({
-            "observer_handle": observer_in_holder, "holder_loss": True
+            "observer_handle": observer_in_holder, "holder_loss": True,
+            "observer_process_access": 0x40
         }).encode("utf-8"))  # Deliberately NO Job handle in either direction.
         handoff = await_control(scratch / "handoff.json")
         worker = handoff["worker_handle"]
@@ -442,8 +478,11 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
                 or handoff["tested_job_handle_transferred"]):
             raise ValueError("Holder/worker/tested-Job identity mismatch")
         armed = await_control(scratch / "worker-armed.json")
-        if (armed != {"process_id": handoff["process_id"], "restricted": restricted,
-                      "same_domain_armed_positive": True}
+        armed_observed_at = monotonic()
+        remaining = armed_remaining(armed, armed_observed_at, 3 if crash else 0)
+        if (armed.get("process_id") != handoff["process_id"]
+                or armed.get("restricted") != restricted
+                or armed.get("same_domain_armed_positive") is not True
                 or (scratch / "armed-positive").read_bytes() != b"armed-positive"
                 or wait(worker, 0) != 258 or holder.poll() is not None
                 or (scratch / "membership-checked").exists()
@@ -451,13 +490,15 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
             raise RuntimeError("Live holder/worker armed barrier not proven")
         if crash:
             started = monotonic()
+            armed_remaining(armed, started, 3)
             if not terminate(holder._process, 93):
                 raise ctypes.WinError(ctypes.get_last_error())
             if holder.wait(timeout=3) != 93:
                 raise RuntimeError("Holder did not exit by the owned process termination")
             if wait(worker, 3000) != 0:
                 raise TimeoutError("Last-handle loss did not terminate the worker")
-            elapsed = monotonic() - started
+            signaled_at = monotonic()
+            elapsed = signaled_at - started
             if elapsed > 3:
                 raise TimeoutError("Holder-loss termination exceeded three-second budget")
             code = W.DWORD()
@@ -466,6 +507,7 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
             # Worker is already signaled before release; no sampling/sleep-only
             # absence claim and no cleanup call has touched the outer safety Job.
             publish_control(scratch / "membership-checked", b"exact-job-checked")
+            released_at = monotonic()
             if (scratch / "after-disconnect-barrier").exists():
                 raise RuntimeError("Worker executed past disconnect barrier")
             evidence = {"worker_exit_code": code.value, "holder_exit_code": 93,
@@ -473,8 +515,10 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
                         "termination_seconds": elapsed, "after_barrier_executed": False}
         else:
             publish_control(scratch / "membership-checked", b"exact-job-checked")
+            released_at = monotonic()
             if wait(worker, 8000) != 0:
                 raise TimeoutError("Live-holder positive control did not finish")
+            signaled_at = monotonic()
             code = W.DWORD()
             if not exit_code(worker, ctypes.byref(code)) or code.value != 0:
                 raise RuntimeError("Live-holder worker positive control failed")
@@ -496,7 +540,16 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
                          "worker_has_tested_job_handle": False,
                          "policy_at_creation": handoff["policy_at_creation"],
                          "outer_cleanup_only_after_worker_signaled": True,
-                         "fixture_reaped": True})
+                         "fixture_reaped": True,
+                         "control_receipts": {"handoff": sanitized_control(handoff),
+                                              "armed": sanitized_control(armed),
+                                              "observer_process_access": 0x40},
+                         "barrier_remaining_at_observation": remaining,
+                         "timeline": {"armed_observed_at": armed_observed_at,
+                                      "worker_signaled_at": signaled_at,
+                                      "barrier_released_at": released_at}})
+        if crash:
+            evidence["timeline"]["holder_termination_requested_at"] = started
     except Exception as exc:
         code = holder.poll()
         if code is not None:
@@ -505,7 +558,11 @@ def holder_loss_experiment(scratch: Path, restricted: bool, crash: bool) -> dict
         raise
     finally:
         try:
+            if evidence is not None:
+                evidence["timeline"]["outer_cleanup_started_at"] = monotonic()
             holder.close_owned_job(10)
+            if evidence is not None:
+                evidence["timeline"]["outer_cleanup_completed_at"] = monotonic()
         finally:
             if worker:
                 close(worker)
