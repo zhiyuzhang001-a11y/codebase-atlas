@@ -25,6 +25,9 @@ except ModuleNotFoundError:
     from scripts.rust_toolchain_qualification import validate_identity
 
 
+FIXTURE_CREATION_FLAGS = 0x80000 | 0x8  # Extended startup + DETACHED_PROCESS.
+
+
 def supported_machine() -> bool:
     return os.name == "nt"
 
@@ -44,7 +47,7 @@ def windows_directory() -> str:
 
 
 def controller_environment() -> dict[str, str]:
-    # Supply a minimal OS loader environment for CREATE_NO_WINDOW fixtures.
+    # Supply a minimal OS loader environment for detached console fixtures.
     # Whether it resolves the observed DLL-init failure requires native evidence.
     # Both controls receive the same root; never copy PATH/tokens/wrappers.
     return {"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
@@ -168,7 +171,7 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(args))
         # No console or inherited handles. Environment is the explicit owned
         # controller environment; no BREAKAWAY flag, so the owned Job is inherited.
-        if not create(args[0], command, None, None, False, 0x80000 | 0x08000000,
+        if not create(args[0], command, None, None, False, FIXTURE_CREATION_FLAGS,
                       None, str(scratch), ctypes.byref(startup), ctypes.byref(process)):
             raise ctypes.WinError(ctypes.get_last_error())
         if wait(process.process, 8000) != 0:
@@ -185,7 +188,8 @@ def launch_fixture(scratch: Path, restricted: bool) -> dict:
         evidence = json.loads(output.read_text(encoding="utf-8"))
         if evidence.get("process_id") != process.pid or evidence.get("restricted") != restricted:
             raise ValueError("Fixture identity mismatch")
-        return {**evidence, "policy_at_creation": policy.value, "fixture_reaped": True}
+        return {**evidence, "policy_at_creation": policy.value, "fixture_reaped": True,
+                "creation_flags": FIXTURE_CREATION_FLAGS}
     finally:
         if process.process:
             terminate(process.process, 1)  # Only our handle; outer Job owns descendants.
@@ -201,7 +205,12 @@ def controller(scratch: Path) -> dict:
     for restricted in (False, True):
         directory = scratch / ("restricted" if restricted else "baseline")
         directory.mkdir()
-        results.append(launch_fixture(directory, restricted))
+        try:
+            results.append(launch_fixture(directory, restricted))
+        except Exception as exc:
+            return {"status": "failed", "process_id": os.getpid(), "fixtures": results,
+                    "failed_restricted": restricted,
+                    "error": {"type": type(exc).__name__, "message": str(exc)}}
     return {"status": "deny_all_probe_passed", "process_id": os.getpid(), "fixtures": results}
 
 
@@ -234,7 +243,9 @@ def main(argv=None) -> int:
             with (args.fixture / "fixture.json").open("x", encoding="utf-8") as output:
                 json.dump(evidence, output)
         else:
-            print(json.dumps(controller(args.controller.resolve(strict=True))))
+            evidence = controller(args.controller.resolve(strict=True))
+            print(json.dumps(evidence))
+            return 0 if evidence["status"] == "deny_all_probe_passed" else 1
         return 0
     if not (args.source_sha and args.target and args.output):
         parser.error("source-sha, target and output required")
@@ -257,12 +268,14 @@ def main(argv=None) -> int:
                     result = run_owned([sys.executable, str(Path(__file__).resolve()),
                                         "--controller", temporary], cwd=temporary,
                                        env=controller_environment(),
-                                       timeout=20, capture_output=True, text=True, check=True)
+                                       timeout=20, capture_output=True, text=True, check=False)
                     evidence = json.loads(result.stdout)
-                    if evidence.get("status") != "deny_all_probe_passed":
+                    if evidence.get("status") not in {"deny_all_probe_passed", "failed"}:
                         raise ValueError("Unexpected controller evidence")
                     report["experiments"].append({"repeat": repeat + 1, **evidence,
                                                   "owned_job_cleanup_completed": True})
+                    if result.returncode != 0 or evidence["status"] != "deny_all_probe_passed":
+                        raise RuntimeError("Controller experiment failed; partial fixtures retained")
             report["collection_status"] = "complete"
         except Exception as exc:
             report["collection_status"] = "failed"

@@ -21,6 +21,20 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
         self.assertEqual(environment["SystemRoot"], "C:\\Windows")
         probe.windows_directory.assert_called_once()
 
+    def test_detached_fixture_flags_do_not_allow_breakaway(self):
+        self.assertEqual(probe.FIXTURE_CREATION_FLAGS, 0x80008)
+        self.assertFalse(probe.FIXTURE_CREATION_FLAGS & 0x01000000)
+        self.assertFalse(probe.FIXTURE_CREATION_FLAGS & 0x08000000)
+
+    def test_controller_retains_baseline_when_restricted_launch_fails(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(probe, "launch_fixture", side_effect=[
+                    {"restricted": False, "fixture_reaped": True}, RuntimeError("DLL-init failed")]):
+            result = probe.controller(Path(temporary))
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["failed_restricted"])
+        self.assertEqual(len(result["fixtures"]), 1)
+
     def test_restricted_fixture_requires_exact_native_denial(self):
         denied = OSError("blocked")
         denied.winerror = 367
@@ -69,7 +83,7 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             output = Path(temporary) / "result.json"
             with patch.object(probe, "validate_identity"), patch.object(probe, "supported_machine", return_value=True), \
                     patch.object(probe, "run_owned", return_value=MagicMock(
-                        stdout='{"status":"deny_all_probe_passed"}')) as owned:
+                        stdout='{"status":"deny_all_probe_passed"}', returncode=0)) as owned:
                 code = probe.main(["--source-sha", "a" * 40, "--target", "windows-arm64",
                                    "--output", str(output)])
             result = json.loads(output.read_text())
@@ -78,6 +92,23 @@ class WindowsChildPolicyFeasibilityTests(unittest.TestCase):
             self.assertFalse(result["product_enforcement"])
             self.assertFalse(result["public_rust_enabled"])
             self.assertEqual(owned.call_count, 3)
+
+    def test_parent_retains_failed_partial_fixture_report(self):
+        partial = {"status": "failed", "failed_restricted": True,
+                   "fixtures": [{"restricted": False, "fixture_reaped": True}]}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "result.json"
+            with patch.object(probe, "validate_identity"), \
+                    patch.object(probe, "supported_machine", return_value=True), \
+                    patch.object(probe, "run_owned", return_value=MagicMock(
+                        stdout=json.dumps(partial), returncode=1)):
+                code = probe.main(["--source-sha", "a" * 40, "--target", "windows-arm64",
+                                   "--output", str(output)])
+            result = json.loads(output.read_text())
+            self.assertEqual(code, 1)
+            self.assertEqual(result["collection_status"], "failed")
+            self.assertEqual(result["qualification_status"], "blocked")
+            self.assertEqual(len(result["experiments"][0]["fixtures"]), 1)
 
     def test_failed_controller_is_not_success(self):
         with tempfile.TemporaryDirectory() as temporary:
