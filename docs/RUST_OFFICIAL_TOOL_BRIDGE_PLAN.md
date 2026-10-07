@@ -1,6 +1,7 @@
 # Rust 官方工具安全接入：有界可行性计划
 
-日期：2026-10-07。状态：独立审查及修订复核通过，待用户确认 B0 研究；本轮未启动实验。
+日期：2026-10-07。状态：用户已确认 B0，只读研究结果见
+[研究报告](RUST_OFFICIAL_TOOL_BRIDGE_RESEARCH.md)；B2 未授权或启动。
 本文件细化 [执行隔离计划](RUST_EXECUTION_ISOLATION_PLAN.md) 的 I0，
 属于 [正式启用计划](RUST_PUBLIC_ENABLEMENT_PLAN.md) 第二阶段，不替代原出口。
 目标是回答“现有约束下是否存在可验证的接入路线”，不预先承诺路线可行。
