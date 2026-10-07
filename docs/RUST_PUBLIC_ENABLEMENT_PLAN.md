@@ -16,6 +16,12 @@
 仍按下文授权边界执行，不因实施授权自动生效。
 独立审查原始发现及复审结论见 [审查报告](RUST_PUBLIC_ENABLEMENT_PLAN_REVIEW.md)。
 
+2026-10-07 用户已批准改用官方开源库构建 Atlas 自有语义引擎，不再限定 T2 使用
+官方 analyzer 原版可执行文件；新身份/执行域及原型门见
+[语义核心架构修订](RUST_SEMANTIC_CORE_PLAN.md)。下文官方 analyzer 路径保留为
+历史实施证据，新路径须单独审查与资格；不继承旧 RA 身份/测试为新核心通过。
+安全、五平台、T0/T1/T2 能力、资源及最终公开授权不变；未自动恢复 heartbeat。
+
 ## 已有成果与未完成部分
 
 0.27.0 已包含独立的 Cargo/module scope、T1 原生 scanner、T2 rust-analyzer 会话、
