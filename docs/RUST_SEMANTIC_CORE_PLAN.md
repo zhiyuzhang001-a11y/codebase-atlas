@@ -2,7 +2,8 @@
 
 2026-10-07；用户已明确批准改用官方开源库构建 Atlas 自有分析引擎。
 基线 `b20e4640469d5a6f60b8fb6a18a81034d03b2793`。状态：独立修订复核通过，
-仅可继续只读 C0 锁依赖/执行卡；获取、构建和 C1 尚未开始。
+正在进行 C0 依赖锁/执行卡；已通过单独审查的 C0-A 惰性源码获取及逐文件复核，
+构建和 C1 尚未开始。见 [源码证据](RUST_SEMANTIC_C0_EVIDENCE.md)。
 审查记录见 [独立报告](RUST_SEMANTIC_CORE_PLAN_REVIEW.md)。
 这是新的架构路线，不把旧 B0/B1 的失败改写为通过，不恢复 heartbeat。
 仍只写 `codex/rust-public-enablement` 与 Draft PR21，stable 0.27.0 Rust 关闭。

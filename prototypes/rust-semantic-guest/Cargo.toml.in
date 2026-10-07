@@ -1,0 +1,28 @@
+# Frozen candidate root template; not an executable/build-approved workspace.
+# ../upstream is an owned, checksum-verified copy, never a user's project.
+[package]
+name = "atlas-semantic-guest"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+resolver = "2"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+ide = { path = "../upstream/crates/ide", default-features = false, features = [] }
+ide-db = { path = "../upstream/crates/ide-db", default-features = false, features = [] }
+hir = { path = "../upstream/crates/hir", default-features = false, features = [] }
+cfg = { path = "../upstream/crates/cfg", default-features = false, features = ["tt", "syntax"] }
+serde_json = "=1.0.150"
+triomphe = "=0.1.15"
+rayon = "=1.12.0"
+
+[profile.release]
+panic = "abort"
+debug = 0

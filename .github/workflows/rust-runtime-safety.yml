@@ -15,12 +15,33 @@ on:
       - 'scripts/rust_windows_child_policy_feasibility.py'
       - 'scripts/rust_cooperative_broker_protocol.py'
       - 'scripts/rust_broker_command_feasibility.py'
+      - 'scripts/rust_semantic_observer_probe.py'
       - 'pyproject.toml'
 
 permissions:
   contents: read
 
 jobs:
+  semantic-observer-probe:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/rust-public-enablement'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Probe a trusted short-lived child (NOT metadata or qualification)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: /usr/bin/python3 -I -S scripts/rust_semantic_observer_probe.py --source-sha "$ATLAS_SOURCE_SHA" --output semantic-observer-probe.json
+      - name: Preserve incomplete and successful raw probe evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-observer-probe-linux-x86_64
+          path: semantic-observer-probe.json
+          if-no-files-found: error
   safety:
     strategy:
       fail-fast: false
