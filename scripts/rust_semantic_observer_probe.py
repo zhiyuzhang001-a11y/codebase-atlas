@@ -16,6 +16,26 @@ import time
 
 
 TOKEN = "atlas-c0-short-lived-exec-control-v1"
+FD_TOKEN = "atlas-c0-fd-exec-control-v2"
+ARGUMENTS = ["", 'quote"backslash\\', "line\n\ttab\rreturn", "x" * 4096 + "-end"]
+
+
+def control_argv_literal(arguments: list[str]) -> str:
+    """Exact ASCII control rendering, NOT a general strace/Cargo parser."""
+    if any(not value.isascii() for value in arguments):
+        raise ValueError("only fixed ASCII controls are supported")
+    return "[" + ", ".join(json.dumps(value) for value in arguments) + "]"
+
+
+def trace_contains_extended_controls(trace: str) -> bool:
+    normal = 'execve("/usr/bin/true", ' + control_argv_literal(["/usr/bin/true", TOKEN] + ARGUMENTS)
+    fd = r'execveat\([0-9]+, "", ' + re.escape(control_argv_literal(["/usr/bin/true", FD_TOKEN] + ARGUMENTS))
+    lines = trace.splitlines()
+    # Require complete, same-line successful calls. Interleaved/unknown format
+    # is incomplete, not permission to guess a missing argv or execution result.
+    normal_ok = any(normal + ", [" in line and re.search(r"\)\s*=\s*0$", line) for line in lines)
+    fd_ok = any(re.search(fd + r', \[.*\], AT_EMPTY_PATH\)\s*=\s*0$', line) for line in lines)
+    return trace_contains_control(trace) and normal_ok and fd_ok
 
 
 def binary_identity(path: Path) -> dict:
@@ -76,10 +96,10 @@ def run_probe(source_sha: str, output: Path) -> dict:
         raise ValueError("exact source SHA required")
     if output.exists():
         raise ValueError("do not overwrite previous evidence")
-    result = {"schema": "atlas-rust-semantic-observer-probe-v1", "source_sha": source_sha,
+    result = {"schema": "atlas-rust-semantic-observer-probe-v2", "source_sha": source_sha,
               "status": "incomplete", "qualified": False,
               "scope": "Linux tracing capability for a fixed trusted short-lived child only",
-              "limitations": ["not a Cargo/build observer", "no execveat positive control",
+              "limitations": ["not a Cargo/build observer", "no general argv/cwd trace parser",
                               "no network isolation proof", "no semantic or platform qualification"]}
     if sys.platform != "linux":
         result["failure"] = "Linux required; no platform skip counted as success"
@@ -101,7 +121,23 @@ def run_probe(source_sha: str, output: Path) -> dict:
             result["tools"] = [binary_identity(Path(tracer)), binary_identity(Path("/usr/bin/python3")),
                                binary_identity(Path("/usr/bin/true"))]
             trace_path = root / "exec.trace"
-            code = "import subprocess; subprocess.run(['/usr/bin/true', '" + TOKEN + "'], check=True)"
+            # All arguments and code are Atlas-owned constants, never supplied
+            # by a project. Python's fd exec must actually use execveat; a libc
+            # fallback to /proc execve will fail the evidence predicate.
+            code = (
+                "import os, subprocess\n"
+                f"subprocess.run({['/usr/bin/true', TOKEN]!r}, check=True)\n"
+                f"subprocess.run({['/usr/bin/true', TOKEN] + ARGUMENTS!r}, check=True)\n"
+                "fd = os.open('/usr/bin/true', os.O_RDONLY | os.O_CLOEXEC)\n"
+                "pid = os.fork()\n"
+                "if pid == 0:\n"
+                f"    os.execve(fd, {['/usr/bin/true', FD_TOKEN] + ARGUMENTS!r}, dict(os.environ))\n"
+                "    os._exit(125)\n"
+                "os.close(fd)\n"
+                "_, status = os.waitpid(pid, 0)\n"
+                "if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:\n"
+                "    raise RuntimeError('fd exec control failed')\n"
+            )
             argv = [tracer, "-f", "-qq", "-v", "-s", "65536", "-e", "trace=execve,execveat",
                     "-o", str(trace_path), "/usr/bin/python3", "-I", "-S", "-c", code]
             # No user project, package source, compiler, shell, or inherited credentials.
@@ -151,9 +187,9 @@ def run_probe(source_sha: str, output: Path) -> dict:
                 total = capture_raw(root, result)
                 final_gates(result["active_seconds"], total)
                 if result["status"] == "probe-exited":
-                    if result["exit_code"] != 0 or not trace_contains_control(result["exec.trace"]):
-                        raise ValueError("complete successful short-lived control exec not observed")
-                    result["status"] = "short-lived-control-observed"
+                    if result["exit_code"] != 0 or not trace_contains_extended_controls(result["exec.trace"]):
+                        raise ValueError("complete successful execve/execveat argument controls not observed")
+                    result["status"] = "short-lived-controls-observed"
             except Exception as exc:
                 result.update(status="incomplete", failure=str(exc))
     except Exception as exc:
@@ -174,4 +210,4 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     receipt = run_probe(arguments.source_sha, arguments.output)
     print(json.dumps({k: receipt[k] for k in ("source_sha", "status", "qualified")}))
-    raise SystemExit(0 if receipt["status"] == "short-lived-control-observed" else 1)
+    raise SystemExit(0 if receipt["status"] == "short-lived-controls-observed" else 1)

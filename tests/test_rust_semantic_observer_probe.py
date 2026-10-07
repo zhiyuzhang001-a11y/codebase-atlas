@@ -3,10 +3,36 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from scripts.rust_semantic_observer_probe import TOKEN, capture_raw, final_gates, trace_contains_control
+from scripts.rust_semantic_observer_probe import (
+    TOKEN, FD_TOKEN, ARGUMENTS, capture_raw, final_gates, trace_contains_control,
+    control_argv_literal, trace_contains_extended_controls,
+)
 
 
 class ObserverPredicateTests(unittest.TestCase):
+    def extended_trace(self):
+        simple = f'412 execve("/usr/bin/true", ["/usr/bin/true", "{TOKEN}"], []) = 0'
+        normal = '413 execve("/usr/bin/true", ' + control_argv_literal(['/usr/bin/true', TOKEN] + ARGUMENTS) + ', []) = 0'
+        fd = '414 execveat(3, "", ' + control_argv_literal(['/usr/bin/true', FD_TOKEN] + ARGUMENTS) + ', [], AT_EMPTY_PATH) = 0'
+        return '\n'.join((simple, normal, fd))
+
+    def test_extended_controls_require_both_complete_successes(self):
+        trace = self.extended_trace()
+        self.assertTrue(trace_contains_extended_controls(trace))
+        for changed in (trace.replace('AT_EMPTY_PATH', '0'),
+                        trace.replace('execveat(3, ""', 'execveat(3, "/usr/bin/true"'),
+                        trace.replace(FD_TOKEN, 'unknown'),
+                        trace.replace('x' * 4096, 'x' * 80 + '...'),
+                        trace.replace(') = 0', ') = -1 ENOSYS (Function not implemented)'),
+                        '\n'.join(trace.splitlines()[:2])):
+            self.assertFalse(trace_contains_extended_controls(changed))
+
+    def test_control_escaping_and_not_a_general_parser(self):
+        self.assertEqual(control_argv_literal(['', 'a"b\\', '\n\t\r']),
+                         '["", "a\\"b\\\\", "\\n\\t\\r"]')
+        with self.assertRaises(ValueError):
+            control_argv_literal(['非 ASCII'])
+
     def test_complete_successful_control(self):
         line = f'412 execve("/usr/bin/true", ["/usr/bin/true", "{TOKEN}"], ["PATH=/usr/bin:/bin"]) = 0'
         self.assertTrue(trace_contains_control(line))

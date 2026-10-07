@@ -31,3 +31,34 @@
 完整 Cargo argv 解析、RSS 监督、禁网或 native-host 安全证明，不称 C0-M/C1 或
 Linux 产品资格通过。这些缺口仍必须在真正构建/查询卡中解决。本探针不改变
 原 8 小时原型预算、五平台门、stable 0.27.0 的关闭开关或两项暂停 heartbeat。
+
+## 已取得 v1 原始证据
+
+准确 head `1f62b8f6f3415a47e26bda0f4435dc77bf2801d1`，内部安全 run
+`37567136266` 的 `semantic-observer-probe` 完成成功。2298 字节 JSON artifact
+SHA-256 `dcb17c5496dc939f41e930462e82f1c82b890532a7645de716d53e3bfdb67421`。
+原始 trace 含 Python 与固定 true 的两次完整成功 execve，无遗漏；主动时间
+0.135233259 秒，trace 554 字节，stdout/stderr 均空，所属组消失/parent reaped。
+`qualified=false` 保持；工具 hash 是该 runner 的实测身份，不是跨 runner 的固定身份。
+没有 execveat、RSS、禁网、完整一般 argv 解析或编译能力证明。
+
+## v2 限定增补（独立复核通过，等待 CI 实测）
+
+独立 reviewer `rust_bridge_plan_review` 已重算 v1 artifact 并复核 v2 卡片、
+脚本和回归，无 P1/P2；允许现有授权 PR CI 一次限定增补。尚无 v2 运行结果。
+
+保持相同 runner、私有 cwd/空环境、可信工具身份读取、20 秒主动期限、1 MiB
+总输出和 10 秒清理。仅增加两个 Atlas 固定受控 true 调用，不执行项目/编译器：
+一个普通 execve；一个 Python `os.fork` 后 `os.execve(fd, argv, env)`，fd 只来自
+固定 `/usr/bin/true` 的只读 `O_CLOEXEC` open。必须实测成功 execveat、空路径和
+AT_EMPTY_PATH；libc fallback、权限不支持、失败/未知或交错格式均 incomplete。
+不以 Python 支持 fd exec 的文档代替 syscall 正向证据。
+
+两组固定 ASCII argv 均含空字符串、引号/反斜线、换行/tab/CR，以及 4096 字符
+长参数和尾标记。断言同一行的完整参数数组与成功返回，禁止猜测截断；仅为
+精确受控参数渲染器，不宣称它能解析一般 Cargo argv、非 ASCII 或所有交错调用。
+只继承已清空的三键环境，child 退出需由父 waitpid 证实；controller 仍清理整组。
+源码、脚本及执行卡已独立复核，普通 push 后现有 PR CI 运行一次，不手动重复
+dispatch。出口最多 short-lived-controls-observed，始终 qualified=false。
+实际 Cargo metadata 的 roots/features/source receipt、完整 exec/cwd 解析与 RSS
+等卡项仍待冻结；此增补不授权 metadata 或构建，不重置八小时主动工作总预算。

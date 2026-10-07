@@ -114,6 +114,13 @@ Analysis API 定义/引用适配；不依赖字符串 matcher，不接线产品�
 fairness 的真实 Instant，用 TimeoutInstant；因此不能把此处误判为必然时钟
 panic。parker 真正等待时仍会 panic，实际单线程语义路径仍未测试。
 
-当前准确提交 `739adc4f913c805c489860bf7974329de35fad0c` 的常规 CI run
+历史准确提交 `739adc4f913c805c489860bf7974329de35fad0c` 的常规 CI run
 `37560533184` 与五平台内部安全 run `37560533215` 均完成且全部成功，包括
 native Windows ARM64。它们不包含新核心构建或资格，不能作为 Rust 已可用的结论。
+
+后续准确 head `1f62b8f6f3415a47e26bda0f4435dc77bf2801d1` 的 CI
+`37567136316` 和内部安全 `37567136266` 均全部成功；新增 v1 Linux 观察探针
+原始 JSON 已取得且经独立核验。固定短命 true 的完整 execve、输出和清理门通过，
+详见 [观察卡及 artifact hash](RUST_SEMANTIC_OBSERVER_PROBE_CARD.md)。
+这不是 metadata、编译或语义出口。v2 的 execveat 与转义/长 argv 正向控制增补
+已独立复核无阻断，等待同一授权 PR CI 实测；不执行项目代码或 compiler。
