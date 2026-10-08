@@ -267,7 +267,7 @@ tracer 清理期间不提前 kill；失败、清理超限及 terminal 后的 lef
 kill；最后再次检查共享时钟。tick/错误有界，原始预算/wait/pipe/owner 记录保留。
 `cleanup_protocol_complete` 只描述 trusted 注入协议条件；qualified 和
 outer_cleanup_complete 仍 false。8 项 fake-only 测试不调用真实 OS 接口。
-**native owner 的完整启动绑定、tracee 收养排空与 bounded IPC 尚未实现**，
+**native owner 的完整启动绑定、tracee 收养排空与 bounded IPC 完整接线尚未实现**，
 也尚未证明这些操作不阻塞。不能把 controller 侧协议
 或 mock tracer stall 当作真实独立强监督。完整固定启动/owned adapter/预装限制
 仍须完成并另审；不授权执行控制、CI 接线或 metadata/build。
@@ -299,3 +299,22 @@ PGID 可能再用，不再发组 kill。依据
 status/fdinfo 原值、FD/dev/inode、时钟及失败 errno。caller 在初始化前持有空
 evidence sink，即使 constructor 失败也保留 partial packet 与独立 close 错误，
 主核验错误不被清理异常覆盖；不能仅用 sent 记录代替身份绑定原证据。
+
+`rust_semantic_cleanup_ipc.py` 准备两个 borrowed 非阻塞 pipe 的固定单次握手，
+未分配管道、spawn、close 或接入执行器。outer 接收 8 字节 CLEANUP1 后，仅
+写一次 DEADLIN1 + network-endian double（共 16 字节）的共享绝对 deadline；
+inner 成功请求后必须收到完整 grant 才允许调用清理。内层等待 grant 的兜底
+上限是最初 active deadline + 10 秒，收到 grant 后保留原数值而不是 now+10。
+每次一个非阻塞 read/write，前后 mode/CLOEXEC/currentuid/dev/inode 与单调时钟
+检查；最多 4096 记录，原始字节先记录再做后置检查。固定长度允许分片读取，
+同次超长、错误 magic、EOF、未知 errno、过期/非有限/续期 deadline 都失败。
+read EAGAIN/EINTR 只留到调用者下一 tick；write 短写/失败/模糊返回不重试，
+交 outer fail-closed 取消。按 [pipe](https://man7.org/linux/man-pages/man7/pipe.7.html)
+的 byte-stream/nonblocking/PIPE_BUF 语义设计，固定 8/16 字节低于原子写边界。
+单 writer/peer 身份、所有未用 endpoint 关闭、SIGPIPE disposition、继承名单、
+bootstrap/source receipt 与调用者 tick/deadline 接线仍须在完整执行卡另审。
+不是项目提供的 IPC/path，不接受 socket/regular file/blocking FD；FD 检查仍
+依赖可信 sole owner 无并发复用。11 项 fake-only 测试不构成真实握手/清理证据。
+read errno 独立保留，不被后置时钟/身份错误覆盖；grant 独立时钟/数值验证失败
+同样留错误记录并 latch failed，不能在下一 tick 恢复或续期。
+qualified/outercleanup 仍 false，不授权控制程序、metadata 或 guest 构建执行。
