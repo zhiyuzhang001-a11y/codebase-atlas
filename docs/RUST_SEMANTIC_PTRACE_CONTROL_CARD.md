@@ -318,3 +318,22 @@ bootstrap/source receipt 与调用者 tick/deadline 接线仍须在完整执行�
 read errno 独立保留，不被后置时钟/身份错误覆盖；grant 独立时钟/数值验证失败
 同样留错误记录并 latch failed，不能在下一 tick 恢复或续期。
 qualified/outercleanup 仍 false，不授权控制程序、metadata 或 guest 构建执行。
+
+`rust_semantic_subreaper.py` 准备 dedicated owned controller 的进程局部收养前置。
+仅 Linux x64 指针/long/ulong8、int4，借用已验明 glibc2.39/use_errno 的 libc；
+不自动 CDLL。必须在固定私有控制器创建任何子进程之前调用，不在 Codex、共享
+worker 或现有应用进程设置。前后 verifier 必须实测单线程/defaultSIGCHLD/
+无SA_NOCLDWAIT，另有精确固定源码 sole_waiter 策略；当前组合 verifier 未接线，
+NativeWaitState 本身不提供 sole_waiter，不能凭 callback 字典当原生资格。
+固定 GET37(必须0)→SET36(1)→GET37(必须1)，variadic arg2–5 明确机器宽 ulong，
+不用含糊 int0；未用参数均0。全部调用及前后 verifier 共用原 active 剩余且
+局部最多1.5秒；完整返回值/output/errno/调用时钟保留，失败不 prepared。
+一次 SET 尝试，模糊失败不重试、不自动 unset，以免放弃未证实清完的后代；
+完整 private controller 仍须负责 cleanup/退出，不能提前返回成功。
+依据 [subreaper](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)、
+[prctl 参数宽度](https://man7.org/linux/man-pages/man2/prctl.2.html) 和
+[固定 Linux UAPI 常数](https://raw.githubusercontent.com/torvalds/linux/v6.17/include/uapi/linux/prctl.h)。
+此属性不从 fork/clone 继承；必须由外层 controller 自己设置，不由 observer 代设。
+只证明准备态 setup 协议；仍无 launcher、已收养 lifetime admission、pidfd wait/
+终止消费与排空实现，不使用任意 wait(-1) 回收外来 child。6项mock-only测试，
+qualified/outercleanup 始终false；不授权真实 prctl/控制/metadata/build 执行。
