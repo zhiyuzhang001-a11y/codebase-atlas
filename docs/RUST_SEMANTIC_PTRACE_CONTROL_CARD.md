@@ -355,3 +355,27 @@ signal ESRCH/EPERM/EINTR 不算退出，不重发，但下一 tick 可继续收�
 前后 verifier 记录均保留；最后消费后超时仍保留 consumed=true 与原 wait 原证据，
 不计成功。8项 fake-only 测试；qualified/outercleanup 始终 false。
 无实际 OS 收养/信号/等待、CI 控制接线或 metadata/build 执行授权。
+
+`rust_semantic_adopted_identity.py` 准备上一协议缺少的 read-only 身份核验层。
+仅借用已有 journal admission 的 proc directory 和 pidfd，绝不以新收到 PID
+发现/附着进程或打开 pidfd。核对 held FD dev/inode/currentuid/CLOEXEC，读取
+同 proc FD 的 stat/status/stat，确认 starttime/ppid/controller/session/group，
+以及精确 Pid/Tgid/四种 UID/TracerPid=0；借用 pidfd 的
+[固定 Linux v6.17 pidfd_show_fdinfo](https://raw.githubusercontent.com/torvalds/linux/v6.17/fs/pidfs.c)
+须唯一且准确（负值/重复/其他 lifetime 不接受）。
+[stat 身份字段](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)
+使用既有有界 parser，不把状态变化当 lifetime 变化，接受 held zombie，但拒绝
+dead/tracing-stop；缺失/权限/变化不是零值或“已退出”。前后 FD 与原绝对 deadline
+共同检查，局部核验最多0.5秒、每文件一次最多8193字节 read、最多16原始 packet。
+新开的 sample FD 单次关闭；read 与模糊 close errno 分别保留且不重试，不关闭
+借用 proc/pidfd。每个 raw sample、解析结果、FD/dev/inode、时钟及失败独立保留，
+返回的是 binding，不附造 thread/wait policy 或 journal_admitted 成功。
+仍需 native wait-state+固定源码 solewaiter/journal verifier 组合和完整发现/收养
+集合接线，准确控制程序整体另审后才执行；6项mock-only回归，不是原生资格。
+qualified/outercleanup始终false，无实际proc读取或新增CI执行入口。
+一般 fdinfo 读取权限另见
+[proc fdinfo](https://man7.org/linux/man-pages/man5/proc_pid_fdinfo.5.html)；
+持有 zombie 的 wait/pidfd 条件另见
+[pidfd_open](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)，要求默认
+SIGCHLD、无SA_NOCLDWAIT且没有其他 reaper。源码 reference 不是 runner kernel
+资产 receipt；实际 runner 版本和同能力域正向控制仍须完整执行卡证明。
