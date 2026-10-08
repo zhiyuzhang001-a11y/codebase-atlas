@@ -17,6 +17,7 @@ from codebase_atlas.providers.rust_analyzer import (
     PROVIDER_VERSION,
     RustAnalyzerError,
     RustAnalyzerProvider,
+    RustAnalyzerResponseError,
     _read_lsp_frame,
 )
 from codebase_atlas.refresh_planner import build_generation_manifest
@@ -134,14 +135,14 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             created_at="generation:generation-1",
         )
 
-    def provider(self) -> RustAnalyzerProvider:
+    def provider(self, *, readiness_seconds: float = 1) -> RustAnalyzerProvider:
         provider = RustAnalyzerProvider(
             Path(sys.executable),
             self.repository,
             "rust-project",
             self.generation,
             arguments=(str(self.analyzer),),
-            readiness_seconds=1,
+            readiness_seconds=readiness_seconds,
         )
         self.addCleanup(provider.close)
         return provider
@@ -400,11 +401,14 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "FAKE_RA_LOG": str(self.log), "FAKE_RA_MODE": "retry",
         }):
-            provider = self.provider()
-            provider.start(timeout_seconds=1)
+            # Positive transport/provenance integration, not a one-second speed
+            # gate. Windows shared-runner scheduling and Git freshness scans are
+            # real work; retain the strict deadline in deterministic tests below.
+            provider = self.provider(readiness_seconds=5)
+            provider.start(timeout_seconds=5)
             nodes = provider.query(
                 "definition", "run", source_path="src/lib.rs",
-                source_line=2, source_column=17, timeout_ms=1000,
+                source_line=2, source_column=17, timeout_ms=5000,
             )
             provider.close()
         self.assertEqual(len(nodes), 1)
@@ -426,6 +430,43 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         self.assertEqual(options["cargo"]["cfgs"], ["feature=default", "feature=fast"])
         self.assertFalse(options["procMacro"]["enable"])
         self.assertFalse(options["cachePriming"]["enable"])
+
+    def test_readiness_retry_keeps_one_second_budget_with_deterministic_clock(self):
+        for second_duration, succeeds in ((.2, True), (.4, False)):
+            with self.subTest(second_duration=second_duration):
+                provider = self.provider()
+                now, timeouts, pauses = [10000.0], [], []
+                def request(method, params, remaining):
+                    timeouts.append(remaining)
+                    now[0] += .6 if len(timeouts) == 1 else second_duration
+                    if len(timeouts) == 1:
+                        raise RustAnalyzerResponseError(-32801, "Content modified")
+                    return []
+                def pause(seconds):
+                    pauses.append(seconds)
+                    now[0] += seconds
+                with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                           side_effect=lambda: now[0]), patch(
+                        "codebase_atlas.providers.rust_analyzer.sleep", side_effect=pause), \
+                        patch.object(provider, "_assert_fresh"), patch.object(
+                        provider, "_open", return_value="pub fn run() {}\npub fn call() { run(); }"), \
+                        patch.object(provider, "_request", side_effect=request), patch.object(
+                        provider, "_nodes", return_value=(Mock(),)), patch.object(
+                        provider, "_terminate") as terminate:
+                    if succeeds:
+                        self.assertEqual(len(provider.query(
+                            "definition", "run", source_path="src/lib.rs",
+                            source_line=2, source_column=17, timeout_ms=1000)), 1)
+                        terminate.assert_not_called()
+                    else:
+                        with self.assertRaisesRegex(TimeoutError, "validation timed out"):
+                            provider.query("definition", "run", source_path="src/lib.rs",
+                                           source_line=2, source_column=17, timeout_ms=1000)
+                        terminate.assert_called_once()
+                self.assertEqual(len(timeouts), 2)
+                self.assertAlmostEqual(timeouts[0], 1.0)
+                self.assertAlmostEqual(timeouts[1], .35)
+                self.assertEqual(pauses, [.05])
 
     def test_timeout_terminates_owned_process(self) -> None:
         marker = self.root / "child-survived"
