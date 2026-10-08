@@ -218,6 +218,24 @@ close 前检查对象身份，替换则拒绝关闭；关闭前先去除所有�
 交接核验纳入同一 try，分别注入第 7/10 次 fstat 失败，确认六个 owned FD
 全部关闭、ready=false、不能重新分配。复核结论另记 STATE。
 
+`rust_semantic_root_launch.py` 准备固定 root 启动器，无 CLI 或 CI 接线：
+准确 ROOT_SOURCE 字节生成 `/usr/bin/python3.12 -I -S -c` 固定入口与哈希，
+语法检查不执行；只能由已装好 outer 强限制且完成 Python/libc/stdlib/true/
+源码/cwd 逐项 receipt 的可信 observer 调用。一个新 owned fork、一个 bootstrap
+pidfd，失败保留 root/已创建 FD，交 outer 清理；不使用 Popen、裸 PID kill 或
+隐式 wait/reap，不重试 launch。源字节哈希不是来源验证，Python 路径也不是
+工具已经验明的证明。当前没有实际来源校验或 supervisor，不能直接运行。
+依据 [pidfd_open 的 fork 条件](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)，
+owned child 到 pidfd_open 间必须不忽略 SIGCHLD、不设 SA_NOCLDWAIT、无其他
+waiter 回收；仅 signal(SIG_DFL) 不足以证明全部条件。因此启动前强制要求
+可信 verifier 实测 native disposition/flags 与单线程、独占 wait 归属，
+返回准确 observer/threads/default/no-auto-reap/sole-waiter receipt；缺失或
+非法返回值在 fork 前失败。该实测 verifier **尚未实现**，测试中注入的声明
+不能替代原生证明；此限制是未闭合的执行前置条件，不是已通过安全门。
+全部 OS/signal APIs 在 6 项测试中 mock，相关 105 项 pure/mock/AST 回归通过；
+没有真正 fork/exec/pidfd/signal。独立复核结论另记 STATE。成功返回 PID/FD
+也仍 qualified=false、outercleanup=false，不授权 metadata/build。
+
 外层 launcher/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
