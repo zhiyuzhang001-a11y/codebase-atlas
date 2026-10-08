@@ -124,3 +124,12 @@ native Windows ARM64。它们不包含新核心构建或资格，不能作为 Ru
 详见 [观察卡及 artifact hash](RUST_SEMANTIC_OBSERVER_PROBE_CARD.md)。
 这不是 metadata、编译或语义出口。v2 的 execveat 与转义/长 argv 正向控制增补
 已独立复核无阻断，等待同一授权 PR CI 实测；不执行项目代码或 compiler。
+
+v2 后续原始证据已取得：准确 head `3a47d188f0d9f49668c045b9b4434c8c5cf965f3`，
+CI `37646034905` 与内部安全 `37646034861` 全部成功，无跳过检查。独立 reviewer
+重算 v2 artifact 并核对三个成功执行控制，C0-O 窄出口通过；详见观察卡。
+追加 [构建执行面库存](RUST_SEMANTIC_BUILD_SURFACE.md)：27 build 入口与 17
+proc-macro 入口是保守上界，不是实际 guest/native 图或执行批准。
+纯参数解码准备及未应用纯 WASM 诊断时钟补丁均未接线产品；13 项纯 Python
+回归和补丁只读 apply-check 通过，Rust 未编译、补丁未应用。metadata、真实图、
+构建卡、线程/ABI/宿主资源监督与 C1 仍未完成。

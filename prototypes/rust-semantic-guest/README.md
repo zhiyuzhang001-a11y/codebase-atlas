@@ -27,3 +27,14 @@ The real query adapter must use the fixed upstream `ide` library and admitted
 source roots/crate graph. No `Analysis::from_single_file`, string-matching
 definition/reference fallback, project execution, WASI or guessed target layout.
 See [semantic core plan](../../docs/RUST_SEMANTIC_CORE_PLAN.md).
+
+`ide-db-clock.patch` is an unapplied adaptation proposal for the fixed upstream
+`crates/ide-db/src/apply_change.rs` (original SHA-256
+`40d306a438d6c06c692c0ad3075d92a67f7a7798b884b84c8180fdf6f4d3779c`).
+Only pure `wasm32-unknown-unknown` reports diagnostic cancellation duration as
+zero instead of reading an unsupported native clock. Cancellation, tracing,
+transactional change application and return type/order remain unchanged;
+native builds retain the original clock. This is NOT a query deadline or RSS
+mechanism, nor proof that other upstream clock/parking paths work. It must only
+be applied to a separate owned verified-source copy with before/after hashes,
+never the original evidence or a user's project. Not applied or compiled yet.

@@ -42,10 +42,10 @@ SHA-256 `dcb17c5496dc939f41e930462e82f1c82b890532a7645de716d53e3bfdb67421`。
 `qualified=false` 保持；工具 hash 是该 runner 的实测身份，不是跨 runner 的固定身份。
 没有 execveat、RSS、禁网、完整一般 argv 解析或编译能力证明。
 
-## v2 限定增补（独立复核通过，等待 CI 实测）
+## v2 限定增补（原始证据独立复核通过）
 
 独立 reviewer `rust_bridge_plan_review` 已重算 v1 artifact 并复核 v2 卡片、
-脚本和回归，无 P1/P2；允许现有授权 PR CI 一次限定增补。尚无 v2 运行结果。
+脚本和回归，无 P1/P2；允许现有授权 PR CI 一次限定增补。现已取得结果如下。
 
 保持相同 runner、私有 cwd/空环境、可信工具身份读取、20 秒主动期限、1 MiB
 总输出和 10 秒清理。仅增加两个 Atlas 固定受控 true 调用，不执行项目/编译器：
@@ -62,3 +62,11 @@ AT_EMPTY_PATH；libc fallback、权限不支持、失败/未知或交错格式�
 dispatch。出口最多 short-lived-controls-observed，始终 qualified=false。
 实际 Cargo metadata 的 roots/features/source receipt、完整 exec/cwd 解析与 RSS
 等卡项仍待冻结；此增补不授权 metadata 或构建，不重置八小时主动工作总预算。
+
+准确 head `3a47d188f0d9f49668c045b9b4434c8c5cf965f3`、run `37646034861`。
+JSON 28815 字节，SHA-256
+`f3f3f33d507a0e70ba6356b0da67666e3adca704ff7ab76e1a4ea3665d01c924`。
+独立 reviewer 重算身份并逐项核对三个固定 true 控制各成功一次；空参数、转义、
+长参数/尾标记、实际 execveat 空路径/AT_EMPTY_PATH 完整。主动 0.158510949 秒，
+trace 18206 字节，stdout/stderr 空，无遗漏，所属组消失/parent reaped。
+仅 C0-O 窄出口通过，qualified=false；不批准 metadata/build 或平台语义资格。

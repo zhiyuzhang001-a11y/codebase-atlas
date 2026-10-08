@@ -70,3 +70,11 @@ triomphe、rayon 精确固定到原 lock 版本。此模板没有 src/lib.rs 或
 观察器下一步只做 [C0-O 临时 Linux 探针](RUST_SEMANTIC_OBSERVER_PROBE_CARD.md)，
 不要求 macOS 提权；探针也不是 metadata 执行资格。原生 proc-macro 的 target 条件
 不得错误地使用 guest wasm cfg；所有缺失来源或观察面继续记 incomplete。
+
+C0-O v2 原始执行控制已独立复核通过。新增纯准备模块
+`scripts/rust_semantic_exec_decode.py`，对完整 execve/execveat 记录按 C 字符串
+解码 argv/env，拒绝未知/截断/指针/NUL/无效 UTF-8，保留 fd 与 flags 而不猜路径。
+它不是执行器或安全策略，也不负责 syscall 成对、cwd/FD 来源/所有进程覆盖。
+主 agent 用它离线解码 v2 四条真实 exec，三个固定 true argv 完整一致；合成回归
+覆盖转义/Unicode octal/缺失/超限。尚未接线完整 metadata 观察器；RSS、确切允许
+命令、复制配置/receipt 与实际 roots/features 图仍未闭合，不执行 metadata。
