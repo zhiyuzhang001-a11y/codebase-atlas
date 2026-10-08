@@ -28,7 +28,8 @@ class PidfdTests(unittest.TestCase):
                         patch('scripts.rust_semantic_ptrace.os.get_inheritable', return_value=False),
                         patch('scripts.rust_semantic_ptrace.signal.pidfd_send_signal', create=True),
                         patch.multiple('scripts.rust_semantic_ptrace.os', create=True,
-                                       O_DIRECTORY=0x10000, O_CLOEXEC=0x80000, O_NOFOLLOW=0x20000)]
+                                       O_DIRECTORY=0x10000, O_CLOEXEC=0x80000,
+                                       O_NOFOLLOW=0x20000, WNOHANG=1)]
         self.mocks = [item.start() for item in self.patches]
         for item in self.patches:
             self.addCleanup(item.stop)
@@ -123,8 +124,9 @@ class PidfdTests(unittest.TestCase):
 
     def test_wait_consumption_and_successful_resume_maintain_stop_authority(self):
         self.native.wait_stops.clear()
-        with patch('scripts.rust_semantic_ptrace.os.waitpid', return_value=(10, 19 << 8 | 127)):
+        with patch('scripts.rust_semantic_ptrace.os.waitpid', return_value=(10, 19 << 8 | 127)) as wait:
             self.native.wait()
+            wait.assert_called_once_with(-1, 1 | 0x40000000)
         self.assertEqual(self.native.wait_stops, {10})
         self.native.ptrace = lambda *args: 0
         self.native.resume(10, 0)
