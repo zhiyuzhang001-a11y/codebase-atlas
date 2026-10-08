@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,64 @@ import time
 TOKEN = "atlas-c0-short-lived-exec-control-v1"
 FD_TOKEN = "atlas-c0-fd-exec-control-v2"
 ARGUMENTS = ["", 'quote"backslash\\', "line\n\ttab\rreturn", "x" * 4096 + "-end"]
+RSS_TOKEN = "atlas-c0-rss-v3"
+
+
+def load_resource_sampler() -> tuple:
+    """Load only the reviewed sibling from the exact-head checkout under -I -S."""
+    path = Path(__file__).resolve().with_name("rust_semantic_linux_resources.py")
+    with path.open('rb') as stream:
+        raw = stream.read(65537)
+    if not 0 < len(raw) <= 65536:
+        raise ValueError("bounded sampler source required")
+    spec = importlib.util.spec_from_file_location("atlas_owned_linux_resources", path)
+    module = importlib.util.module_from_spec(spec)
+    # Execute the measured bytes, not a second path lookup or a cached pyc.
+    exec(compile(raw, str(path), "exec"), module.__dict__)
+    return module, {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+
+
+def resource_marker(raw: bytes) -> tuple[int, int] | None:
+    if len(raw) > 256:
+        raise ValueError("oversized resource control marker")
+    if not raw.endswith(b"\n"):
+        return None
+    match = re.fullmatch(RSS_TOKEN.encode() + rb" ([1-9][0-9]{0,9}) ([1-9][0-9]{0,9})\n", raw)
+    if match is None:
+        raise ValueError("unknown resource control marker")
+    parent, child = map(int, match.groups())
+    if parent == child or max(parent, child) > 2**31 - 1:
+        raise ValueError("invalid resource control PIDs")
+    return parent, child
+
+
+def admit_resource_controls(module, root_pid: int, parent: int, child: int) -> list[dict]:
+    if len({root_pid, parent, child}) != 3:
+        raise ValueError("distinct owned resource PIDs required")
+    rows = []
+    for pid in (root_pid, parent, child):
+        directory = os.open(f"/proc/{pid}", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            row = module.proc_identity(module._read_at(directory, "stat", 8192))
+        finally:
+            os.close(directory)
+        if (row['pid'] != pid or row['starttime'] <= 0 or row['session'] != root_pid
+                or row['pgrp'] != root_pid or row['state'] in {'Z', 'X', 'x'}):
+            raise ValueError("resource admission identity/group mismatch")
+        rows.append(row)
+    if rows[0]['ppid'] != os.getpid() or rows[1]['ppid'] != root_pid or rows[2]['ppid'] != parent:
+        raise ValueError("resource control ancestry mismatch")
+    return rows
+
+
+def resource_sample_gate(sample: dict, parent: int, child: int) -> None:
+    by_pid = {row['pid']: row['rss_bytes'] for row in sample['samples']}
+    if len(by_pid) != 3 or len(sample['samples']) != 3:
+        raise ValueError("exactly three distinct admitted RSS controls required")
+    if any(by_pid.get(pid, 0) < 16 * 1024 * 1024 for pid in (parent, child)):
+        raise ValueError("touched allocation RSS positive control missing")
+    if sample['rss_bytes'] != sum(by_pid.values()) or sample['rss_bytes'] > 128 * 1024 * 1024:
+        raise ValueError("128 MiB controlled admitted RSS gate")
 
 
 def control_argv_literal(arguments: list[str]) -> str:
@@ -96,11 +155,12 @@ def run_probe(source_sha: str, output: Path) -> dict:
         raise ValueError("exact source SHA required")
     if output.exists():
         raise ValueError("do not overwrite previous evidence")
-    result = {"schema": "atlas-rust-semantic-observer-probe-v2", "source_sha": source_sha,
+    result = {"schema": "atlas-rust-semantic-observer-probe-v3", "source_sha": source_sha,
               "status": "incomplete", "qualified": False,
-              "scope": "Linux tracing capability for a fixed trusted short-lived child only",
+              "scope": "Linux exec controls and three admitted controlled-process RSS samples only",
               "limitations": ["not a Cargo/build observer", "no general argv/cwd trace parser",
-                              "no network isolation proof", "no semantic or platform qualification"]}
+                              "no network isolation proof", "no semantic or platform qualification",
+                              "not full-tree discovery, continuous RSS enforcement or peak measurement"]}
     if sys.platform != "linux":
         result["failure"] = "Linux required; no platform skip counted as success"
         output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -120,12 +180,14 @@ def run_probe(source_sha: str, output: Path) -> dict:
         try:
             result["tools"] = [binary_identity(Path(tracer)), binary_identity(Path("/usr/bin/python3")),
                                binary_identity(Path("/usr/bin/true"))]
+            resources, result['sampler_source'] = load_resource_sampler()
+            result['resource_control'] = {'admission': [], 'samples': [], 'qualified': False}
             trace_path = root / "exec.trace"
             # All arguments and code are Atlas-owned constants, never supplied
             # by a project. Python's fd exec must actually use execveat; a libc
             # fallback to /proc execve will fail the evidence predicate.
             code = (
-                "import os, subprocess\n"
+                "import os, subprocess, time\n"
                 f"subprocess.run({['/usr/bin/true', TOKEN]!r}, check=True)\n"
                 f"subprocess.run({['/usr/bin/true', TOKEN] + ARGUMENTS!r}, check=True)\n"
                 "fd = os.open('/usr/bin/true', os.O_RDONLY | os.O_CLOEXEC)\n"
@@ -137,6 +199,25 @@ def run_probe(source_sha: str, output: Path) -> dict:
                 "_, status = os.waitpid(pid, 0)\n"
                 "if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:\n"
                 "    raise RuntimeError('fd exec control failed')\n"
+                "allocation = bytearray(16 * 1024 * 1024)\n"
+                "for i in range(0, len(allocation), 4096): allocation[i] = 1\n"
+                "read_fd, write_fd = os.pipe()\n"
+                "child = os.fork()\n"
+                "if child == 0:\n"
+                "    os.close(read_fd)\n"
+                "    own = bytearray(16 * 1024 * 1024)\n"
+                "    for i in range(0, len(own), 4096): own[i] = 1\n"
+                "    os.write(write_fd, b'R')\n"
+                "    os.close(write_fd)\n"
+                "    time.sleep(3)\n"
+                "    os._exit(0)\n"
+                "os.close(write_fd)\n"
+                "if os.read(read_fd, 1) != b'R': raise RuntimeError('RSS readiness failed')\n"
+                "os.close(read_fd)\n"
+                f"print('{RSS_TOKEN}', os.getpid(), child, flush=True)\n"
+                "_, status = os.waitpid(child, 0)\n"
+                "if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:\n"
+                "    raise RuntimeError('RSS child failed')\n"
             )
             argv = [tracer, "-f", "-qq", "-v", "-s", "65536", "-e", "trace=execve,execveat",
                     "-o", str(trace_path), "/usr/bin/python3", "-I", "-S", "-c", code]
@@ -147,11 +228,37 @@ def run_probe(source_sha: str, output: Path) -> dict:
             with (root / "stdout").open("xb") as stdout, (root / "stderr").open("xb") as stderr:
                 process = subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.DEVNULL,
                                            stdout=stdout, stderr=stderr, start_new_session=True)
+                admitted = None
+                next_sample = 0
                 while process.poll() is None:
                     if time.monotonic() - start >= 20:
                         raise TimeoutError("20 second owned probe deadline")
                     if sum(p.stat().st_size for p in root.iterdir() if p.is_file()) > 1024 * 1024:
                         raise ValueError("1 MiB probe output gate")
+                    control = result['resource_control']
+                    if admitted is None:
+                        with (root / 'stdout').open('rb') as marker_stream:
+                            marker = resource_marker(marker_stream.read(257))
+                        if marker is not None:
+                            parent, child = marker
+                            control['admission'] = admit_resource_controls(resources, process.pid, parent, child)
+                            admitted = {row['pid']: row['starttime'] for row in control['admission']}
+                    now = time.monotonic()
+                    if admitted is not None and len(control['samples']) < 3 and now >= next_sample:
+                        # Save the raw sampled values before evaluating positive/limit gates.
+                        sample_start = now
+                        sample = resources.sample_admitted(admitted, process.pid)
+                        sample['start_seconds'] = sample_start - start
+                        sample['end_seconds'] = time.monotonic() - start
+                        control['samples'].append(sample)
+                        resource_sample_gate(sample, parent, child)
+                        if sample['end_seconds'] - sample['start_seconds'] > 0.5:
+                            raise ValueError('controlled RSS sample exceeded 0.5 second duration')
+                        if len(control['samples']) > 1:
+                            previous = control['samples'][-2]
+                            if sample['start_seconds'] - previous['end_seconds'] > 0.5:
+                                raise ValueError('controlled RSS sample gap exceeded 0.5 seconds')
+                        next_sample = time.monotonic() + 0.1
                     time.sleep(0.02)
             result["exit_code"] = process.returncode
             result["status"] = "probe-exited"
@@ -189,6 +296,8 @@ def run_probe(source_sha: str, output: Path) -> dict:
                 if result["status"] == "probe-exited":
                     if result["exit_code"] != 0 or not trace_contains_extended_controls(result["exec.trace"]):
                         raise ValueError("complete successful execve/execveat argument controls not observed")
+                    if len(result['resource_control']['samples']) != 3:
+                        raise ValueError('three controlled RSS samples not observed')
                     result["status"] = "short-lived-controls-observed"
             except Exception as exc:
                 result.update(status="incomplete", failure=str(exc))

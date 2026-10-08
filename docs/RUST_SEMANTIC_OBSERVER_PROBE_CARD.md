@@ -70,3 +70,34 @@ JSON 28815 字节，SHA-256
 长参数/尾标记、实际 execveat 空路径/AT_EMPTY_PATH 完整。主动 0.158510949 秒，
 trace 18206 字节，stdout/stderr 空，无遗漏，所属组消失/parent reaped。
 仅 C0-O 窄出口通过，qualified=false；不批准 metadata/build 或平台语义资格。
+
+## v3 受控 RSS 正向能力增补（独立执行卡复核通过，实测待完成）
+
+保持 v2 三个 exec 控制与工具、runner、空环境、私有 cwd、20 秒主动期限、
+1 MiB 输出、10 秒清理和 2 分钟 job 上限。不引入 Cargo/compiler/项目源码、
+安装、网络或 shell。执行前独立复核此卡、脚本、测试及现有 workflow。
+
+只增加 Atlas 固定 Python 内存控制：父进程逐页触碰 16 MiB，然后 fork 子进程；
+子进程再逐页触碰自身 16 MiB，通过固定私有 pipe 发出就绪字节，保持 3 秒退出。
+父进程收到就绪后输出唯一固定 token 和两 PID，并 waitpid 确认子进程正常退出。
+不接受项目提供的代码/参数/PID。controller 在同一个已启动的 strace session 中，
+对 tracer/父/子三个明确 PID 读取内核 stat，检查 PID/starttime/非死亡状态、
+所属 session/group、controller→tracer→父→子 ancestry；缺失或异常 incomplete。
+
+使用准确 checkout 内已审查的 sibling `rust_semantic_linux_resources.py`：从
+固定脚本旁路径一次有界读取最多 64 KiB，记录 SHA-256/大小，直接 compile/exec
+该测量字节，不使用 sys.path、site、package search 或 pyc。不把这个实验加载方式
+当作用户项目插件执行或最终产品加载路线。工具和模块身份都写入 source_sha receipt。
+
+只对三个已准入 PID/starttime 进行三次 smaps_rollup RSS+hugetlb 采样，保存原始
+读数、开始/结束时间和 admission。父/子各至少 16 MiB，总和最多 128 MiB，
+每次采样最多 0.5 秒、相邻间隔最多 0.5 秒（目标间隔 0.1 秒）；缺失、拒绝、
+PID 重用、组变化、低读数或限额失败均 incomplete，已有采样及输出保留。
+三次取得后停止采样，仍等待固定控制退出并清理整组。旧 exec 控制仍必须全通过。
+
+出口仅受控 exec 与受控已准入 RSS 能力，qualified=false。这不是完整 tree 发现、
+短命进程/逃逸覆盖、并发峰值或连续资源限额证明；不批准 metadata/build/C1，
+更不算五平台资格。独立 reviewer `rust_bridge_plan_review` 已复核当前脚本、卡片、
+测试和现有 workflow，无 P1/P2，独立 10 项 pure/mock 回归通过，允许普通 push 后
+只使用现有 PR CI 一次触发，不重复 dispatch、不借旧 artifact 认定新 SHA 通过。
+20 秒/采样时长异常可事后拒绝；不证明阻塞内核读取的硬抢占或连续 enforcement。
