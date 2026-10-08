@@ -379,3 +379,56 @@ qualified/outercleanup始终false，无实际proc读取或新增CI执行入口�
 [pidfd_open](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)，要求默认
 SIGCHLD、无SA_NOCLDWAIT且没有其他 reaper。源码 reference 不是 runner kernel
 资产 receipt；实际 runner 版本和同能力域正向控制仍须完整执行卡证明。
+
+## 下一接线前的集合回收缺口（2026-10-09，未执行）
+
+不得用 `/proc/<controller>/task/<tid>/children` 的空快照，或两次相同快照，
+作为收养集合已排空的证明。[Linux children 文档](https://man7.org/linux/man-pages/man5/proc_tid_children.5.html)
+说明，未全部停止/冻结的 child 在读取期间退出可能导致其他 child 被漏列。
+当前固定源码与模块尚未证明读取区间全部 child 冻结；因此此接口最多提供
+候选发现，不能产生全树完成或独占 ownership 的权限。
+
+当前 `OuterControl`、`AdoptedWait`、`AdoptedIdentity` 的准备合同要求先排空
+收养 tracee，再消费 observer terminal。若发现改用 `waitid(P_ALL, WNOWAIT)`，
+已 held 的 observer terminal 可能反复被选中；不能假定内核会轮转其他 child，
+也不能将 `WNOHANG` 的无事件结果当作没有 child。此组合须在原生接线前修订，
+已有 mock 通过不能消除该缺口。
+
+候选修订，仅提交独立设计复核、尚不授权实现后的执行：
+
+- dedicated controller 在创建任何 child 前实测并固定 subreaper、单线程、
+  SIGCHLD 默认/无自动回收与精确源码的唯一 waiter；只创建 owned observer，
+  cleanup 开始后不再 fork，也不允许未审回调/线程/其他 reaper。
+  递归整树退出推论仅适用准确固定创建源码、无逃逸或其他收养者的控制；
+  尚未证明这些条件的 metadata/通用进程树不得套用此推论。
+- observer terminal 仍 held 时核验 leader/session/group 原始身份，完成原本
+  唯一一次 owned group 取消尝试，保存结果/errno；失败不推断全组已退出。
+  然后准确 pidfd observer terminal 消费一次；模糊结果不重试，绝不在消费后
+  再使用数字 PGID 发信号。仅 consuming siginfo 与 retained terminal 完全匹配
+  且成功，才转换到 census；模糊消费不进入该阶段。删除旧「drained+EOF 才
+  reap observer」前置，EOF 只在 census 后最终出口核对；此消费不宣称清理完成。
+- observer 成功消费后，候选以 `P_ALL`、`WEXITED|WNOHANG|WNOWAIT` 加
+  固定 Linux `__WALL` 覆盖所有 child 类型。每次最多一次 nonconsuming wait，
+  保留 siginfo；无事件保持 pending。仅对同一个 held terminal child 冻结
+  proc/pidfd、UID/真实父进程/session/group/starttime，复核来源与未消费身份，
+  然后精确 `P_PIDFD` consuming wait 一次；不能消费陌生或缺准入的 child。
+- `ECHILD` 只有在上述实测/source policy、observer 成功消费、无新创建、
+  所有已登记 lifetime 证据核对和最终共享时钟检查同时满足时，才能作为该
+  dedicated controller 没有剩余 child 的候选证据。普通 PIDFD 的 ECHILD
+  仍是失败；SIG_IGN/SA_NOCLDWAIT、未知 clone、其他 waiter 或缺来源均拒绝。
+  最终通过还必须 allEOF、每个 registered lifetime 的精确 consuming terminal，
+  只读 group absence 与末次共享时钟检查。缺任一登记终止记 incomplete，
+  不计通过；post-reap group 检查不能修复缺失生命周期，EOF 不代替 terminal。
+
+上述依据 [waitid/子进程选择、WNOWAIT 与 Linux wait flags](https://man7.org/linux/man-pages/man2/waitpid.2.html)
+和 [最近存活 ancestor subreaper 收养](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)。
+原始 tracer stop/exec/RSS journal 缺失仍记 incomplete；outer 的回收不能补造
+语义或资源资格。全部操作保留原共享 10 秒、8 lifetime/4096 event 与输出门。
+旧准备模块尚未采用此顺序；准确 owner admission、native policy、错误/模糊消费
+与 pending/最终无 child 的负例、bootstrap/source/tool receipts 和整套调用接线
+仍须实现及独立复审。不新增控制执行、metadata/build 或公开启用授权。
+
+独立 reviewer `rust_bridge_plan_review` 设计复核：无 P1；P2 的 EOF/observer
+消费阶段及最终出口澄清已纳入。结论仅允许 plan-only 准备卡提交，不证明
+原生可用或执行资格。旧模块须整体更换阶段不变量，不能仅放宽 reap_attempted；
+下一步以此顺序实现 mock 负例和准确 native admission，再独立复审完整执行卡。
