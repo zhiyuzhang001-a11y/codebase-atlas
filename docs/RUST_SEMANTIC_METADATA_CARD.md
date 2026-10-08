@@ -100,6 +100,19 @@ process group，读取有界 `smaps_rollup`。累计 RSS 与显式 hugetlb 项�
 代替 RSS；缺字段、零值、权限失败、进程消失或身份变化不生成通过样本。
 根据 [Linux proc 文档](https://docs.kernel.org/filesystems/proc.html)，普通 RSS
 计数可不精确，smaps/rollup 给出映射统计；单次读取仍不是跨进程原子快照或连续峰值。
-目前只有纯/模拟测试，不读取真实 proc、不 spawn、不接线 metadata。调用者仍须
+已有纯/模拟测试及 C0-O v3 Linux 受控正例，原始证据独立复核通过；三个固定
+准入进程三次 RSS 合计均为 74,752,000 字节，sampler 字节身份与准确 head 一致。
+仅为受控采样能力，不接线 metadata，不算完整资源门通过。调用者仍须
 证明完整进程准入与创建/退出/逃逸覆盖、采样间隔/延迟、deadline/超限清理及受控
 正例；短命子进程和两次采样之间的峰值不能据此声称已覆盖。资源门仍未通过。
+
+新增纯准备 `scripts/rust_semantic_process_replay.py` 将选定的 creation/exec/chdir/
+terminal-exit 记录先成对再按调用起点回放。root PID 显式输入，子进程在父 fork/
+vfork/有限 clone 返回前已有事件时仍继承创建点 cwd；所有进程需终止证据，
+未观察父进程、PID 重用、缺失返回/退出、共享 cwd/FD、线程、namespace、未知
+clone 形状与 clone3 结构均拒绝。保留失败 exec 尝试、完整 argv/env、全局行序
+与继承/改变后的 cwd；严格 C 字符串可解码 Unicode octal 路径。
+每次最多 8192 行、单行 1 MiB、总计 16 MiB、累计 512 个 PID；无 spawn/proc
+读取。它只接受调用者选出的相关记录，不证明原 trace 全量过滤正确；cwd 仍是
+字符串，execveat FD 不转译成猜测路径，qualified=false。完整 live identity、
+cwd/FD inode、clone3 受控格式与所属树资源监督仍缺，不据此执行 metadata/build。

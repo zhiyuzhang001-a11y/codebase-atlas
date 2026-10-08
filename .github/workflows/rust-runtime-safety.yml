@@ -15,7 +15,7 @@ on:
       - 'scripts/rust_windows_child_policy_feasibility.py'
       - 'scripts/rust_cooperative_broker_protocol.py'
       - 'scripts/rust_broker_command_feasibility.py'
-      - 'scripts/rust_semantic_observer_probe.py'
+      - 'scripts/rust_semantic_*.py'
       - 'pyproject.toml'
 
 permissions:
@@ -76,6 +76,8 @@ jobs:
         run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_toolchain_installation tests.test_rust_toolchain_qualification tests.test_rust_scanner_installation tests.test_rust_scanner_acquisition tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
       - name: Test I0 experiment evidence collection (NOT qualification)
         run: python -m unittest tests.test_rust_landlock_feasibility tests.test_rust_windows_child_policy_feasibility tests.test_rust_cooperative_broker_protocol tests.test_rust_broker_command_feasibility -v
+      - name: Test pure semantic observer preparation (NOT qualification)
+        run: python -m unittest tests.test_rust_semantic_exec_decode tests.test_rust_semantic_process_replay tests.test_rust_semantic_linux_resources tests.test_rust_semantic_observer_probe -v
       - name: Collect I0 controller-command precursor (NOT cooperative broker qualification)
         if: runner.os != 'Windows'
         env:
