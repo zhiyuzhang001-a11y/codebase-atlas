@@ -202,7 +202,23 @@ outer reap 保证。所有测试使用注入 fake，未实际运行观察器。�
 known/parents/terminals/events/errors/stopped 原始状态，不把该状态标为清理通过。
 负例先记录新 child 与 terminal 再抛错，确认失败证据仍保留。
 
-外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
+`rust_semantic_outer_pipes.py` 准备 outer 独占 FD owner：只在显式 allocate 时
+用 [pipe2 原子 CLOEXEC](https://docs.python.org/3/library/os.html#os.pipe2) 创建
+三个匿名管道，读端 nonblocking，写端保留 blocking；不接收外来 inherited FD。
+每份 created-pair 先记录，核对同账户 FIFO/dev/inode/flags 后才标 validated；
+部分失败保留 allocation/close 原因并回收本次创建的 FD，borrow 返回副本。
+调用者仍须单线程保持 FD 所有权，并且只能向后续独立审查的固定 observer
+继承写端。父写端关闭不证明 child 已退出；不启动进程、不发信号、不提供 CLI。
+close 前检查对象身份，替换则拒绝关闭；关闭前先去除所有权，记录错误、继续
+其他 owned FD，不重试不确定关闭，以免关闭后来复用的对象，依据
+[Linux close 文档](https://man7.org/linux/man-pages/man2/close.2.html)。
+所有测试 OS 注入，尚未真正创建/继承管道；qualified/outercleanup 始终 false。
+这补充管道创建来源/关闭协议，不是完整 launcher、强监督或进程清理资格。
+独立初审发现最终 borrow 核验不在 allocation rollback 内；已将最终读/写
+交接核验纳入同一 try，分别注入第 7/10 次 fstat 失败，确认六个 owned FD
+全部关闭、ready=false、不能重新分配。复核结论另记 STATE。
+
+外层 launcher/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
 terminal/group/reap 均尚未实现/执行验证。必须连同准确代码和调用接线另审后
