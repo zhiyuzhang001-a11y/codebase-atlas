@@ -337,3 +337,21 @@ NativeWaitState 本身不提供 sole_waiter，不能凭 callback 字典当原生
 只证明准备态 setup 协议；仍无 launcher、已收养 lifetime admission、pidfd wait/
 终止消费与排空实现，不使用任意 wait(-1) 回收外来 child。6项mock-only测试，
 qualified/outercleanup 始终false；不授权真实 prctl/控制/metadata/build 执行。
+
+`rust_semantic_adopted_wait.py` 准备单个 **已登记且已完成原生 admission** 的
+adopted tracee 回收协议。它不发现子进程、不以调用者 PID 当 ownership，也不
+打开/关闭 FD；完整 controller 仍须先证明只创建 owned observer、启用 subreaper、
+完成原始 parent/lifetime journal 和 held proc/pidfd 身份绑定。trusted native
+verifier 每次核对同一 starttime/UID/父进程/session/group/无 tracer/FD dev-inode，
+以及单线程/defaultSIGCHLD/无SA_NOCLDWAIT/solewaiter/source journal 策略。
+当前只有注入 verifier 合同，**真实 admission、原始身份 packet 和完整集合排空
+尚未接线**，不能凭字典、单个回收成功或空 child 快照宣称整个树已经清理。
+observer terminal 必须 held/unreaped；每 tick 最多一次 WNOWAIT 非阻塞 terminal
+观察、一次精确 P_PIDFD consuming wait 和一次 stored pidfd SIGKILL；无内部重试。
+先见原始 terminal，重核身份后才消费。模糊消费/身份/时钟错误 latch，不复用权限；
+signal ESRCH/EPERM/EINTR 不算退出，不重发，但下一 tick 可继续收集真实终止证据。
+所有操作与最后消费后检查共用外层冻结绝对 cleanup deadline，剩余最多10秒，不
+更新期限；只在原始 terminal 匹配且末次时钟通过后标 known_lifetime_drained。
+前后 verifier 记录均保留；最后消费后超时仍保留 consumed=true 与原 wait 原证据，
+不计成功。8项 fake-only 测试；qualified/outercleanup 始终 false。
+无实际 OS 收养/信号/等待、CI 控制接线或 metadata/build 执行授权。
