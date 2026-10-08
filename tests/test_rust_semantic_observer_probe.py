@@ -150,6 +150,23 @@ class ObserverPredicateTests(unittest.TestCase):
                         '\n'.join(trace.splitlines()[:2])):
             self.assertFalse(trace_contains_extended_controls(changed))
 
+    def test_extended_controls_pair_interleaved_results_without_guessing(self):
+        simple, normal, fd = self.extended_trace().splitlines()
+        split = [simple.replace(') = 0', ' <unfinished ...>'),
+                 '411 vfork( <unfinished ...>',
+                 normal.replace(') = 0', ' <unfinished ...>'),
+                 '411 <... vfork resumed>) = 413',
+                 '413 <... execve resumed>) = 0',
+                 '412 <... execve resumed>) = 0', fd]
+        self.assertTrue(trace_contains_extended_controls('\n'.join(split)))
+        for changed in (split[:-2] + [fd],
+                        split[:5] + ['412 <... execveat resumed>) = 0', fd],
+                        split[:5] + ['412 <... execve resumed>) = -1 EPERM (Denied)', fd],
+                        split + ['999 <... execve resumed>) = 0'],
+                        split + [fd],
+                        split + [simple.replace(') = 0', ') = -1 EPERM (Denied)')]):
+            self.assertFalse(trace_contains_extended_controls('\n'.join(changed)))
+
     def test_control_escaping_and_not_a_general_parser(self):
         self.assertEqual(control_argv_literal(['', 'a"b\\', '\n\t\r']),
                          '["", "a\\"b\\\\", "\\n\\t\\r"]')

@@ -25,7 +25,17 @@ RSS_TOKEN = "atlas-c0-rss-v4"
 
 def load_resource_sampler() -> tuple:
     """Load only the reviewed sibling from the exact-head checkout under -I -S."""
-    path = Path(__file__).resolve().with_name("rust_semantic_linux_resources.py")
+    return _load_owned_module("rust_semantic_linux_resources.py")
+
+
+def load_exec_decoder() -> tuple:
+    return _load_owned_module("rust_semantic_exec_decode.py")
+
+
+def _load_owned_module(filename: str) -> tuple:
+    if filename not in {"rust_semantic_linux_resources.py", "rust_semantic_exec_decode.py"}:
+        raise ValueError("only fixed reviewed observer siblings permitted")
+    path = Path(__file__).resolve().with_name(filename)
     with path.open('rb') as stream:
         raw = stream.read(65537)
     if not 0 < len(raw) <= 65536:
@@ -134,15 +144,28 @@ def control_argv_literal(arguments: list[str]) -> str:
     return "[" + ", ".join(json.dumps(value) for value in arguments) + "]"
 
 
-def trace_contains_extended_controls(trace: str) -> bool:
-    normal = 'execve("/usr/bin/true", ' + control_argv_literal(["/usr/bin/true", TOKEN] + ARGUMENTS)
-    fd = r'execveat\([0-9]+, "", ' + re.escape(control_argv_literal(["/usr/bin/true", FD_TOKEN] + ARGUMENTS))
-    lines = trace.splitlines()
-    # Require complete, same-line successful calls. Interleaved/unknown format
-    # is incomplete, not permission to guess a missing argv or execution result.
-    normal_ok = any(normal + ", [" in line and re.search(r"\)\s*=\s*0$", line) for line in lines)
-    fd_ok = any(re.search(fd + r', \[.*\], AT_EMPTY_PATH\)\s*=\s*0$', line) for line in lines)
-    return trace_contains_control(trace) and normal_ok and fd_ok
+def trace_contains_extended_controls(trace: str, decoder=None) -> bool:
+    """Strictly pair selected exec rows; not certify creation or full coverage."""
+    if len(trace.encode('utf-8')) > 1024 * 1024:
+        return False
+    if decoder is None:
+        decoder, _ = load_exec_decoder()
+    rows = [line for line in trace.splitlines() if re.match(
+        r'^[1-9][0-9]* +(?:execve(?:at)?\(|<\.\.\. execve(?:at)? resumed>)', line)]
+    try:
+        attempts = decoder.pair_records(rows)
+    except ValueError:
+        return False
+    expected = [('execve', '/usr/bin/true', ['/usr/bin/true', TOKEN], None),
+                ('execve', '/usr/bin/true', ['/usr/bin/true', TOKEN] + ARGUMENTS, None),
+                ('execveat', '', ['/usr/bin/true', FD_TOKEN] + ARGUMENTS, 'AT_EMPTY_PATH')]
+    for control in expected:
+        matched = [attempt for attempt in attempts if
+                   (attempt['syscall'], attempt['path'], attempt['argv'], attempt['flags']) == control]
+        if (len(matched) != 1 or not matched[0]['launched']
+                or (control[0] == 'execveat' and type(matched[0]['fd']) is not int)):
+            return False
+    return True
 
 
 def binary_identity(path: Path) -> dict:
@@ -233,6 +256,7 @@ def run_probe(source_sha: str, output: Path) -> dict:
             result["tools"] = [binary_identity(Path(tracer)), binary_identity(Path("/usr/bin/python3")),
                                binary_identity(Path("/usr/bin/true"))]
             resources, result['sampler_source'] = load_resource_sampler()
+            decoder, result['exec_decoder_source'] = load_exec_decoder()
             result['resource_control'] = {'admission': [], 'samples': [], 'qualified': False}
             parent_cwd = root / 'cwd-control'
             child_cwd = parent_cwd / '目录'
@@ -360,7 +384,7 @@ def run_probe(source_sha: str, output: Path) -> dict:
                 total = capture_raw(root, result)
                 final_gates(result["active_seconds"], total)
                 if result["status"] == "probe-exited":
-                    if result["exit_code"] != 0 or not trace_contains_extended_controls(result["exec.trace"]):
+                    if result["exit_code"] != 0 or not trace_contains_extended_controls(result["exec.trace"], decoder):
                         raise ValueError("complete successful execve/execveat argument controls not observed")
                     if len(result['resource_control']['samples']) != 3:
                         raise ValueError('three controlled RSS samples not observed')

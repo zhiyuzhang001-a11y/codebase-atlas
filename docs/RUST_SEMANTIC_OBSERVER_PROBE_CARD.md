@@ -134,3 +134,25 @@ qualified=false 保持。通过条件仅旧 exec/RSS 门加固定 live cwd/FD �
 独立 reviewer `rust_bridge_plan_review` 最终复核无剩余 P1/P2，独立 12 项
 pure/mock 测试通过；三项 P2（同一 FD hash/inode 绑定、跨平台常量 mocks、
 O_PATH 拒绝）均已解决。仅允许现有 CI 限定控制，不授权 metadata/build 或资格。
+
+### v4 首次实测失败及严格配对修订（独立复核通过，新 CI 待完成）
+
+准确 head `828743da9327ab7da6988580ab8b9b9961091742`，内部安全 run
+`37816756008`，probe job `113447240100`。原始 JSON 40504 字节，SHA-256
+`d458d47a8fa53cb13f8a0ed08e9f1d947a893d8d1eacf224cfcc50e64224f3a8`。
+状态 incomplete：扩展创建追踪后两个 execve 的 start/result 分行，旧单行谓词
+拒绝。保留该失败，不将离线修正判定倒写为该 SHA 的 CI 通过。
+
+修订仅将已审查纯 `rust_semantic_exec_decode.py` 接入固定控制谓词：与 sampler
+相同的固定 sibling 白名单、64 KiB 有界测量字节加载、源码 hash/大小 receipt，
+不依赖 sys.path/site/pyc。从 ≤1 MiB 原始 trace 明确选 execve/execveat start/
+resume 子序列，严格按 PID 和 syscall 配对并完整解码；孤立、错配、缺失、失败、
+截断或未知格式拒绝，每个固定 argv/path/flags 成功控制必须恰好一次。
+创建/信号/cwd/终止行不据此取得完整观察器资格；未验证一般 FD origin。
+纯 selected-process replay 另允许本次真实 vfork 配对留下的空括号内 ASCII
+空格，仍不接受参数/tab/未知 clone/clone3；只作原始事件离线重放，不接入执行策略。
+脚本、测试、本卡独立审查后才正常 push，使用现有 CI 不重复 dispatch。
+独立 reviewer `rust_bridge_plan_review` 核对原始 hash、三轮 RSS/cwd/FD 和清理，
+最终无剩余 P1/P2，独立 13+8 项纯测试通过。固定控制按所有尝试匹配，总数须一
+且成功，补成功加失败重复负例；离线重放 4 exec/4 creation/5 terminal，仍
+qualified=false。只批准现有 CI 限定控制，不授权 metadata/build 或改写旧 CI。

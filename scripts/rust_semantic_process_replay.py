@@ -80,7 +80,7 @@ def creation_child(event: dict) -> int | None:
     if result is None:
         raise ValueError('unknown process creation result')
     if name in {'fork', 'vfork'}:
-        if not re.fullmatch(r'[1-9][0-9]* +' + name + r'\(\) += ([1-9][0-9]*|' + FAILED + r')', raw):
+        if not re.fullmatch(r'[1-9][0-9]* +' + name + r'\( *\) += ([1-9][0-9]*|' + FAILED + r')', raw):
             raise ValueError('unknown fork arguments')
     elif name == 'clone':
         pointer = r'(?:NULL|0x[0-9a-f]+)'

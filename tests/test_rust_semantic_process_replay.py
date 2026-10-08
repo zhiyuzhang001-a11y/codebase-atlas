@@ -13,6 +13,19 @@ def exitrow(pid):
 
 
 class ProcessReplayTests(unittest.TestCase):
+    def test_observed_vfork_spacing_with_interleaved_exec_result(self):
+        records = [execrow(20), '20 vfork( <unfinished ...>',
+                   '21 execve("/trusted/tool", ["/trusted/tool", ""], ["LC_ALL=C"] <unfinished ...>',
+                   '20 <... vfork resumed>)              = 21',
+                   '21 <... execve resumed>)             = 0', exitrow(21), exitrow(20)]
+        result = replay(records, root_pid=20, initial_cwd='/owned')
+        self.assertEqual(result['processes'][0]['child_pid'], 21)
+        self.assertEqual(result['attempts'][1]['completion_index'], 4)
+        for changed in ('20 vfork(unknown) = 21', '20 vfork(\t) = 21'):
+            with self.assertRaises(ValueError):
+                replay([execrow(20), changed, execrow(21), exitrow(21), exitrow(20)],
+                       root_pid=20, initial_cwd='/owned')
+
     def test_creation_before_interleaved_child_exec_preserves_cwd(self):
         records = [execrow(20), '20 vfork(<unfinished ...>',
                    '21 chdir("/private/\\347\\233\\256\\345\\275\\225") = 0',
