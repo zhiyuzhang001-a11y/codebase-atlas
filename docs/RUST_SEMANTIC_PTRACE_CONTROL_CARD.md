@@ -147,6 +147,18 @@ assembled `-c` 源码另限 100 KiB。不使用 site/sys.path/pyc 二次查找�
 运行。精确 libc/工具/源码身份与剩余 OS 接线仍须完整审查，不把生成源码当作
 观察器执行资格。生成器曾遗漏对嵌入字节的语法检查，负例失败后已修复。
 
+`rust_semantic_control_budget.py` 新增纯记账准备模块：一个共享 20 秒主动期限，
+首次 cleanup 创建不可续期的 10 秒期限；拒绝非有限/倒退时钟，失败后不能恢复
+active。stdout/stderr/trace 原始字节共用 1 MiB 留存上限，每次读块须不超过
+64 KiB；超限先记录当前块的计数/hash/有界前缀，再失败。清理排空的输出仍计入
+同一上限，省略字节明确记录，EOF 不当作进程终止/回收证据。纯测试不读取管道、
+启动进程或发信号。此模块没有 OS 级强监督：外层仍必须在 tracer 阻塞时独立
+执行 deadline、持续消费受限读块并证明 terminal/group/reap；不能把记账函数
+当作已生效的原生限制。主 agent 74 项相关 pure/mock/AST 回归通过。
+独立 reviewer 4 项纯测试通过、无 P1/P2，仅允许提交准备模块；实际接线须
+另审，外层成功完成时也须再次检查主动 deadline，才进入同一清理阶段。
+未授权控制执行或 CI 执行接线。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
