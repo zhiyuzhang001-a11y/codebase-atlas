@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from scripts.rust_semantic_linux_resources import _read_at, proc_identity, rollup_rss, sample_admitted
+from scripts.rust_semantic_linux_resources import _read_at, proc_identity, rollup_rss, sample_admitted, audit_coverage
 
 
 def stat(pid=14, session=14, starttime=123, state='S'):
@@ -16,6 +16,56 @@ ROLLUP = b'0000-ffff ---p [rollup]\nRss:  20 kB\nPss:  3 kB\nShared_Hugetlb:  4 
 
 
 class ResourcesTests(unittest.TestCase):
+    def coverage_packet(self, pids=(14, 15), begin=0.1, end=0.11):
+        return dict(start_seconds=begin, end_seconds=end, rss_bytes=20*len(pids),
+                    samples=[dict(pid=pid, starttime=123, rss_bytes=20) for pid in pids])
+
+    def test_coverage_requires_each_traced_lifetime_including_short_child(self):
+        packet = self.coverage_packet()
+        result = audit_coverage([14, 15], {14: 123, 15: 123}, [packet], 100)
+        self.assertFalse(result['qualified'])
+        self.assertEqual(result['sample_counts'], {14: 1, 15: 1})
+        self.assertEqual(result['observed_aggregate_max_bytes'], 40)
+        for admitted, packets in (({14: 123}, [packet]),
+                                   ({14: 123, 15: 123}, [self.coverage_packet((14,))]),
+                                   ({14: 123, 15: 124}, [packet])):
+            with self.assertRaises(ValueError):
+                audit_coverage([14, 15], admitted, packets, 100)
+
+    def test_coverage_rejects_unknown_duplicate_zero_and_sum_limit(self):
+        for field, value in (('pid', 99), ('pid', True), ('starttime', 124),
+                             ('rss_bytes', 0), ('rss_bytes', -1), ('rss_bytes', True)):
+            packet = self.coverage_packet()
+            packet['samples'][1][field] = value
+            with self.assertRaises(ValueError):
+                audit_coverage([14, 15], {14: 123, 15: 123}, [packet], 100)
+        packet = self.coverage_packet((14, 14))
+        with self.assertRaises(ValueError):
+            audit_coverage([14, 15], {14: 123, 15: 123}, [packet], 100)
+        for limit, total in ((30, 40), (100, 41)):
+            packet = self.coverage_packet()
+            packet['rss_bytes'] = total
+            with self.assertRaises(ValueError):
+                audit_coverage([14, 15], {14: 123, 15: 123}, [packet], limit)
+
+    def test_coverage_rejects_invalid_intervals_and_bounds(self):
+        for begin, end in ((float('nan'), 0.1), (0.1, float('inf')), (-1, 0),
+                           (0.2, 0.1), (0.1, 0.7), (True, 0.1)):
+            with self.assertRaises(ValueError):
+                audit_coverage([14, 15], {14: 123, 15: 123},
+                               [self.coverage_packet(begin=begin, end=end)], 100)
+        for begin in (0.1, 0.7):
+            with self.assertRaises(ValueError):
+                audit_coverage([14, 15], {14: 123, 15: 123},
+                               [self.coverage_packet(), self.coverage_packet(begin=begin, end=begin+0.01)], 100)
+        for pids, admitted, packets, limit in (([14, 14], {14: 123}, [self.coverage_packet()], 100),
+                                              ([True], {True: 123}, [self.coverage_packet()], 100),
+                                              ([14], {14: 123}, [], 100),
+                                              ([14], {14: 123}, [self.coverage_packet((14,))]*16385, 100),
+                                              ([14], {14: 123}, [self.coverage_packet((14,))], True)):
+            with self.assertRaises(ValueError):
+                audit_coverage(pids, admitted, packets, limit)
+
     @patch.multiple('scripts.rust_semantic_linux_resources.os', O_CLOEXEC=0,
                     O_NOFOLLOW=0, create=True)
     @patch('scripts.rust_semantic_linux_resources.os.close')

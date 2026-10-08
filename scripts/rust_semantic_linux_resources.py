@@ -7,6 +7,7 @@ and cleanup, and obtain positive controls before using samples for qualification
 from __future__ import annotations
 
 import os
+import math
 import re
 import sys
 
@@ -102,3 +103,68 @@ def sample_admitted(identities: dict[int, int], session: int) -> dict:
             os.close(directory)
     return {'samples': samples, 'rss_bytes': sum(row['rss_bytes'] for row in samples),
             'qualified': False}
+
+
+def audit_coverage(required_pids: list[int], admitted: dict[int, int],
+                   packets: list[dict], rss_limit: int) -> dict:
+    """Pure reconciliation, not discovery, a lifetime/peak proof or permission.
+
+    Caller supplies validated trace lifetimes plus tracer PID, kernel-admitted
+    PID/starttime pairs and already collected samples. Every required PID needs
+    admission and positive RSS, including short-lived children. The caller must
+    still prove complete trace selection, live ancestry, sampling through exit,
+    escapes, cancellation and cleanup. Nothing here reads proc or runs tools.
+    """
+    if (type(required_pids) is not list or not 0 < len(required_pids) <= 512
+            or any(type(pid) is not int or not 0 < pid <= 2**31-1 for pid in required_pids)
+            or len(set(required_pids)) != len(required_pids)):
+        raise ValueError('bounded distinct trace/tracer PIDs required')
+    required = set(required_pids)
+    if type(admitted) is not dict or set(admitted) != required:
+        raise ValueError('missing or extra kernel admission for traced lifetime')
+    if any(type(pid) is not int or type(start) is not int or not 0 < start <= 2**64-1
+           for pid, start in admitted.items()):
+        raise ValueError('exact kernel starttime required')
+    if (type(packets) is not list or not 0 < len(packets) <= 16384
+            or type(rss_limit) is not int or not 0 < rss_limit <= 2**63-1):
+        raise ValueError('bounded packets and explicit RSS limit required')
+    counts = dict.fromkeys(required, 0)
+    maxima = dict.fromkeys(required, 0)
+    last_end, observed_max, row_count = None, 0, 0
+    for packet in packets:
+        if type(packet) is not dict:
+            raise ValueError('sample packet required')
+        begin, end = packet.get('start_seconds'), packet.get('end_seconds')
+        if any(type(value) not in (int, float) or (type(value) is float and not math.isfinite(value))
+               for value in (begin, end)):
+            raise ValueError('finite sample interval required')
+        if begin < 0 or end < begin or end-begin > 0.5 or (last_end is not None and not 0 <= begin-last_end <= 0.5):
+            raise ValueError('sample interval overlap, duration or gap invalid')
+        rows = packet.get('samples')
+        if type(rows) is not list or not 0 < len(rows) <= 512:
+            raise ValueError('bounded nonempty sample rows required')
+        row_count += len(rows)
+        if row_count > 65536:
+            raise ValueError('aggregate sample rows exceed bound')
+        seen, total = set(), 0
+        for row in rows:
+            if type(row) is not dict:
+                raise ValueError('sample identity row required')
+            pid, start, rss = row.get('pid'), row.get('starttime'), row.get('rss_bytes')
+            if (type(pid) is not int or pid not in required or pid in seen
+                    or type(start) is not int or start != admitted[pid]
+                    or type(rss) is not int or not 0 < rss <= rss_limit):
+                raise ValueError('unknown, duplicate, changed or missing RSS identity')
+            seen.add(pid)
+            total += rss
+            counts[pid] += 1
+            maxima[pid] = max(maxima[pid], rss)
+        if type(packet.get('rss_bytes')) is not int or packet['rss_bytes'] != total or total > rss_limit:
+            raise ValueError('sample sum mismatch or RSS limit exceeded')
+        observed_max = max(observed_max, total)
+        last_end = end
+    missing = sorted(pid for pid, count in counts.items() if count == 0)
+    if missing:
+        raise ValueError('traced lifetimes without positive RSS samples: ' + repr(missing))
+    return {'sample_counts': counts, 'observed_pid_maxima': maxima,
+            'observed_aggregate_max_bytes': observed_max, 'qualified': False}

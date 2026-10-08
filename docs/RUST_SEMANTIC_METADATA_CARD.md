@@ -116,3 +116,15 @@ clone 形状与 clone3 结构均拒绝。保留失败 exec 尝试、完整 argv/
 读取。它只接受调用者选出的相关记录，不证明原 trace 全量过滤正确；cwd 仍是
 字符串，execveat FD 不转译成猜测路径，qualified=false。完整 live identity、
 cwd/FD inode、clone3 受控格式与所属树资源监督仍缺，不据此执行 metadata/build。
+
+资源纯准备增加 `audit_coverage`：由调用者提供已验证 trace 的全部 lifetime PID
+加 tracer、内核准入 PID/starttime、已收集的 RSS packets 与显式 limit。每个 PID
+必须恰好在 admission 集内且至少一次正 RSS；未知/重复/重用身份、零/缺失读数、
+错误合计、超限、采样超过 0.5 秒或相邻间隔超过 0.5 秒/重叠均拒绝。上限 512 PID、
+16384 packets、65536 aggregate rows；不读 proc、不启动进程、不生成 passed 资格。
+输出只是 observed aggregate maximum，不是整个 lifetime 的 peak 上界；仍须证明
+原 trace 全量选择、实时 tree admission、短命/退出/逃逸覆盖及初始化到清理的监督。
+已独立核对的 v4 controls 只有三个固定 live PID 的 RSS：三个短命 true 的内核
+admission/RSS 缺失，不能通过此完整覆盖核对，也不能升级为 metadata 资源资格。
+独立 reviewer `rust_bridge_plan_review` 已复核本纯增补，无 P1/P2，独立 9 项
+资源 pure/mock 测试通过；仅允许正常提交与现有 CI pure 测试，不授权 metadata/build。
