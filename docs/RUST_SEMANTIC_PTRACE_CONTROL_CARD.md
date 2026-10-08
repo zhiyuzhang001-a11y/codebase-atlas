@@ -190,6 +190,18 @@ WNOWAIT 保留待回收状态，P_PIDFD 选择同一 lifetime 且 kernel 检查 
 借用 FD 来源/独占所有权/tracer drain 顺序须完整 outer owner 与接线另审。
 未授权 native 控制、CI 执行接线或 metadata/build。
 
+`rust_semantic_control_observer.py` 继续准备 inner observer 编排：注入已拥有的
+stop/cleanup operations，正常完成与失败都只进入一次 outer 提供的共享 cleanup
+期限；最后一次 wait 后再次核对主动时钟，非有限/倒退/超时不算控制成功。
+首次 stop 前失败使用 caller 持有的 root bootstrap pidfd 发送权，发送失败保留
+错误后仍排空 wait，不以失败发送推断已退出。无 native 构造/spawn/CLI；关闭
+句柄失败与部分 stop/terminal/native 记录保留，资格与 outer cleanup 始终 false。
+这只是内层协议组合，未提供独立强取消、工具来源、FD 生命周期、组消失或
+outer reap 保证。所有测试使用注入 fake，未实际运行观察器。独立复核另记 STATE。
+独立初审发现清理异常会丢弃临时 cleanup 对象；已改为保留实例并导出 partial
+known/parents/terminals/events/errors/stopped 原始状态，不把该状态标为清理通过。
+负例先记录新 child 与 terminal 再抛错，确认失败证据仍保留。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
