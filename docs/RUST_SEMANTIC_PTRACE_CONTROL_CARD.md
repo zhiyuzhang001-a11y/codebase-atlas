@@ -175,6 +175,21 @@ Python 可能自动重试 EINTR，故不能用此调用替代独立强监督；�
 独立 reviewer 7 项全 OS 注入测试通过，无 P1/P2，允许提交准备模块；不证明
 管道来源、强监督或进程清理，不授权 metadata/build。
 
+`rust_semantic_observer_wait.py` 新增 outer observer 的终止/回收准备适配器：
+只借用外层准确 spawn 与 lifetime binding receipt 的 pidfd；不创建/关闭句柄、
+启动、发信号或使用数字 PID wait。Linux `waitid(P_PIDFD, WEXITED|WNOHANG|
+WNOWAIT)` 先核对 PID/uid/SIGCHLD/终止类型与状态，保留 waitable terminal；
+明确 `reap()` 只允许已观察终止后的一次 consuming FD wait，结果必须一致。
+ECHILD/ESRCH、空/不一致结果不算回收；模糊 consuming call 后不重试。
+依据 [Linux waitid 文档](https://man7.org/linux/man-pages/man2/waitpid.2.html)，
+WNOWAIT 保留待回收状态，P_PIDFD 选择同一 lifetime 且 kernel 检查 wait 归属。
+它不证明 FD 的创建来源、外层独占 wait/FD 所有权、observer 会话身份或组消失，
+调用者须先完成 tracer/tracee 排空；report 始终不宣布整体清理或资格通过。
+主 agent 87 项相关 pure/mock/AST 测试通过，全 OS 注入，未真实 wait/reap。
+独立 reviewer 6 项全 OS 注入测试通过，无 P1/P2，仅允许提交准备模块；
+借用 FD 来源/独占所有权/tracer drain 顺序须完整 outer owner 与接线另审。
+未授权 native 控制、CI 执行接线或 metadata/build。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
