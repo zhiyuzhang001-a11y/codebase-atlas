@@ -159,6 +159,22 @@ active。stdout/stderr/trace 原始字节共用 1 MiB 留存上限，每次读�
 另审，外层成功完成时也须再次检查主动 deadline，才进入同一清理阶段。
 未授权控制执行或 CI 执行接线。
 
+`rust_semantic_control_pipes.py` 是非阻塞排空的准备适配器，无执行入口：只借用
+外层拥有且保持不关闭/复用的三个独立 pipe read FD，不创建/关闭 FD、不启动或
+发信号。逐 FD 核对 FIFO 类型、当前 uid、dev/inode、只读/O_NONBLOCK/CLOEXEC；
+这不独立证明管道来源，仍须外层的创建 receipt 和单线程 FD 所有权。
+每 tick 每 stream 最多一次 64 KiB read，前后核对身份与共享阶段期限；先记录
+实际读出的字节，后检查 post-read 失败，以保留异常证据。EAGAIN/EINTR 只在
+下一 tick 重试，不内部循环或重置 deadline；验证/读错误锁住 active，清理仍可
+排空。EOF 不当作回收，错误摘要限 128 条，tick 总数限 65536。全部 OS 操作在
+测试中注入，主 agent 81 项相关 pure/mock/AST 测试通过；尚未读真实控制管道。
+低层读长与 EOF 依据 [Python os.read 文档](https://docs.python.org/3/library/os.html#os.read)，
+非阻塞标志依据 [Python blocking 文档](https://docs.python.org/3/library/os.html#os.get_blocking)。
+Python 可能自动重试 EINTR，故不能用此调用替代独立强监督；外层和 tracer 的
+完整接线仍须另审，未授权实际控制执行或 CI 执行接线。
+独立 reviewer 7 项全 OS 注入测试通过，无 P1/P2，允许提交准备模块；不证明
+管道来源、强监督或进程清理，不授权 metadata/build。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
