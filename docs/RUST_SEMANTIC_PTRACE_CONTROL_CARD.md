@@ -102,7 +102,23 @@ ptrace 和 9 项资源 pure/mock 测试通过，主 agent 相关 49 项回归通
 复核只允许提交准备模块；没有批准实际控制执行或 CI 执行接线。
 曾发现并修复 NaN/inf deadline 缺口及测试归属错误，失败不作通过证据。
 
+后续准备差异增加 `FixedForkCleanup` 的纯注入式异常排空协议：保留失败后仍
+pending 的停止点；已恢复任务只允许通过 outer owner 预先绑定的 lifetime handle
+终止，禁止裸 PID kill。每个停止任务（包括 cleanup 新发现的 child）恢复前必须
+先 bind_stopped 核验绑定 lifetime handle、kill_bound 实际发送 SIGKILL 成功，
+之后 CONT0 仅推进退出；绑定或发送失败保持停止，交外层失败清理。不能依赖
+CONT(SIGKILL)：非 signal-delivery stop 可忽略该参数，独立审查发现的 P1 已按
+上述次序修复并加负例。支持 child 初始 stop/parent 创建通知两种次序；排空
+SIGKILL/正常 terminal 与 ECHILD，ESRCH 不作 terminal 或回收证据；拒绝 PID
+重用、observer 身份、非法 wait 编码及超出共享剩余 10 秒/PID/event 预算。
+即使 known lifetimes 都有 terminal，仍显式 `outer_cleanup_complete=false`；
+group absence 与外层 observer reap 不由该协议推断。没有 native kill/handle
+实现，测试只使用 fake operations。NativeStops 资源模块改为显式注入，便于后续
+将逐文件核验过的源码字节嵌入 `-I -S` observer，不依赖项目 sys.path/site。
+主 agent 59 项相关 pure/mock 回归通过；本差异独立复核结论另记 STATE。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
-20 秒强监督、合计 1 MiB 输出及共享 10 秒异常停止点排空/terminal/group/reap
-均尚未实现/执行验证。必须连同准确代码和调用接线另审后才运行，不能将已有
-loop 作为独立执行器，更不授权 metadata/build 或完整树/峰值资源门。
+真实 lifetime handle、20 秒强监督、合计 1 MiB 输出及共享 10 秒清理的 OS 接线、
+terminal/group/reap 均尚未实现/执行验证。必须连同准确代码和调用接线另审后
+才运行，不能将已有 loop/cleanup 协议作为独立执行器，更不授权 metadata/build
+或完整树/峰值资源门。
