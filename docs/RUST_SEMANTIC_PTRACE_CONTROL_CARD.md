@@ -256,6 +256,22 @@ SA_NOCLDWAIT。两次观测与闭合耗时最多 0.5 秒；这仍是 cooperative
 本差异全部 libc/OS 操作只在 mock 测试中调用，未读取真实 proc/sigaction。
 独立复核结论另记 STATE；qualification 与 outercleanup 始终 false。
 
+`rust_semantic_outer_control.py` 准备 controller 侧阶段协议，必须与 observer
+分属不同进程；复用预算、非阻塞 pipe reader、nonconsuming pidfd wait。
+主动期限耗尽或终止进入一次共享 cleanup；内层请求 cleanup 时立即创建同一个
+绝对期限，并经 owned IPC 下发，不等 observer 终止后另加 10 秒。正常 live
+tracer 清理期间不提前 kill；失败、清理超限及 terminal 后的 leftovers 请求
+一次 owned-group 取消，发送失败仍保留错误、继续排空，不从发送推断 terminal。
+所有 tracee 消费终止证据、observer waitable terminal 与三管道 EOF 都满足后才
+一次 observer reap；模糊消费不重试，reap 后只读核对 group absence，不再发组
+kill；最后再次检查共享时钟。tick/错误有界，原始预算/wait/pipe/owner 记录保留。
+`cleanup_protocol_complete` 只描述 trusted 注入协议条件；qualified 和
+outer_cleanup_complete 仍 false。8 项 fake-only 测试不调用真实 OS 接口。
+**native owner 的 session/lifetime 绑定、组取消、tracee 收养排空、组消失与
+bounded IPC 尚未实现**，也尚未证明这些操作不阻塞。不能把 controller 侧协议
+或 mock tracer stall 当作真实独立强监督。完整固定启动/owned adapter/预装限制
+仍须完成并另审；不授权执行控制、CI 接线或 metadata/build。
+
 外层 launcher/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、

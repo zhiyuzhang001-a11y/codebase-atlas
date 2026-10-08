@@ -1,0 +1,137 @@
+"""Prepared outer control protocol; native owner/launch wiring NOT implemented.
+
+Must run in controller, outside the observer/tracer process, with preinstalled
+independent limits. Operations are trusted owned-group/drain adapters, not project
+callbacks. This component alone cannot guarantee their nonblocking behavior.
+No spawn, native signals, arbitrary command, CLI or CI execution entry.
+"""
+
+
+class OuterControl:
+    def __init__(self, budget, pipes, observer_wait, owner, clock, sleep):
+        self.budget, self.pipes, self.wait = budget, pipes, observer_wait
+        self.owner, self.clock, self.sleep = owner, clock, sleep
+        self.attempted = self.kill_attempted = self.reap_attempted = False
+        self.errors, self.events = [], []
+        self.active_complete = self.protocol_complete = False
+        self.cleanup_requested = False
+
+    def _error(self, phase, exc):
+        if len(self.errors) < 128:
+            self.errors.append({'phase': phase, 'type': type(exc).__name__,
+                                'errno': getattr(exc, 'errno', None)})
+
+    def _kill(self):
+        if self.kill_attempted:
+            return
+        self.kill_attempted = True  # uncertain sends must not be retried
+        try:
+            # Native owner must bind and preserve unreaped session leader, and
+            # refuse group reuse. No numeric-PID fallback is permitted.
+            self.owner.cancel_owned_group()
+            self.events.append({'operation': 'cancel-owned-group', 'sent': True})
+        except Exception as exc:
+            self._error('cancel', exc)
+            self.events.append({'operation': 'cancel-owned-group', 'sent': False})
+
+    def run(self):
+        if self.attempted:
+            raise RuntimeError('one outer control run only')
+        self.attempted = True
+        for _ in range(2048):
+            try:
+                self.budget.check_active(self.clock())
+                self.pipes.tick(self.clock, cleanup=False)
+                requested = self.owner.poll_cleanup_request()
+                if type(requested) is not bool:
+                    raise ValueError('exact inner cleanup request state required')
+                if requested:
+                    self.budget.check_active(self.clock())
+                    self.cleanup_requested = True
+                    break
+                terminal = self.wait.poll()  # explicit nonconsuming pidfd wait
+                self.budget.check_active(self.clock())  # last-call time is included
+                if terminal is not None:
+                    self.active_complete = True
+                    break
+                self.sleep(min(.01, self.budget.check_active(self.clock())))
+            except Exception as exc:
+                self._error('active', exc)
+                break
+        else:
+            self._error('active', ValueError('bounded outer active ticks exhausted'))
+        try:
+            self.budget.begin_cleanup(self.clock())  # ONE common <=10s budget
+        except Exception as exc:
+            self._error('cleanup-clock', exc)
+            self._kill()
+            return self.report()  # incomplete; independent native owner still responsible
+        if not self.cleanup_requested:
+            self._kill()  # contain failures/terminal leftovers, not a normal live tracer
+        else:
+            try:
+                # Trusted bounded IPC must deliver this SAME absolute deadline,
+                # never let inner cleanup start its own fresh grace period.
+                self.owner.deliver_cleanup_deadline(self.budget.cleanup_deadline)
+            except Exception as exc:
+                self._error('cleanup-notify', exc)
+                self._kill()
+        for _ in range(2048):
+            try:
+                self.budget.check_cleanup(self.clock())
+            except Exception as exc:
+                self._error('cleanup-deadline', exc)
+                self._kill()
+                break
+            try:
+                self.pipes.tick(self.clock, cleanup=True)
+            except Exception as exc:
+                self._error('cleanup-pipes', exc)
+                self._kill()
+            try:
+                terminal = self.wait.poll()
+                drained = self.owner.drain_owned_tracees()
+                if type(drained) is not bool:
+                    raise ValueError('exact tracee drain state required')
+                # EOF is not terminal; observer must remain waitable until the
+                # owned tracees have their own consuming terminal evidence.
+                if terminal is not None and drained and self.budget.report()['all_eof']:
+                    self._kill()  # observer terminal is held; no live normal tracer killed
+                    self.budget.check_cleanup(self.clock())
+                    self.reap_attempted = True
+                    self.wait.reap()  # exactly once; never retry ambiguous consuming wait
+                    self.events.append({'operation': 'observer-reap', 'verified': True})
+                    absent = self.owner.group_absent_after_reap()  # read-only, NEVER kill now
+                    if type(absent) is not bool or not absent:
+                        raise ValueError('owned group absence not proved')
+                    self.budget.check_cleanup(self.clock())
+                    self.protocol_complete = True
+                    break
+            except Exception as exc:
+                self._error('cleanup-drain', exc)
+                if not self.reap_attempted:
+                    self._kill()  # never send group cancellation after observer reap
+                if self.reap_attempted:
+                    break  # uncertain authority cannot be reused
+            try:
+                self.sleep(min(.01, self.budget.check_cleanup(self.clock())))
+            except Exception as exc:
+                self._error('cleanup-sleep', exc)
+                if not self.reap_attempted:
+                    self._kill()
+                break
+        else:
+            self._error('cleanup', ValueError('bounded outer cleanup ticks exhausted'))
+            if not self.reap_attempted:
+                self._kill()
+        return self.report()
+
+    def report(self):
+        return {'qualified': False, 'outer_cleanup_complete': False,
+                'active_terminal_observed': self.active_complete,
+                'inner_cleanup_requested': self.cleanup_requested,
+                'cleanup_protocol_complete': self.protocol_complete,
+                'kill_attempted': self.kill_attempted, 'reap_attempted': self.reap_attempted,
+                'events': list(self.events), 'errors': list(self.errors),
+                'budget': self.budget.report(), 'observer': self.wait.report(),
+                'pipes': self.pipes.report(), 'owner': self.owner.report()}
