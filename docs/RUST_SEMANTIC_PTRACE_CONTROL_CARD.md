@@ -134,6 +134,19 @@ errno 并继续关闭其余，最后报告错误；禁止重试不确定 FD 以�
 仍须明确独占 wait、SIGCHLD disposition、单线程 bootstrap 和外层强取消，
 pidfd 被关闭也不是回收证据。本差异独立复核结论记录在 STATE。
 
+启动源码准备模块 `rust_semantic_control_code.py` 只生成定义，不调用控制程序。
+固定 `ROOT_SOURCE` 定死 TRACEME/SIGSTOP 后两个串行 fork、路径 true 和只读
+FD 的 execveat，明确 ctypes ABI，精确 wait/exit 状态和失败退出码。
+`prepare_sources` 接收控制器核验过的 owned sibling 字节，逐份 UTF-8/64 KiB/
+语法检查，hex 嵌入独立 ModuleType；输出资源/ptrace/root/assembled 哈希，
+assembled `-c` 源码另限 100 KiB。不使用 site/sys.path/pyc 二次查找源码。
+输入必须是可信控制器源码，绝非项目源码或任意用户命令；外层准确 clean SHA
+与逐文件核验尚需接通，函数返回哈希不是来源已经获验证的证明。
+主 agent 70 项相关 pure/mock/AST 测试通过，未 eval/exec 生成源码、fork 或发信号。
+独立 reviewer 3 项源码/AST 测试通过，无 P1/P2，仅允许提交准备源码；不授权
+运行。精确 libc/工具/源码身份与剩余 OS 接线仍须完整审查，不把生成源码当作
+观察器执行资格。生成器曾遗漏对嵌入字节的语法检查，负例失败后已修复。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
