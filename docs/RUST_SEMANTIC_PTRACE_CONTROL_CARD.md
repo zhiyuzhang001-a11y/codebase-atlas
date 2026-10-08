@@ -267,8 +267,8 @@ tracer 清理期间不提前 kill；失败、清理超限及 terminal 后的 lef
 kill；最后再次检查共享时钟。tick/错误有界，原始预算/wait/pipe/owner 记录保留。
 `cleanup_protocol_complete` 只描述 trusted 注入协议条件；qualified 和
 outer_cleanup_complete 仍 false。8 项 fake-only 测试不调用真实 OS 接口。
-**native owner 的 session/lifetime 绑定、组取消、tracee 收养排空、组消失与
-bounded IPC 尚未实现**，也尚未证明这些操作不阻塞。不能把 controller 侧协议
+**native owner 的完整启动绑定、tracee 收养排空与 bounded IPC 尚未实现**，
+也尚未证明这些操作不阻塞。不能把 controller 侧协议
 或 mock tracer stall 当作真实独立强监督。完整固定启动/owned adapter/预装限制
 仍须完成并另审；不授权执行控制、CI 接线或 metadata/build。
 
@@ -278,3 +278,24 @@ bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 
 terminal/group/reap 均尚未实现/执行验证。必须连同准确代码和调用接线另审后
 才运行，不能将已有 loop/cleanup 协议作为独立执行器，更不授权 metadata/build
 或完整树/峰值资源门。
+
+`rust_semantic_owned_group.py` 补充准备态 owned-group adapter，仍无启动/CLI。
+只能从另审的固定 spawn 借用 sole wait owner 的 pidfd，在 observer 创建 tracee
+之前的 bootstrap stopped 状态绑定：直接子进程、独立 session/group leader、
+同 UID/无 tracer、正 starttime、held proc directory 的 dev/inode/CLOEXEC，
+pidfd 的 dev/inode/CLOEXEC 和 fdinfo Pid；前后 stat/status 与 0.5 秒检查。
+取消前重新核对仍未尝试 reap 的同一 lifetime，单次 killpg(group, SIGKILL)，
+错误保留且不重试。前提是固定 observer 无并发 reaper、FD 复用或 handle 修改，
+组 leader 未 reap，因此不能把它当任意 PID attach/kill API。
+发送成功不证明所有成员退出；仍需逐个 terminal/drain/EOF 和 observer reap。
+reap 后只用 killpg(group, 0) 探测：ESRCH 是该时刻 group absence，EPERM 不是；
+PGID 可能再用，不再发组 kill。依据
+[killpg](https://man7.org/linux/man-pages/man2/killpg.2.html) 与
+[kill](https://man7.org/linux/man-pages/man2/kill.2.html)。记录有界；只关闭自己持有
+的 proc directory，不关闭借用 pidfd，模糊 close 不重试且独立保留 errno。
+全部测试 mock-only；qualified/outercleanup 仍 false。完整 owner 尚未接线，
+未实际验证原生组取消/收养/强时限，不授权执行控制程序、metadata 或 build。
+独立审查要求补留每次核验的 bounded packet：stat 前后原始十六进制及解析身份、
+status/fdinfo 原值、FD/dev/inode、时钟及失败 errno。caller 在初始化前持有空
+evidence sink，即使 constructor 失败也保留 partial packet 与独立 close 错误，
+主核验错误不被清理异常覆盖；不能仅用 sent 记录代替身份绑定原证据。
