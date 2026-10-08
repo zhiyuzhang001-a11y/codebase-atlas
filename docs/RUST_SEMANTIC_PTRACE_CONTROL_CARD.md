@@ -236,6 +236,26 @@ waiter 回收；仅 signal(SIG_DFL) 不足以证明全部条件。因此启动�
 没有真正 fork/exec/pidfd/signal。独立复核结论另记 STATE。成功返回 PID/FD
 也仍 qualified=false、outercleanup=false，不授权 metadata/build。
 
+`rust_semantic_wait_state.py` 补充一次性只读 native 状态测量的准备实现：
+仅 Linux x64、已由 caller 验明的 glibc 2.39；不自动装载 libc。按固定上游
+[Linux sigaction 布局](https://raw.githubusercontent.com/bminor/glibc/glibc-2.39/sysdeps/unix/sysv/linux/bits/sigaction.h)
+和 [Linux sigset_t 覆盖定义](https://raw.githubusercontent.com/bminor/glibc/glibc-2.39/sysdeps/unix/sysv/linux/bits/types/__sigset_t.h)
+核对指针/ulong8、struct152、offset8/136/144，明确函数参数/返回类型；
+不使用 generic sigset_t 的单 ulong 定义。libc 版本字符串不是完整资产身份，
+仍需外层 receipt。只用 sigaction(17, NULL, oldact) 读取，不更改信号配置。
+同一 own-pid task 目录 FD 前后核对 currentuid/目录/dev/inode/CLOEXEC，
+两次 scandir 最多取两项（第二线程即失败），并核对默认 SIGCHLD/无
+SA_NOCLDWAIT。两次观测与闭合耗时最多 0.5 秒；这仍是 cooperative 检查，
+必须已有独立强监督。失败保留部分原始值和 errno；单次 close 不重试，close
+异常单独保存且不抹去原始失败。无 spawn/wait/信号修改/CLI/CI 接线。
+依据 [proc task](https://man7.org/linux/man-pages/man5/proc_pid_task.5.html) 与
+[sigaction](https://man7.org/linux/man-pages/man2/sigaction.2.html) 读取指定状态，
+不据两次快照推断后续永不创建线程或不存在其他 reaping callback；返回值
+刻意缺少 sole_waiter，因此 **不能直接满足 RootLauncher 的完整合同**。
+仍需准确可信源码/回调/线程策略和 outer 生命周期接线独立审查，才可运行。
+本差异全部 libc/OS 操作只在 mock 测试中调用，未读取真实 proc/sigaction。
+独立复核结论另记 STATE；qualification 与 outercleanup 始终 false。
+
 外层 launcher/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
 bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
 及共享 10 秒清理的 OS 接线、
