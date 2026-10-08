@@ -1,0 +1,108 @@
+# C0-O5：短命进程停止点控制卡
+
+2026-10-08。仅为下一步实现/独立审查草案，未执行、未取得资格。
+基线 `37c7af3e9e7fafb555f27be671fcec2ec2068b30`；沿用八小时主动工作账本。
+本卡不授权 Cargo metadata、compiler/build.rs/proc-macro、guest 或用户项目执行，
+不代替尚未闭合的 C0-M 执行卡，不改变五平台与原冻结查询/资源门。
+
+## 要解决的具体缺口
+
+v4 的三个短命 true 有完整 exec/退出日志，却没有 live PID/starttime/RSS。
+提高普通轮询频率不能保证补齐。候选采用 Linux 内核 ptrace 停止点：
+受控 root 在初始停止后安装 TRACEFORK、TRACEVFORK、TRACECLONE、TRACEEXEC、
+TRACEEXIT、TRACESYSGOOD、EXITKILL；新子进程首次恢复前必须完成身份准入。
+不以 strace 文本通知到达时该 PID 仍活着为前提，也不允许两个 tracer 同时附着。
+
+依据：[ptrace(2)](https://man7.org/linux/man-pages/man2/ptrace.2.html)：
+fork/vfork/clone 选项自动追踪新子进程；创建事件在父进程报告，子进程有独立
+初始 stop，不能假定二者通知顺序。TRACEEXIT 是早期退出 stop，不是最终回收。
+EXITKILL 是 tracer 死亡时杀死 tracee 的手段，不是已证明全部清理成功。
+
+## 首轮只允许的控制
+
+仅 Ubuntu 24.04 Linux x86_64 的私有临时目录，现有同仓 PR 内部 workflow。
+无 sudo、capability、系统 ptrace/profile/sysctl、cgroup、网络或全局配置变更；
+只追踪本控制器自己创建的同账户进程，不 attach 其他进程。权限/API 不可用
+记录 incomplete，禁止换成静默漏采样。不引入新依赖、下载或用户代码。
+
+外层控制器在启动前安装 20 秒绝对期限、全部输出及事件 trace 合计 1 MiB、
+所属组 cleanup 10 秒。拥有关系为 controller → observer/tracer → tracee root
+及其固定 fork children；controller 负责监督 observer/tracees 的共享期限和清理。
+被追踪 root 为逐文件/同 FD 核验的系统 Python，以 `-I -S -c <固定控制代码>`
+执行，env 仅 PATH、HOME、LC_ALL，cwd 为新私有空目录。固定代码只分别 fork
+并 exec 两个已核验 true 控制：路径 execve、固定只读 FD 的 execveat；每个 child
+立即退出，root wait 后退出。禁止传入任意命令、源代码、环境或路径选项。
+root、工具、控制代码、观察器源码及原始证据 hashes 必须保存。
+第三个原 v4 长参数控制暂不在本卡新增执行，旧证据保留，不声称本卡覆盖它。
+
+root 在自身 TRACEME + SIGSTOP 后才允许进入固定代码；observer 在初始 stop
+设置上述全部选项并核对成功，才首次恢复。实现须明确这段 bootstrap 的可信
+源码及启动 argv，不能把初始 Python bootstrap 未受追踪区间说成已被完整观察。
+任何创建事件先登记有界 pending child；收到该 child 初始 stop 后以 proc 目录
+FD 读取 PID/starttime/ppid/session/group 并前后核对，再记录正 RSS，才恢复。
+child 通知早于 parent 创建通知时只暂存，不猜 parent、不恢复；缺配对则失败。
+预期初始/新子 SIGSTOP 与 ptrace event-stop 恢复时 signal=0；正常真实
+signal-delivery stop（尤其 SIGCHLD）须区分并按原信号转发，不静默吞掉。
+未知信号、额外 SIGSTOP/SIGTRAP、无法区分的 stop 均失败清理。
+exec stop、exit stop 再核对同一身份并采样；最终 terminal wait 才标为 reaped。
+拒绝 PID 重用、未知 PID、非预期事件，最多
+8 个 lifetime PID、4096 个事件，超界失败并执行所属清理。不能将 proc 的 traced
+parent 字段误认为原 physical parent；须保存 tracer 与创建事件两个来源并校验。
+本卡仅接受固定源码的 fork 创建形状及相应事件/身份，其他创建事件拒绝。
+TRACECLONE/FORK event 本身不提供通用 clone flags，不声称已识别或拒绝任意
+线程/namespace/shared-state 创建；此能力必须以后在 syscall 层证明。
+失败/超时不得 detach 后放行。发送 SIGKILL 后继续有界消费停止点与 terminal
+通知，按实际 ptrace 状态完成必要的退出推进；共享 10 秒内所有已登记 lifetime
+均有 terminal 证据、所属组消失且 observer/root parent reap 才算清理成功。
+只发送 kill、依赖 EXITKILL、收到 early-exit stop 或 ESRCH 不算已回收；缺任一
+证据保留私有原始文件并记录 cleanup incomplete。
+
+首次只证明 kernel stop 能为两个短命 true 留出准入/正 RSS 的窗口。
+保留 creation/child-stop/exec/exit-stop/terminal 顺序、每次 ptrace 请求和 errno、
+proc before/after、RSS 开始/结束时间、父子源与 cleanup 原始证据。
+不得仅记录最终 passed 布尔值。已有 sampler 对 t/T 停止状态的实际兼容必须测试；
+早期 exit stop 无 smaps、零 RSS 或身份失败均 incomplete，不补造读数。
+
+## 不宣称解决的门
+
+创建/exec/退出 stop 采样不证明两次 stop 间的内存峰值，也不证明完整 syscall
+argv/env/cwd/FD 来源或禁止网络/逃逸。只开 TRACEEXEC 无法捕获失败 exec 的参数，
+所以不得用本控制直接运行 metadata。真实监督后续需要 syscall-entry/exit 解码、
+正确信号转发/取消、每个 TID 生命周期、拒绝逃逸及内存机制的独立实现与审查。
+当前首轮未知信号/多线程一律失败清理，不能靠丢弃信号改变控制程序语义后过门。
+
+[wait4(2)](https://man7.org/linux/man-pages/man2/wait4.2.html) 返回被等待 child 的
+资源使用；[getrusage(2)](https://man7.org/linux/man-pages/man2/getrusage.2.html)
+明确 Linux ru_maxrss 的 KiB 单位，并说明 RUSAGE_CHILDREN 是最大 child 而非
+整个进程树峰值。因此不能用 controller 的 RUSAGE_CHILDREN 替代完整树 RSS；
+本卡不使用 wait4 maxrss 作门，不宣称逐 lifetime 峰值之和已经可靠取得。
+hugetlb、线程/shared mm、exec 前后峰值、controller/observer 自身费用和初始化
+阶段仍需单独覆盖；现有 audit_coverage 通过也只能代表指定样本覆盖，不是资源资格。
+
+## 审查与执行顺序
+
+先独立复核本卡；允许准备实现不代表具体实现获执行资格。代码与调用接线完成后
+再独立检查准确 diff、固定代码/argv/env、超时/清理与负例，才可正常 commit/push
+触发现有内部 CI 一次。不得先提交接线再补审查。控制执行若失败，保存 raw artifact，
+只修复有证据的常规问题；不是 guest 原型修订，不重置任何主动预算。
+需要观察器全门及冻结源码/root/config/tool receipts 后才可申请 C0-M 独立执行复审。
+
+## 准备实现与独立复核（未执行）
+
+新增 `scripts/rust_semantic_ptrace.py`：显式 Linux x64 ABI、lazy native adapter、
+same-proc-FD stopped identity/RSS、ptrace 请求/errno、SIGCHLD siginfo 与有界
+固定 fork stop loop。创建通知次序可交错，新 child 准入/正 RSS 前不恢复；
+拒绝未知 stop/event、重用 PID、缺失 exec/early-exit/terminal、非串行固定
+fork 形状与非有限/超过剩余 20 秒的 deadline。没有 spawn、attach、detach、
+CLI 或 workflow 执行入口。Native adapter 只在明确构造时装载 libc；纯测试
+从不读取真实 proc 或发出 ptrace。Linux 信号/wait 编码不借用 macOS 的常量。
+
+独立 reviewer `rust_bridge_plan_review` 最新复核无剩余 P1/P2；独立 9 项
+ptrace 和 9 项资源 pure/mock 测试通过，主 agent 相关 49 项回归通过。
+复核只允许提交准备模块；没有批准实际控制执行或 CI 执行接线。
+曾发现并修复 NaN/inf deadline 缺口及测试归属错误，失败不作通过证据。
+
+外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
+20 秒强监督、合计 1 MiB 输出及共享 10 秒异常停止点排空/terminal/group/reap
+均尚未实现/执行验证。必须连同准确代码和调用接线另审后才运行，不能将已有
+loop 作为独立执行器，更不授权 metadata/build 或完整树/峰值资源门。
