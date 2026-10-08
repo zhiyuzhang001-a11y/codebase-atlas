@@ -86,3 +86,10 @@ C0-O v2 原始执行控制已独立复核通过。新增纯准备模块
 它不证明筛选前原 trace 完整、PID 生命周期、cwd、FD 来源或 RSS，不接线执行器。
 对已留存 C0-O v2 的四条真实完整 exec 行离线解析通过；交错/失败/异常由纯合成
 测试覆盖，尚未取得真实交错控制资格。不把旧 artifact 当作新 head 的运行证据。
+
+目录路径准备另增 `decode_chdir_record`，复用同一严格 C 字节转义解码，避免
+把 strace 路径当 JSON 导致 Unicode/octal 路径无法解析。只接受完整 absolute
+chdir 的明确成功/失败结果，拒绝相对路径、`..`、双斜杠/非规范字符串、未知结果、
+截断/未完成记录及 fchdir。路径字符串不证明目录 inode，也不证明子进程继承、
+共享 cwd 的并发顺序或 FD 来源；没有接线/更改旧 native observer。下一步仍须
+完整进程创建/目录事件配对与 inode/FD admission、受控正例及所属树 RSS 监督。

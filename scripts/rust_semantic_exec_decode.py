@@ -8,6 +8,7 @@ the exact command allow-list remain the observer/controller's responsibility.
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 
 class Cursor:
@@ -91,6 +92,33 @@ class Cursor:
                 self.at += 1
                 return result
             self.take(',')
+
+
+def decode_chdir_record(raw: str) -> dict:
+    """Decode one complete chdir attempt, without filesystem admission.
+
+    A path string is not proof of the directory inode or of a process's cwd.
+    Relative paths, fd-based changes and unfinished calls need additional
+    observation and are intentionally unsupported here.
+    """
+    if not isinstance(raw, str) or len(raw) > 1024 * 1024 or not raw.isascii():
+        raise ValueError("unsupported complete cwd record")
+    start = re.match(r'^([1-9][0-9]*) +chdir\(', raw)
+    if start is None:
+        raise ValueError("exact PID and chdir start required")
+    cursor = Cursor(raw[start.end():])
+    value = cursor.string()
+    path = PurePosixPath(value)
+    if (not path.is_absolute() or value.startswith('//') or '..' in path.parts
+            or str(path) != value):
+        raise ValueError("unambiguous absolute cwd path required")
+    cursor.spaces()
+    suffix = cursor.text[cursor.at:]
+    result = re.fullmatch(r'\) += (0|-1 [A-Z0-9_]+ \([^\r\n]*\))', suffix)
+    if result is None:
+        raise ValueError("complete unambiguous cwd result required")
+    return {'pid': int(start[1]), 'path': value, 'result': result[1],
+            'changed': result[1] == '0'}
 
 
 def decode_record(raw: str) -> dict:

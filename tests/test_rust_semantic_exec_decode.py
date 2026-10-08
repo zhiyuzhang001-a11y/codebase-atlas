@@ -1,10 +1,30 @@
 """Pure trace decoding tests; never spawn a tool or authorize a build."""
 import unittest
 
-from scripts.rust_semantic_exec_decode import decode_record, pair_records
+from scripts.rust_semantic_exec_decode import decode_chdir_record, decode_record, pair_records
 
 
 class ExecDecodeTests(unittest.TestCase):
+    def test_cwd_c_escaping_and_failed_change(self):
+        result = decode_chdir_record(r'14 chdir("/owned/\346\226\207/quote\"backslash\\") = 0')
+        self.assertEqual(result['path'], '/owned/文/quote"backslash\\')
+        self.assertTrue(result['changed'])
+        failure = decode_chdir_record('14 chdir("/absent") = -1 ENOENT (No such file or directory)')
+        self.assertFalse(failure['changed'])
+        self.assertEqual(failure['result'], '-1 ENOENT (No such file or directory)')
+
+    def test_cwd_rejects_ambiguous_paths_fd_and_missing_result(self):
+        for raw in ('14 chdir("relative") = 0', '14 chdir("/owned/../escape") = 0',
+                    '14 chdir("//owned") = 0', '14 chdir("/owned/./x") = 0',
+                    '14 chdir("/owned//x") = 0', '14 chdir("/owned/") = 0',
+                    '14 fchdir(3) = 0', '14 chdir("/owned" <unfinished ...>',
+                    '14 chdir("/owned") = ?', '14 chdir("/owned") = 0 trailing',
+                    r'14 chdir("/owned/\000") = 0', r'14 chdir("/owned/\q") = 0',
+                    r'14 chdir("/owned/\377") = 0',
+                    '14' + ' ' * (1024 * 1024) + 'chdir("/owned") = 0'):
+            with self.subTest(raw=raw[:120]), self.assertRaises(ValueError):
+                decode_chdir_record(raw)
+
     def test_ascii_escaping_empty_and_unicode_bytes(self):
         result = decode_record(r'14 execve("/tool", ["tool", "", "a\"b\\", "\n\t\r", "\346\226\207"], ["HOME=/owned"]) = 0')
         self.assertEqual(result['argv'], ['tool', '', 'a"b\\', '\n\t\r', '文'])
