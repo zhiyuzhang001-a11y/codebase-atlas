@@ -101,3 +101,36 @@ PID 重用、组变化、低读数或限额失败均 incomplete，已有采样�
 测试和现有 workflow，无 P1/P2，独立 10 项 pure/mock 回归通过，允许普通 push 后
 只使用现有 PR CI 一次触发，不重复 dispatch、不借旧 artifact 认定新 SHA 通过。
 20 秒/采样时长异常可事后拒绝；不证明阻塞内核读取的硬抢占或连续 enforcement。
+
+## v4 创建/退出原始事件与固定 live cwd/FD 控制（独立复核通过，实测待完成）
+
+保持 v3 三个 exec 控制、三个明确准入 PID、三次 RSS 与所有时间/输出/清理门。
+仍无 Cargo/compiler/项目代码、安装或网络。strace 使用 `-q` 保留终止行，并将
+固定 syscall filter 扩展为 execve/execveat/clone/clone3/fork/vfork/chdir；原始
+创建、cwd 和退出行仅留存供离线纯解析与独立审查，不在本轮宣称一般 trace 完整。
+现有纯 replay 对未知 clone 格式/clone3 仍拒绝，不以本次采集隐式放宽。
+
+在三个短命 true 控制结束之后，固定父 Python 切换到 private `cwd-control`，
+只读打开固定 `/usr/bin/true`；内存控制子进程继承该 FD，切换至 owned Unicode
+子目录 `目录`，保持既有三秒窗口。私有 marker 增加唯一 FD 数字，范围 3..65535。
+目录 device/inode、工具 device/inode/大小和工具 hash 在控制启动前留存。
+工具 receipt 使用同一打开 FD 的 fstat 身份；读 hash 前后 device/inode/size/
+mtime_ns/ctime_ns 必须一致，且打开对象须 regular/root-owned/不可组或全局写。
+不使用项目传入路径或 FD，不把该后置 FD 视为早先短命 execveat 的现场身份。
+
+controller 在每次 RSS 采样后，对两个 live Python PID 各作 before/after 两次
+固定对象检查：在同一个 nofollow proc 目录 FD 下读 stat，匹配准入 PID/starttime/
+ppid/session/group 与非死亡状态；跟随内核 cwd/FD magic link，cwd 路径和 inode
+须匹配本次私有目录，FD inode/大小须匹配固定工具，fdinfo flags 必须唯一且只读。
+拒绝 O_PATH，不将仅持路径句柄计作只读打开文件；测试显式模拟 Unix flags 常量。
+完整对象检查耗时包括在每次 0.5 秒采样时长内。拒绝/消失/错配一律 incomplete，
+既有 RSS 与 trace 保留；对象函数失败时未完成的局部 packet 不作为完整证据。
+这是两次离散身份检查，不证明其间连续身份、一般 FD origin 或完整所属树峰值。
+
+qualified=false 保持。通过条件仅旧 exec/RSS 门加固定 live cwd/FD 检查；创建和
+退出 trace 的实际格式须在 CI 后独立复核，完整 metadata 观察器/执行卡仍未批准。
+不增加权限、预算、构建次数或修订次数；独立 reviewer 复核脚本/测试/本卡无 P1
+后，才正常 push 使用现有授权 PR CI，不重复 dispatch。
+独立 reviewer `rust_bridge_plan_review` 最终复核无剩余 P1/P2，独立 12 项
+pure/mock 测试通过；三项 P2（同一 FD hash/inode 绑定、跨平台常量 mocks、
+O_PATH 拒绝）均已解决。仅允许现有 CI 限定控制，不授权 metadata/build 或资格。

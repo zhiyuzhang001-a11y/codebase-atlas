@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat as stat_module
 import signal
 import subprocess
 import sys
@@ -19,7 +20,7 @@ import time
 TOKEN = "atlas-c0-short-lived-exec-control-v1"
 FD_TOKEN = "atlas-c0-fd-exec-control-v2"
 ARGUMENTS = ["", 'quote"backslash\\', "line\n\ttab\rreturn", "x" * 4096 + "-end"]
-RSS_TOKEN = "atlas-c0-rss-v3"
+RSS_TOKEN = "atlas-c0-rss-v4"
 
 
 def load_resource_sampler() -> tuple:
@@ -36,18 +37,65 @@ def load_resource_sampler() -> tuple:
     return module, {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
 
 
-def resource_marker(raw: bytes) -> tuple[int, int] | None:
+def resource_marker(raw: bytes) -> tuple[int, int, int] | None:
     if len(raw) > 256:
         raise ValueError("oversized resource control marker")
     if not raw.endswith(b"\n"):
         return None
-    match = re.fullmatch(RSS_TOKEN.encode() + rb" ([1-9][0-9]{0,9}) ([1-9][0-9]{0,9})\n", raw)
+    match = re.fullmatch(RSS_TOKEN.encode() + rb" ([1-9][0-9]{0,9}) ([1-9][0-9]{0,9}) ([0-9]{1,5})\n", raw)
     if match is None:
         raise ValueError("unknown resource control marker")
-    parent, child = map(int, match.groups())
-    if parent == child or max(parent, child) > 2**31 - 1:
+    parent, child, held_fd = map(int, match.groups())
+    if parent == child or max(parent, child) > 2**31 - 1 or not 3 <= held_fd <= 65535:
         raise ValueError("invalid resource control PIDs")
-    return parent, child
+    return parent, child, held_fd
+
+
+def control_object_samples(module, admission: list[dict], expected_cwds: dict,
+                           held_fd: int, tool: dict) -> list[dict]:
+    """Check fixed live controls only, never resolve an arbitrary execveat FD.
+
+    proc cwd/fd magic links are intentionally followed inside an identity-bound
+    proc directory. Their targets must match previously measured owned objects.
+    This does not prove continuous identity or an earlier short-lived exec's FD.
+    """
+    result = []
+    for identity in admission:
+        pid = identity['pid']
+        if pid not in expected_cwds:
+            continue  # strace has no held-control FD; the two Python controls do.
+        directory = os.open(f'/proc/{pid}', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            packet = {'pid': pid, 'starttime': identity['starttime'], 'checks': []}
+            for phase in ('before', 'after'):
+                observed = module.proc_identity(module._read_at(directory, 'stat', 8192))
+                if any(observed[key] != identity[key] for key in ('pid', 'starttime', 'pgrp', 'session', 'ppid')) or observed['state'] in {'Z', 'X', 'x'}:
+                    raise ValueError('object control process identity changed')
+                cwd_path = os.readlink('cwd', dir_fd=directory)
+                cwd_stat = os.stat('cwd', dir_fd=directory)
+                fd_stat = os.stat(f'fd/{held_fd}', dir_fd=directory)
+                info_dir = os.open('fdinfo', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    fdinfo = module._read_at(info_dir, str(held_fd), 4096)
+                finally:
+                    os.close(info_dir)
+                flags = re.findall(rb'^flags:\s+([0-7]+)$', fdinfo, re.MULTILINE)
+                expected = expected_cwds[pid]
+                if (cwd_path != expected['path'] or (cwd_stat.st_dev, cwd_stat.st_ino) != (expected['device'], expected['inode'])
+                        or (fd_stat.st_dev, fd_stat.st_ino, fd_stat.st_size) != (tool['device'], tool['inode'], tool['bytes'])
+                        or len(flags) != 1 or int(flags[0], 8) & os.O_ACCMODE != os.O_RDONLY
+                        or int(flags[0], 8) & os.O_PATH):
+                    raise ValueError('owned cwd or held read-only tool FD identity mismatch')
+                packet['checks'].append({'phase': phase, 'cwd': cwd_path,
+                                         'cwd_device': cwd_stat.st_dev, 'cwd_inode': cwd_stat.st_ino,
+                                         'fd': held_fd, 'fd_device': fd_stat.st_dev, 'fd_inode': fd_stat.st_ino,
+                                         'fd_bytes': fd_stat.st_size, 'fdinfo': fdinfo.decode('ascii')})
+            result.append(packet)
+        finally:
+            os.close(directory)
+    if len(result) != 2:
+        raise ValueError('two live cwd/FD controls required')
+    return result
 
 
 def admit_resource_controls(module, root_pid: int, parent: int, child: int) -> list[dict]:
@@ -99,17 +147,21 @@ def trace_contains_extended_controls(trace: str) -> bool:
 
 def binary_identity(path: Path) -> dict:
     path = path.resolve(strict=True)
-    stat = path.stat()
-    if not path.is_file() or stat.st_uid != 0 or stat.st_mode & 0o022:
-        raise ValueError("probe tool must be a root-owned non-writable regular file")
-    if stat.st_size > 64 * 1024 * 1024:
-        raise ValueError("probe tool exceeds identity-read limit")
     with path.open("rb") as stream:
+        stat = os.fstat(stream.fileno())
+        if not stat_module.S_ISREG(stat.st_mode) or stat.st_uid != 0 or stat.st_mode & 0o022:
+            raise ValueError("probe tool must be a root-owned non-writable regular file")
+        if stat.st_size > 64 * 1024 * 1024:
+            raise ValueError("probe tool exceeds identity-read limit")
         raw = stream.read(64 * 1024 * 1024 + 1)
+        after = os.fstat(stream.fileno())
+        if any(getattr(stat, key) != getattr(after, key) for key in
+               ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')):
+            raise ValueError("probe tool opened object changed during identity read")
     if len(raw) != stat.st_size or len(raw) > 64 * 1024 * 1024:
         raise ValueError("probe tool changed or exceeded bounded identity read")
     return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
-            "bytes": stat.st_size}
+            "bytes": stat.st_size, "device": stat.st_dev, "inode": stat.st_ino}
 
 
 def trace_contains_control(trace: str) -> bool:
@@ -155,9 +207,9 @@ def run_probe(source_sha: str, output: Path) -> dict:
         raise ValueError("exact source SHA required")
     if output.exists():
         raise ValueError("do not overwrite previous evidence")
-    result = {"schema": "atlas-rust-semantic-observer-probe-v3", "source_sha": source_sha,
+    result = {"schema": "atlas-rust-semantic-observer-probe-v4", "source_sha": source_sha,
               "status": "incomplete", "qualified": False,
-              "scope": "Linux exec controls and three admitted controlled-process RSS samples only",
+              "scope": "Linux exec/creation/cwd/exit capture and fixed live cwd/FD/RSS controls only",
               "limitations": ["not a Cargo/build observer", "no general argv/cwd trace parser",
                               "no network isolation proof", "no semantic or platform qualification",
                               "not full-tree discovery, continuous RSS enforcement or peak measurement"]}
@@ -182,6 +234,13 @@ def run_probe(source_sha: str, output: Path) -> dict:
                                binary_identity(Path("/usr/bin/true"))]
             resources, result['sampler_source'] = load_resource_sampler()
             result['resource_control'] = {'admission': [], 'samples': [], 'qualified': False}
+            parent_cwd = root / 'cwd-control'
+            child_cwd = parent_cwd / '目录'
+            parent_cwd.mkdir(mode=0o700)
+            child_cwd.mkdir(mode=0o700)
+            cwd_objects = [{'path': str(path), 'device': path.stat().st_dev,
+                            'inode': path.stat().st_ino} for path in (parent_cwd, child_cwd)]
+            result['cwd_objects'] = cwd_objects
             trace_path = root / "exec.trace"
             # All arguments and code are Atlas-owned constants, never supplied
             # by a project. Python's fd exec must actually use execveat; a libc
@@ -199,12 +258,15 @@ def run_probe(source_sha: str, output: Path) -> dict:
                 "_, status = os.waitpid(pid, 0)\n"
                 "if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:\n"
                 "    raise RuntimeError('fd exec control failed')\n"
+                f"os.chdir({str(parent_cwd)!r})\n"
+                "held_fd = os.open('/usr/bin/true', os.O_RDONLY | os.O_CLOEXEC)\n"
                 "allocation = bytearray(16 * 1024 * 1024)\n"
                 "for i in range(0, len(allocation), 4096): allocation[i] = 1\n"
                 "read_fd, write_fd = os.pipe()\n"
                 "child = os.fork()\n"
                 "if child == 0:\n"
                 "    os.close(read_fd)\n"
+                f"    os.chdir({str(child_cwd)!r})\n"
                 "    own = bytearray(16 * 1024 * 1024)\n"
                 "    for i in range(0, len(own), 4096): own[i] = 1\n"
                 "    os.write(write_fd, b'R')\n"
@@ -214,12 +276,13 @@ def run_probe(source_sha: str, output: Path) -> dict:
                 "os.close(write_fd)\n"
                 "if os.read(read_fd, 1) != b'R': raise RuntimeError('RSS readiness failed')\n"
                 "os.close(read_fd)\n"
-                f"print('{RSS_TOKEN}', os.getpid(), child, flush=True)\n"
+                f"print('{RSS_TOKEN}', os.getpid(), child, held_fd, flush=True)\n"
                 "_, status = os.waitpid(child, 0)\n"
                 "if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:\n"
                 "    raise RuntimeError('RSS child failed')\n"
+                "os.close(held_fd)\n"
             )
-            argv = [tracer, "-f", "-qq", "-v", "-s", "65536", "-e", "trace=execve,execveat",
+            argv = [tracer, "-f", "-q", "-v", "-s", "65536", "-e", "trace=execve,execveat,clone,clone3,fork,vfork,chdir",
                     "-o", str(trace_path), "/usr/bin/python3", "-I", "-S", "-c", code]
             # No user project, package source, compiler, shell, or inherited credentials.
             env = {"PATH": "/usr/bin:/bin", "HOME": str(root), "LC_ALL": "C"}
@@ -240,17 +303,20 @@ def run_probe(source_sha: str, output: Path) -> dict:
                         with (root / 'stdout').open('rb') as marker_stream:
                             marker = resource_marker(marker_stream.read(257))
                         if marker is not None:
-                            parent, child = marker
+                            parent, child, held_fd = marker
                             control['admission'] = admit_resource_controls(resources, process.pid, parent, child)
                             admitted = {row['pid']: row['starttime'] for row in control['admission']}
+                            expected_cwds = {parent: cwd_objects[0], child: cwd_objects[1]}
                     now = time.monotonic()
                     if admitted is not None and len(control['samples']) < 3 and now >= next_sample:
                         # Save the raw sampled values before evaluating positive/limit gates.
                         sample_start = now
                         sample = resources.sample_admitted(admitted, process.pid)
                         sample['start_seconds'] = sample_start - start
-                        sample['end_seconds'] = time.monotonic() - start
                         control['samples'].append(sample)
+                        sample['objects'] = control_object_samples(resources, control['admission'], expected_cwds,
+                                                                   held_fd, result['tools'][2])
+                        sample['end_seconds'] = time.monotonic() - start
                         resource_sample_gate(sample, parent, child)
                         if sample['end_seconds'] - sample['start_seconds'] > 0.5:
                             raise ValueError('controlled RSS sample exceeded 0.5 second duration')
