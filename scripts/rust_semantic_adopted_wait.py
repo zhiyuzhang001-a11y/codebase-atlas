@@ -3,7 +3,8 @@
 No discovery/admission, FD creation/close, spawn, CLI or native control entry.
 The reviewed dedicated controller must supply its fixed-source ownership journal,
 held proc/pidfd identities and native verifier. A caller-provided PID is NOT
-ownership. The observer stays waitable until ALL admitted children are drained.
+ownership. Observer consumption must be verified before adopted census/drain;
+the trusted owner must have retired all group-signal authority beforehand.
 """
 import copy
 import math
@@ -61,14 +62,17 @@ class AdoptedWait:
 
     def _verify(self, row):
         self._now()
-        if self.observer.terminal is None or self.observer.reap_attempted:
-            raise ValueError('observer terminal must remain held and unreaped')
+        if (self.observer.terminal is None or self.observer.reap_attempted is not True
+                or self.observer.reaped is not True):
+            raise ValueError('observer terminal must have been consumed exactly before adopted drain')
         raw = self.verifier()  # trusted native adapter; not a project callback
         row.setdefault('verifications', []).append(
             dict(raw) if type(raw) is dict else {'invalid_type': type(raw).__name__})
         policy = {'controller': self.controller, 'threads': 1,
                   'sigchld_default': True, 'sa_no_cldwait': False,
-                  'sole_waiter': True, 'journal_admitted': True}
+                  'sole_waiter': True, 'journal_admitted': True,
+                  'observer_consumed': True, 'group_cancel_before_reap': True,
+                  'group_signal_retired': True}
         expected = {**self.binding, **policy}
         if (type(raw) is not dict or set(raw) != set(expected)
                 or any(type(raw[key]) is not type(value) or raw[key] != value

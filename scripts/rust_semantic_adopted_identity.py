@@ -110,8 +110,9 @@ class AdoptedIdentity:
         self.packets.append(packet)
         try:
             begin = packet['started'] = self._now()
-            if self.observer.terminal is None or self.observer.reap_attempted:
-                raise ValueError('observer terminal must stay held before adopted drain')
+            if (self.observer.terminal is None or self.observer.reap_attempted is not True
+                    or self.observer.reaped is not True):
+                raise ValueError('exactly consumed observer required before adopted drain')
             self._held(packet, 'before')
             raw = self._read('stat', packet, 'stat_before', directory=self.fd)
             before = packet['stat_before'] = self.resources.proc_identity(raw)
@@ -141,7 +142,8 @@ class AdoptedIdentity:
             end = packet['finished'] = self._now()
             if (fields != expected or matches != [expected[b'Pid']]
                     or not begin <= end <= begin + .5
-                    or self.observer.terminal is None or self.observer.reap_attempted):
+                    or self.observer.terminal is None
+                    or self.observer.reap_attempted is not True or self.observer.reaped is not True):
                 raise ValueError('adopted identity evidence incomplete or late')
             packet['verified'] = True
             return dict(self.binding)  # NOT thread/wait policy or journal proof

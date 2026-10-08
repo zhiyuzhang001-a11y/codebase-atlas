@@ -5,6 +5,7 @@ independent limits. Operations are trusted owned-group/drain adapters, not proje
 callbacks. This component alone cannot guarantee their nonblocking behavior.
 No spawn, native signals, arbitrary command, CLI or CI execution entry.
 """
+import copy
 
 
 class OuterControl:
@@ -15,6 +16,7 @@ class OuterControl:
         self.errors, self.events = [], []
         self.active_complete = self.protocol_complete = False
         self.cleanup_requested = False
+        self.observer_consumed = False
 
     def _error(self, phase, exc):
         if len(self.errors) < 128:
@@ -22,7 +24,7 @@ class OuterControl:
                                 'errno': getattr(exc, 'errno', None)})
 
     def _kill(self):
-        if self.kill_attempted:
+        if self.kill_attempted or self.reap_attempted:
             return
         self.kill_attempted = True  # uncertain sends must not be retried
         try:
@@ -89,18 +91,37 @@ class OuterControl:
                 self._error('cleanup-pipes', exc)
                 self._kill()
             try:
-                terminal = self.wait.poll()
-                drained = self.owner.drain_owned_tracees()
-                if type(drained) is not bool:
-                    raise ValueError('exact tracee drain state required')
-                # EOF is not terminal; observer must remain waitable until the
-                # owned tracees have their own consuming terminal evidence.
-                if terminal is not None and drained and self.budget.report()['all_eof']:
-                    self._kill()  # observer terminal is held; no live normal tracer killed
+                if not self.reap_attempted:
+                    terminal = self.wait.poll()
                     self.budget.check_cleanup(self.clock())
-                    self.reap_attempted = True
-                    self.wait.reap()  # exactly once; never retry ambiguous consuming wait
-                    self.events.append({'operation': 'observer-reap', 'verified': True})
+                    if terminal is not None:
+                        retained = copy.deepcopy(terminal)
+                        self._kill()  # last group authority while leader is held
+                        self.budget.check_cleanup(self.clock())
+                        self.reap_attempted = True
+                        consumed = self.wait.reap()  # uncertain consumption never retried
+                        self.events.append({'operation': 'observer-reap',
+                                            'result': copy.deepcopy(consumed)})
+                        if type(consumed) is not dict or consumed != retained:
+                            raise ValueError('observer consuming terminal must match retained evidence')
+                        self.observer_consumed = True
+                        self.budget.check_cleanup(self.clock())
+                if self.observer_consumed:
+                    # Trusted native owner must use source/journal admission and
+                    # exact consuming terminals, NOT a live proc children snapshot.
+                    drained = self.owner.drain_owned_tracees()
+                    self.budget.check_cleanup(self.clock())
+                    if type(drained) is not bool:
+                        raise ValueError('exact tracee drain state required')
+                    empty = self.owner.no_owned_children() if drained else False
+                    self.budget.check_cleanup(self.clock())
+                    if type(empty) is not bool:
+                        raise ValueError('policy-qualified P_ALL __WALL ECHILD state required')
+                else:
+                    drained = empty = False
+                # EOF is a FINAL condition, never a prerequisite for observer
+                # consume. Empty is a separate policy-checked kernel census.
+                if drained and empty and self.budget.report()['all_eof']:
                     absent = self.owner.group_absent_after_reap()  # read-only, NEVER kill now
                     if type(absent) is not bool or not absent:
                         raise ValueError('owned group absence not proved')
@@ -132,6 +153,7 @@ class OuterControl:
                 'inner_cleanup_requested': self.cleanup_requested,
                 'cleanup_protocol_complete': self.protocol_complete,
                 'kill_attempted': self.kill_attempted, 'reap_attempted': self.reap_attempted,
-                'events': list(self.events), 'errors': list(self.errors),
+                'observer_consumed': self.observer_consumed,
+                'events': copy.deepcopy(self.events), 'errors': list(self.errors),
                 'budget': self.budget.report(), 'observer': self.wait.report(),
                 'pipes': self.pipes.report(), 'owner': self.owner.report()}

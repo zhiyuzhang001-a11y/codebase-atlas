@@ -9,7 +9,7 @@ import sys
 
 
 class ObserverWait:
-    """Keep observer waitable until outer owner explicitly requests final reap."""
+    """Keep observer waitable until outer owner retires group-signal authority."""
 
     def __init__(self, pid, pidfd, os_api=None):
         self.os = os if os_api is None else os_api
@@ -69,8 +69,10 @@ class ObserverWait:
     def reap(self):
         """Exactly one consuming wait, only after a verified nonconsuming terminal.
 
-        Caller must complete tracer/tracee drain before this. This method cannot
-        prove that ordering, group absence, successful control or output EOF.
+        Observer caller must finish its last identity-bound group cancellation
+        before this; adopted-child census follows successful consumption. This
+        method alone cannot prove that policy, group absence or output EOF.
+        For an adopted child, the caller must verify its admitted lifetime first.
         A failed/ambiguous consuming call is never retried on an uncertain FD.
         """
         if self.terminal is None or self.reap_attempted:

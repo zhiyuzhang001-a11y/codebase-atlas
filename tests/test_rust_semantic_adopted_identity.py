@@ -55,7 +55,8 @@ class AdoptedIdentityTests(unittest.TestCase):
         platform.start()
         self.addCleanup(platform.stop)
         self.os = FakeOS()
-        self.observer = SimpleNamespace(pid=200, terminal={'si_pid': 200}, reap_attempted=False)
+        self.observer = SimpleNamespace(pid=200, terminal={'si_pid': 200},
+                                        reap_attempted=True, reaped=True)
         self.binding = dict(pid=300, pidfd=30, uid=501, ppid=100, pgrp=200, session=200,
                             tracer=0, starttime=77, proc_dev=1, proc_ino=8,
                             pidfd_dev=1, pidfd_ino=9)
@@ -120,7 +121,8 @@ class AdoptedIdentityTests(unittest.TestCase):
         self.assertEqual(len(self.os.closed), 1)
 
     def test_observer_reap_and_clock_failure_no_identity_acceptance(self):
-        for field, value in (('terminal', None), ('reap_attempted', True)):
+        for field, value in (('terminal', None), ('reap_attempted', False),
+                             ('reaped', False), ('reaped', 1)):
             original = getattr(self.observer, field)
             setattr(self.observer, field, value)
             with self.assertRaises(ValueError): self.make().verify()
@@ -142,4 +144,3 @@ class AdoptedIdentityTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.make().verify()
         self.now = 1
         with self.assertRaises(ValueError): self.make()
-

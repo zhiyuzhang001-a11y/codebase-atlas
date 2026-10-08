@@ -16,13 +16,16 @@ class AdoptedWaitTests(unittest.TestCase):
                                   getuid=lambda: 1000, get_inheritable=lambda fd: False,
                                   P_PIDFD=3, WEXITED=4, WNOHANG=1, WNOWAIT=0x1000000)
         self.signal = SimpleNamespace(pidfd_send_signal=Mock())
-        self.observer = SimpleNamespace(pid=10, terminal={'si_pid': 10}, reap_attempted=False)
+        self.observer = SimpleNamespace(pid=10, terminal={'si_pid': 10},
+                                        reap_attempted=True, reaped=True)
         self.binding = dict(pid=11, pidfd=30, uid=1000, ppid=9, session=10, pgrp=10,
                             tracer=0, starttime=123, proc_dev=4, proc_ino=5,
                             pidfd_dev=6, pidfd_ino=7)
         self.raw = {**self.binding, 'controller': 9, 'threads': 1,
                     'sigchld_default': True, 'sa_no_cldwait': False,
-                    'sole_waiter': True, 'journal_admitted': True}
+                    'sole_waiter': True, 'journal_admitted': True,
+                    'observer_consumed': True, 'group_cancel_before_reap': True,
+                    'group_signal_retired': True}
         self.verifier = Mock(side_effect=lambda: dict(self.raw))
         self.now = 2
         self.result = SimpleNamespace(si_pid=11, si_uid=1000, si_signo=17,
@@ -57,6 +60,8 @@ class AdoptedWaitTests(unittest.TestCase):
         for key, bad in (('starttime', 124), ('ppid', 8), ('pgrp', 12),
                          ('tracer', 10), ('pidfd_ino', 8), ('threads', 2),
                          ('sole_waiter', False), ('journal_admitted', False),
+                         ('observer_consumed', False), ('group_cancel_before_reap', False),
+                         ('group_signal_retired', False),
                          ('sigchld_default', 1)):
             original = self.raw[key]
             self.raw[key] = bad
@@ -65,7 +70,8 @@ class AdoptedWaitTests(unittest.TestCase):
                 child.tick()
             self.assertTrue(child.failed)
             self.raw[key] = original
-        for key, bad in (('terminal', None), ('reap_attempted', True)):
+        for key, bad in (('terminal', None), ('reap_attempted', False),
+                         ('reaped', False), ('reaped', 1)):
             original = getattr(self.observer, key)
             setattr(self.observer, key, bad)
             with self.assertRaises(ValueError):

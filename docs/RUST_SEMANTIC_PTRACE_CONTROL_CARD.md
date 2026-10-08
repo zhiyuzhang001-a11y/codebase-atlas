@@ -346,7 +346,8 @@ verifier 每次核对同一 starttime/UID/父进程/session/group/无 tracer/FD 
 以及单线程/defaultSIGCHLD/无SA_NOCLDWAIT/solewaiter/source journal 策略。
 当前只有注入 verifier 合同，**真实 admission、原始身份 packet 和完整集合排空
 尚未接线**，不能凭字典、单个回收成功或空 child 快照宣称整个树已经清理。
-observer terminal 必须 held/unreaped；每 tick 最多一次 WNOWAIT 非阻塞 terminal
+该协议初版要求 observer held/unreaped；文末集合回收修订取代此阶段不变量。
+当前 adopted drain 必须在 observer 精确 consuming terminal 成功后；每 tick 最多一次 WNOWAIT 非阻塞 terminal
 观察、一次精确 P_PIDFD consuming wait 和一次 stored pidfd SIGKILL；无内部重试。
 先见原始 terminal，重核身份后才消费。模糊消费/身份/时钟错误 latch，不复用权限；
 signal ESRCH/EPERM/EINTR 不算退出，不重发，但下一 tick 可继续收集真实终止证据。
@@ -388,7 +389,7 @@ SIGCHLD、无SA_NOCLDWAIT且没有其他 reaper。源码 reference 不是 runner
 当前固定源码与模块尚未证明读取区间全部 child 冻结；因此此接口最多提供
 候选发现，不能产生全树完成或独占 ownership 的权限。
 
-当前 `OuterControl`、`AdoptedWait`、`AdoptedIdentity` 的准备合同要求先排空
+修订前 `OuterControl`、`AdoptedWait`、`AdoptedIdentity` 的准备合同要求先排空
 收养 tracee，再消费 observer terminal。若发现改用 `waitid(P_ALL, WNOWAIT)`，
 已 held 的 observer terminal 可能反复被选中；不能假定内核会轮转其他 child，
 也不能将 `WNOHANG` 的无事件结果当作没有 child。此组合须在原生接线前修订，
@@ -424,7 +425,7 @@ SIGCHLD、无SA_NOCLDWAIT且没有其他 reaper。源码 reference 不是 runner
 和 [最近存活 ancestor subreaper 收养](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)。
 原始 tracer stop/exec/RSS journal 缺失仍记 incomplete；outer 的回收不能补造
 语义或资源资格。全部操作保留原共享 10 秒、8 lifetime/4096 event 与输出门。
-旧准备模块尚未采用此顺序；准确 owner admission、native policy、错误/模糊消费
+准备模块的阶段转换落实情况见下文；准确 owner admission、native policy、错误/模糊消费
 与 pending/最终无 child 的负例、bootstrap/source/tool receipts 和整套调用接线
 仍须实现及独立复审。不新增控制执行、metadata/build 或公开启用授权。
 
@@ -432,3 +433,27 @@ SIGCHLD、无SA_NOCLDWAIT且没有其他 reaper。源码 reference 不是 runner
 消费阶段及最终出口澄清已纳入。结论仅允许 plan-only 准备卡提交，不证明
 原生可用或执行资格。旧模块须整体更换阶段不变量，不能仅放宽 reap_attempted；
 下一步以此顺序实现 mock 负例和准确 native admission，再独立复审完整执行卡。
+
+### 阶段转换准备实现（未原生执行）
+
+`OuterControl` 已先在 held leader 的最后组取消尝试后消费 observer，再调用
+收养排空，不能在消费后 poll observer 或取消组。返回 consuming terminal 须与
+retained terminal 完全匹配；模糊消费不重试、不进入 census。精确消费的记录
+在后置时钟失败时仍保留，但不继续排空/不宣称完成。trusted owner 另需提供
+`no_owned_children()` 的严格布尔合同，只有 native policy-qualified `P_ALL +
+__WALL` ECHILD 才可 true；None/pending、普通 PIDFD ECHILD 或 proc 空快照不算。
+此 native owner **尚未实现或接线**，注入 true 只是 mock，不是内核原证据。
+全部 registered lifetime 准确 drain、该 census、allEOF、只读 group absence 和
+最后共享时钟同时满足才标 protocol complete，qualification/outercleanup 仍 false。
+
+`AdoptedWait` 同时检查 observer 已精确 reaped、native wait/source journal policy，
+新增 observer_consumed、group_cancel_before_reap、group_signal_retired 合同。
+group_cancel_before_reap 表示唯一取消尝试先于消费，不意味着信号成功或全部退出；
+错误结果仍须保存。`AdoptedIdentity` 前后检查新 observer 阶段，但只返回已有
+held lifetime 身份，不能生成 journal、wait、group 权限。`ObserverWait` 的消费
+方法仍保持准确 pidfd、retained siginfo 匹配和一次消费；调用者责任说明已调整。
+此差异不引入新进程、原生 wait/census、权限、CLI 或 workflow 控制执行入口。
+mock 负例覆盖 pending drain/缺 census、错误 census 类型/未合格 ECHILD、模糊
+observer consume、EOF 延后、消费后 deadline 与旧阶段/未退役组权限拒绝；真实
+源码来源、observer/controller verifier、native census/admission、bootstrap 和
+IPC/FD/工具 receipt 完整接线仍需完成并整体独立复审，不能直接运行控制程序。
