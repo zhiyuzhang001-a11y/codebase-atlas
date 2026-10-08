@@ -457,3 +457,19 @@ mock 负例覆盖 pending drain/缺 census、错误 census 类型/未合格 ECHI
 observer consume、EOF 延后、消费后 deadline 与旧阶段/未退役组权限拒绝；真实
 源码来源、observer/controller verifier、native census/admission、bootstrap 和
 IPC/FD/工具 receipt 完整接线仍需完成并整体独立复审，不能直接运行控制程序。
+
+### TerminalCensus 准备接口（未原生执行）
+
+新接口每 tick 只调用一次 `waitid(P_ALL, 0, WEXITED | WNOHANG |
+WNOWAIT | 0x40000000)`，固定 Linux `__WALL`，不消费、不 signal、不创建
+或关闭 FD。observer 已精确消费的严格阶段检查及 trusted native/source policy
+前后检查必需：单线程、default SIGCHLD、无 SA_NOCLDWAIT、sole waiter、
+subreaper、组取消先于消费且组信号退役、无后续 fork/其他 adopter/escape。
+该 verifier 仍须从固定来源与原生测量组合实现，普通调用者 dict 不构成权限。
+每次保留 siginfo/errno、前后策略 receipt 与共享时钟；原 10 秒剩余期限、
+4096 packet bound 不重置，错误锁死不重试。None 只是 pending；ECHILD 仅
+产生 candidate_no_children，仍需 owner 核对所有 registered terminal、EOF、
+只读组 absence 和末次时钟。terminal 的 PID/UID/siginfo 是未准入发现，
+不授权打开 pidfd、消费或 signal，也没有生命周期集合完成布尔值。
+原生 admission/journal、完整 owner、source-policy/bootstrap/IPC 接线尚缺；
+该模块与 mock 测试不构成 C0-O/C0-M 或真实语义资格，不进入原生执行入口。
