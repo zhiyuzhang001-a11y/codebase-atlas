@@ -133,3 +133,58 @@ def decode_record(raw: str) -> dict:
         raise ValueError("incomplete, trailing or unsupported result format")
     return {'pid': int(start[1]), 'syscall': start[2], 'fd': fd, 'path': path,
             'argv': argv, 'environment': environment, 'flags': flags}
+
+
+def pair_records(records: list[str]) -> list[dict]:
+    """Pair a bounded exec-only subsequence, not certify a whole trace.
+
+    Every input row must be an exec start/completion. The caller must prove
+    trace coverage, PID lifetimes, cwd/FD provenance and that no exec rows were
+    omitted. Results preserve attempts (including failures); only result 0 is
+    a successful launch. This pure function neither executes nor permits it.
+    """
+    if not isinstance(records, list) or not 0 < len(records) <= 4096:
+        raise ValueError("nonempty bounded exec record list required")
+    total = 0
+    for raw in records:
+        if not isinstance(raw, str) or len(raw) > 1024 * 1024 or not raw.isascii():
+            raise ValueError("unsupported complete exec record")
+        total += len(raw)
+        if total > 16 * 1024 * 1024:
+            raise ValueError("aggregate exec records exceed bound")
+    pending = {}
+    completed = []
+    for index, raw in enumerate(records):
+        resumed = re.fullmatch(
+            r'([1-9][0-9]*) +<\.\.\. (execve|execveat) resumed>(.*)', raw)
+        if resumed:
+            pid = int(resumed[1])
+            if pid not in pending:
+                raise ValueError("exec completion without its start")
+            start_index, prefix, decoded = pending.pop(pid)
+            if resumed[2] != decoded['syscall']:
+                raise ValueError("exec completion syscall mismatch")
+            whole = prefix[:-len('<unfinished ...>')] + resumed[3]
+            # Validate the complete reconstructed record again: a resume may
+            # not smuggle extra arguments, flags, or an unknown result suffix.
+            final = decode_record(whole)
+            if final != decoded:
+                raise ValueError("exec completion changed argument identity")
+        else:
+            decoded = decode_record(raw)
+            pid = decoded['pid']
+            if pid in pending:
+                raise ValueError("previous exec result missing for PID")
+            if raw.endswith('<unfinished ...>'):
+                pending[pid] = (index, raw, decoded)
+                continue
+            start_index, whole = index, raw
+        result = re.search(r'\) += (0|-1 [A-Z0-9_]+ \([^\r\n]*\))$', whole)
+        if result is None:
+            raise ValueError("exec completion result missing")
+        completed.append({**decoded, 'start_index': start_index,
+                          'completion_index': index, 'result': result[1],
+                          'launched': result[1] == '0'})
+    if pending:
+        raise ValueError("unresolved exec attempts at end of input")
+    return completed

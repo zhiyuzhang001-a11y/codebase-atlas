@@ -78,3 +78,11 @@ C0-O v2 原始执行控制已独立复核通过。新增纯准备模块
 主 agent 用它离线解码 v2 四条真实 exec，三个固定 true argv 完整一致；合成回归
 覆盖转义/Unicode octal/缺失/超限。尚未接线完整 metadata 观察器；RSS、确切允许
 命令、复制配置/receipt 与实际 roots/features 图仍未闭合，不执行 metadata。
+
+后续纯准备新增 `pair_records`：只接受有界 exec-only 子序列，完整解码后按 PID
+配对交错 unfinished/resumed 返回，保留失败尝试，只有明确结果 0 标为 launched。
+同 PID 未完成时再次 exec（包括另一 syscall）、缺失/重复/错配返回、未知结果
+或续行追加参数均拒绝。上限 4096 行、单行 1 MiB、合计 16 MiB；不运行外部程序。
+它不证明筛选前原 trace 完整、PID 生命周期、cwd、FD 来源或 RSS，不接线执行器。
+对已留存 C0-O v2 的四条真实完整 exec 行离线解析通过；交错/失败/异常由纯合成
+测试覆盖，尚未取得真实交错控制资格。不把旧 artifact 当作新 head 的运行证据。

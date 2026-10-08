@@ -1,7 +1,7 @@
 """Pure trace decoding tests; never spawn a tool or authorize a build."""
 import unittest
 
-from scripts.rust_semantic_exec_decode import decode_record
+from scripts.rust_semantic_exec_decode import decode_record, pair_records
 
 
 class ExecDecodeTests(unittest.TestCase):
@@ -35,6 +35,45 @@ class ExecDecodeTests(unittest.TestCase):
                     '14' + ' ' * (1024 * 1024) + 'execve("/tool", ["tool"], []) = 0'):
             with self.assertRaises(ValueError):
                 decode_record(raw)
+
+    def test_pair_interleaved_results_and_preserve_failed_attempt(self):
+        records = [
+            '14 execve("/a", ["a", ""], [] <unfinished ...>',
+            '15 execveat(3, "", ["b"], [], AT_EMPTY_PATH <unfinished ...>',
+            '16 execve("/missing", ["missing"], []) = -1 ENOENT (No such file or directory)',
+            '15 <... execveat resumed>) = 0',
+            '14 <... execve resumed>) = 0',
+        ]
+        result = pair_records(records)
+        self.assertEqual([entry['pid'] for entry in result], [16, 15, 14])
+        self.assertEqual([entry['launched'] for entry in result], [False, True, True])
+        self.assertEqual([(entry['start_index'], entry['completion_index']) for entry in result],
+                         [(2, 2), (1, 3), (0, 4)])
+        self.assertEqual(result[1]['fd'], 3)
+        self.assertEqual(result[2]['argv'], ['a', ''])
+
+    def test_pair_missing_duplicate_mismatch_and_unknown_fail_closed(self):
+        prefix = '14 execve("/a", ["a"], [] <unfinished ...>'
+        complete = '14 execve("/a", ["a"], []) = 0'
+        for records in ([prefix], ['14 <... execve resumed>) = 0'],
+                        [prefix, prefix], [prefix, complete],
+                        [prefix, '14 execveat(3, "", ["a"], [], AT_EMPTY_PATH) = 0'],
+                        [prefix, '14 <... execveat resumed>) = 0'],
+                        [prefix, '14 <... execve resumed>) = ?'],
+                        [prefix, '14 <... execve resumed>, ["extra"]) = 0'],
+                        [complete + ' trailing'], ['14 +++ exited with 0 +++'],
+                        [prefix, '14 <... execve resumed>) = 0', '14 <... execve resumed>) = 0']):
+            with self.subTest(records=records), self.assertRaises(ValueError):
+                pair_records(records)
+
+    def test_pair_bounds_and_single_line_results(self):
+        complete = '14 execve("/a", ["a"], []) = 0'
+        self.assertEqual(pair_records([complete])[0]['result'], '0')
+        for records in ([], [complete] * 4097, [None], 'not a list',
+                        [' ' * (1024 * 1024 + 1)],
+                        [' ' * (1024 * 1024)] * 17):
+            with self.assertRaises(ValueError):
+                pair_records(records)
 
 
 if __name__ == '__main__':
