@@ -93,3 +93,13 @@ chdir 的明确成功/失败结果，拒绝相对路径、`..`、双斜杠/非�
 截断/未完成记录及 fchdir。路径字符串不证明目录 inode，也不证明子进程继承、
 共享 cwd 的并发顺序或 FD 来源；没有接线/更改旧 native observer。下一步仍须
 完整进程创建/目录事件配对与 inode/FD admission、受控正例及所属树 RSS 监督。
+
+RSS 准备模块 `scripts/rust_semantic_linux_resources.py` 只读取调用者已准入的
+PID/starttime 集，在同一 proc directory FD 下先后核对 PID/starttime/session/
+process group，读取有界 `smaps_rollup`。累计 RSS 与显式 hugetlb 项，不拿 PSS
+代替 RSS；缺字段、零值、权限失败、进程消失或身份变化不生成通过样本。
+根据 [Linux proc 文档](https://docs.kernel.org/filesystems/proc.html)，普通 RSS
+计数可不精确，smaps/rollup 给出映射统计；单次读取仍不是跨进程原子快照或连续峰值。
+目前只有纯/模拟测试，不读取真实 proc、不 spawn、不接线 metadata。调用者仍须
+证明完整进程准入与创建/退出/逃逸覆盖、采样间隔/延迟、deadline/超限清理及受控
+正例；短命子进程和两次采样之间的峰值不能据此声称已覆盖。资源门仍未通过。
