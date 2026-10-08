@@ -113,12 +113,30 @@ SIGKILL/正常 terminal 与 ECHILD，ESRCH 不作 terminal 或回收证据；拒
 重用、observer 身份、非法 wait 编码及超出共享剩余 10 秒/PID/event 预算。
 即使 known lifetimes 都有 terminal，仍显式 `outer_cleanup_complete=false`；
 group absence 与外层 observer reap 不由该协议推断。没有 native kill/handle
-实现，测试只使用 fake operations。NativeStops 资源模块改为显式注入，便于后续
+接线，测试只使用 fake operations。NativeStops 资源模块改为显式注入，便于后续
 将逐文件核验过的源码字节嵌入 `-I -S` observer，不依赖项目 sys.path/site。
 主 agent 59 项相关 pure/mock 回归通过；本差异独立复核结论另记 STATE。
 
+后续 `NativeStops` 准备实现增加 Linux pidfd capability 检查与绑定/发送适配器。
+依据 [pidfd_open(2)](https://man7.org/linux/man-pages/man2/pidfd_open.2.html) 和
+[pidfd_send_signal(2)](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html)，
+通过 handle 发送 SIGKILL，不做裸 PID kill；能力缺失不回退。
+只有 observer 独占 wait 流中已消费、尚未恢复/terminal 的 stop 可以绑定。
+同一个 proc 目录 FD 前后 stat 一致，核对 starttime/session/group、status 的
+TracerPid/Tgid/Pid/四个 Uid、pidfd fdinfo 的 Pid 及 CLOEXEC；超过 0.5 秒失败。
+首次恢复前 configure 安装 ptrace options 后即绑定 handle，再采样 RSS。
+已有 handle 不重绑其他 starttime；kill 失败留 errno，不补造 terminal。
+测试通过 mock 注入所有 OS API（含 Windows 缺失的 Linux 常量），共 67 项
+相关 pure/mock 测试通过；close_handles 在每次关闭前移除 FD 所有权，失败保留
+errno 并继续关闭其余，最后报告错误；禁止重试不确定 FD 以免误关复用对象。
+尚未调用
+真实 pidfd/proc/ptrace，不证明该 Linux adapter 在 runner 上可用。
+仍须明确独占 wait、SIGCHLD disposition、单线程 bootstrap 和外层强取消，
+pidfd 被关闭也不是回收证据。本差异独立复核结论记录在 STATE。
+
 外层 adapter/固定 bootstrap、源码/工具 receipt、observer/root/session 绑定、
-真实 lifetime handle、20 秒强监督、合计 1 MiB 输出及共享 10 秒清理的 OS 接线、
+bootstrap 初始 handle/真实 stopped handle 验证、20 秒强监督、合计 1 MiB 输出
+及共享 10 秒清理的 OS 接线、
 terminal/group/reap 均尚未实现/执行验证。必须连同准确代码和调用接线另审后
 才运行，不能将已有 loop/cleanup 协议作为独立执行器，更不授权 metadata/build
 或完整树/峰值资源门。

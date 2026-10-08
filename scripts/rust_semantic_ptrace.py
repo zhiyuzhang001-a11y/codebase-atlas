@@ -11,6 +11,7 @@ import ctypes
 import math
 import os
 import platform
+import signal
 import sys
 import time
 
@@ -32,6 +33,8 @@ class NativeStops:
             raise ValueError('isolated Linux x64 observer session required')
         if resources is None:
             raise ValueError('measured resource module injection required')
+        if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+            raise ValueError('native pidfd APIs required; no bare-PID fallback')
         self.resources = resources
         self.session = session
         self.libc = ctypes.CDLL(None, use_errno=True)
@@ -40,6 +43,8 @@ class NativeStops:
                                     ctypes.c_void_p, ctypes.c_void_p]
         self.calls = []
         self.observations = []
+        self.wait_stops, self.wait_terminals = set(), {}
+        self.handles = {}
 
     def ptrace(self, request: int, pid: int, data=0):
         if request not in {CONT, SETOPTIONS, GETEVENTMSG, GETSIGINFO}:
@@ -60,9 +65,11 @@ class NativeStops:
 
     def configure(self, pid: int):
         self.ptrace(SETOPTIONS, pid, OPTIONS)
+        self.bind_stopped(pid)
 
     def resume(self, pid: int, sig: int):
         self.ptrace(CONT, pid, sig)
+        self.wait_stops.discard(pid)
 
     def message(self, pid: int) -> int:
         value = ctypes.c_ulong()
@@ -70,7 +77,123 @@ class NativeStops:
         return value.value
 
     def wait(self):
-        return os.waitpid(-1, os.WNOHANG | WALL)
+        pid, status = os.waitpid(-1, os.WNOHANG | WALL)
+        if pid:
+            self.observations.append({'owned_wait': {'pid': pid, 'status': status}})
+            if status & 0xff == 0x7f:
+                self.wait_stops.add(pid)
+            elif ((status & 0xff == 0 and status <= 0xff00)
+                  or (status <= 0xff and 0 < status & 0x7f <= 64)):
+                self.wait_stops.discard(pid)
+                self.wait_terminals[pid] = status
+        return pid, status
+
+    def bind_stopped(self, pid: int):
+        """Bind only a consumed ptrace stop, with same-FD identity checks.
+
+        Caller owns all waits in the isolated single-thread observer. No PID
+        reuse/rebinding, inherited handle or arbitrary attach is accepted.
+        This is a prepared native adapter, not permission to execute it.
+        """
+        if (type(pid) is not int or not 0 < pid <= 2**31-1
+                or pid == self.session or pid not in self.wait_stops
+                or pid in self.wait_terminals
+                or (pid not in self.handles and len(self.handles) >= 8)):
+            raise ValueError('consumed owned live stop required for handle binding')
+        begin = time.monotonic()
+        row = {'handle_bind': {'pid': pid, 'start_seconds': begin}}
+        self.observations.append(row)
+        evidence = row['handle_bind']
+        directory = os.open(f'/proc/{pid}', os.O_RDONLY | os.O_DIRECTORY |
+                            os.O_CLOEXEC | os.O_NOFOLLOW)
+        new_fd = None
+        try:
+            before = self.resources.proc_identity(self.resources._read_at(directory, 'stat', 8192))
+            evidence['before'] = before
+            status = self.resources._read_at(directory, 'status', 16384)
+            evidence['status_text'] = status.decode('ascii', 'strict')
+            fields = {}
+            for line in status.splitlines():
+                key, sep, value = line.partition(b':')
+                if key in {b'TracerPid', b'Tgid', b'Pid', b'Uid'}:
+                    if not sep or key in fields:
+                        raise ValueError('ambiguous proc trace ownership')
+                    fields[key] = value.split()
+            expected = {b'TracerPid': [str(self.session).encode()],
+                        b'Tgid': [str(pid).encode()], b'Pid': [str(pid).encode()],
+                        b'Uid': [str(os.getuid()).encode()] * 4}
+            if fields != expected:
+                raise ValueError('same-account tracer-owned process leader required')
+            if (before['pid'] != pid or before['starttime'] <= 0
+                    or before['state'] not in {'t', 'T'}
+                    or before['pgrp'] != self.session or before['session'] != self.session):
+                raise ValueError('owned stopped identity required')
+            if pid in self.handles:
+                handle = self.handles[pid]
+                if handle['starttime'] != before['starttime']:
+                    raise ValueError('PID lifetime changed; never rebind')
+                fd = handle['fd']
+            else:
+                fd = new_fd = os.pidfd_open(pid, 0)
+                if os.get_inheritable(fd):
+                    raise ValueError('pidfd must be close-on-exec')
+            info_dir = os.open('/proc/self/fdinfo', os.O_RDONLY | os.O_DIRECTORY |
+                               os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                info = self.resources._read_at(info_dir, str(fd), 4096)
+            finally:
+                os.close(info_dir)
+            evidence['fdinfo_text'] = info.decode('ascii', 'strict')
+            pid_rows = [line.partition(b':')[2].split() for line in info.splitlines()
+                        if line.partition(b':')[0] == b'Pid']
+            if pid_rows != [[str(pid).encode()]]:
+                raise ValueError('pidfd does not identify stopped lifetime')
+            after = self.resources.proc_identity(self.resources._read_at(directory, 'stat', 8192))
+            evidence['after'] = after
+            evidence['end_seconds'] = time.monotonic()
+            if before != after or evidence['end_seconds'] - begin > .5:
+                raise ValueError('handle binding identity/time changed')
+            if new_fd is not None:
+                self.handles[pid] = {'fd': fd, 'starttime': before['starttime']}
+                new_fd = None
+            evidence['fd'] = fd
+        finally:
+            if new_fd is not None:
+                os.close(new_fd)
+            os.close(directory)
+
+    def kill_bound(self, pid: int):
+        if type(pid) is not int or pid in self.wait_terminals:
+            raise ValueError('live bound lifetime required')
+        handle = self.handles[pid]  # missing authority is fail-closed
+        row = {'bound_kill': {'pid': pid, 'fd': handle['fd'],
+                              'starttime': handle['starttime'], 'signal': 9}}
+        self.observations.append(row)
+        try:
+            signal.pidfd_send_signal(handle['fd'], 9, None, 0)
+        except OSError as exc:
+            row['bound_kill']['errno'] = exc.errno
+            raise
+        row['bound_kill']['result'] = 0
+
+    def close_handles(self):
+        """Release only observer-owned pidfds; never implies exit or reap."""
+        errors = []
+        for pid in list(self.handles):
+            # Relinquish registry ownership before close, even if close fails:
+            # retrying an ambiguous/reused FD can close an unrelated object.
+            handle = self.handles.pop(pid)
+            row = {'handle_close': {'pid': pid, 'fd': handle['fd']}}
+            self.observations.append(row)
+            try:
+                os.close(handle['fd'])
+            except OSError as exc:
+                row['handle_close']['errno'] = exc.errno
+                errors.append(exc)
+            else:
+                row['handle_close']['result'] = 0
+        if errors:
+            raise OSError(errors[0].errno, 'one or more pidfd closes failed; never retry raw FDs')
 
     def signal_delivery(self, pid: int, sig: int):
         # siginfo_t is 128 bytes on this explicitly restricted Linux x64 ABI.
