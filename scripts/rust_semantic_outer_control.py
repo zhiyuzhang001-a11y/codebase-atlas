@@ -68,6 +68,11 @@ class OuterControl:
             self._error('cleanup-clock', exc)
             self._kill()
             return self.report()  # incomplete; independent native owner still responsible
+        try:
+            self.owner.begin_cleanup(self.budget.cleanup_deadline)
+        except Exception as exc:
+            self._error('cleanup-owner', exc)
+            self._kill()  # owner/transport failure must not skip observer reap
         if not self.cleanup_requested:
             self._kill()  # contain failures/terminal leftovers, not a normal live tracer
         else:

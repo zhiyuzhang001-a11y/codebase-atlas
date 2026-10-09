@@ -16,7 +16,7 @@ class OuterControlTests(unittest.TestCase):
         self.wait = SimpleNamespace(poll=Mock(return_value=self.terminal),
                                     reap=Mock(return_value=dict(self.terminal)),
                                     report=Mock(return_value={'observer_reaped': False}))
-        self.owner = SimpleNamespace(cancel_owned_group=Mock(),
+        self.owner = SimpleNamespace(cancel_owned_group=Mock(), begin_cleanup=Mock(),
             poll_cleanup_request=Mock(return_value=False), deliver_cleanup_deadline=Mock(),
             drain_owned_tracees=Mock(return_value=True),
             no_owned_children=Mock(return_value=True),

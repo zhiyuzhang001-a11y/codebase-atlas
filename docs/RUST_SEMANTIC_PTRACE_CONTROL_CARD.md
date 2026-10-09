@@ -632,3 +632,33 @@ UTF8。短读、EINTR、变化或超时均失败并锁定，不内部重试；�
 测试全部注入，无实际 artifact 创建/读取/执行。来源认证、继承后 CLOEXEC恢复、
 固定入口和完整 owner/IPC/资源监督仍未接线，整体另审前不授权 native控制或
 metadata/build；qualified/source_authenticated/source_policy_audited 仍 false。
+
+### Owner 全生命周期对账接线草案（未原生执行、不是完整入口）
+
+ControlOwner 将 OuterControl 的 request/grant、首次共享 cleanup transition、
+journal drain、observer 已消费 terminal、adopted admission/drain、final census
+及 group absence 接成同一状态流，不再以任意 drain=True 直接跳过生命周期账。
+OuterControl 在 budget 首次转换后必须通知 owner，即使没有 inner request；
+owner 转换失败仍尝试已绑定组取消和 observer 精确回收，不提前放弃 observer。
+
+新增固定 ATTERM01 终态摘要：36字节 header（observer/source SHA/count）加最多
+3个16字节 PID/starttime/Linux consuming-wait status。从 observe_fixed 的
+stops.terminals 与 cleanup.terminals 合并，冲突/未准入 lifetime 拒绝；early-exit
+stop 绝不升级为 terminal。仅 encode/decode 字节不是 peer/source authentication。
+未知/重复 PID、starttime 不符、错误 observer/SHA、非法终态、截断/多余字节拒绝。
+真实专用 transport/继承/唯一 writer 与源码身份尚未接线，普通回调不获得权限。
+
+Owner 只在 observer consuming terminal 已确认后对账。journal 必须完整固定3项
+且 EOF；摘要可为0..3个已由 observer 消费的 lifetime，其余必须经可信 census
+发现、按 journal 身份 admit，再用 held AdoptedWait 真实 consuming receipt 匹配。
+admission 对象在 admit 前登记，失败不重试或丢失 owned FD；显式 close 前退休，
+保留关闭错误和退休后证据。ECHILD 若仍有登记 lifetime 无 terminal 则 incomplete；
+全账匹配后另取 policy-qualified census，再结合输出 EOF 与只读组消失。
+callback 返回 True、EOF、组信号或摘要 source SHA 都不能独立证明真实执行/清理。
+
+本差异是整体 owner **协议部分**的集成草案：测试使用真实预算/journal/outer状态机
+和 fake OS/transport/admission，不读取真实 proc、fork、wait、signal 或执行artifact。
+固定 bootstrap/launcher、可信 tool/stdlib/cwd/source manifest、FD/peer继承、真实
+summary 交付、native factory/source-policy、启动前独立强监督仍未完成。未新增
+CLI/CI 原生入口，不修改23-module artifact 集合或公开产品开关。全部资格 false；
+必须继续补齐整体入口并独立审查准确 diff 才能运行 C0-O5，不能把本差异当出口。
