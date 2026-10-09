@@ -514,3 +514,18 @@ receipt，锁失败不重用。source hash 匹配只证明字节，不证明 sol
 fork/其他 adopter/escape：完整 source verifier 仍须来自独立审查的固定bootstrap，
 不能接受项目 bool/hash 或普通调用者声明。此 verifier 和整体 bootstrap/owner/
 journal/IPC 仍缺，故仅准备接口与 mock 证据，不是 nativepolicy/C0-O执行资格。
+
+### 固定 first-stop journal 传输准备（未原生执行）
+
+ControlJournal 只解码 dedicated observer 的固定三生命周期二进制协议：
+magic/version、严格连续序号、PID、creation parent、starttime、session/pgrp。
+root parent 必须是 observer，两个串行 child parent 必须是 root；拒绝未知形状、
+重复 PID、零 starttime、controller/observer PID、错组/会话或截断帧。总原始保留
+最多三个44字节 frame；有界 overflow 的 seen/omitted 单独计数并锁失败，不重试。
+fragment 可以逐字节进入，EOF 只结束 byte transport，零/部分记录明确不完整。
+返回复制的身份与 raw receipt，lookup 不接纳未知 PID，也不授权 pidfd/consume。
+
+必须另有固定 observer first-stop 原生核验后、CONT 前的 emitter 与专用 pipe
+身份/继承/peer/source 校验；这些仍未实现。正确解码甚至 transport_complete
+不是 authenticated journal，不证明 exec/RSS、terminal 或树清理。本纯字节模块
+不创建管道、不执行项目代码、不进入 nativecontrol/Cargo/构建入口。
