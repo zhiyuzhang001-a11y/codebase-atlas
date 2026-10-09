@@ -22,6 +22,27 @@ permissions:
   contents: read
 
 jobs:
+  semantic-runtime-inventory:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/rust-public-enablement'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      # No checkout, setup-python, installation, download, package script,
+      # candidate Python, or semantic control execution in this inventory job.
+      - name: Collect fixed distro package identities (NOT provenance verification)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'source_sha=%s\nimage_os=%s\nimage_version=%s\nqualified=false\n' "$ATLAS_SOURCE_SHA" "$ImageOS" "$ImageVersion" > semantic-runtime-packages.txt
+          ulimit -f 64
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/timeout --signal=KILL 20s /usr/bin/dpkg-query --no-pager --show --showformat='${binary:Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n' python3.12-minimal libpython3.12-minimal libpython3.12-stdlib libc6 libffi8 libssl3t64 zlib1g libbz2-1.0 liblzma5 libexpat1 coreutils ubuntu-keyring dpkg gpgv bash tar >> semantic-runtime-packages.txt
+      - name: Preserve raw runtime inventory including missing packages
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-runtime-packages-linux-x86_64
+          path: semantic-runtime-packages.txt
+          if-no-files-found: error
   semantic-observer-probe:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/rust-public-enablement'
     runs-on: ubuntu-24.04

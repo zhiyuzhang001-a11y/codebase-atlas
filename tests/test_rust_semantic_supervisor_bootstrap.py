@@ -3,6 +3,7 @@ import hashlib
 import json
 import stat
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -168,6 +169,34 @@ class BootstrapTests(unittest.TestCase):
         obj._run_unreviewed_draft(receipt)
         module.NativeHarness.assert_called_once_with(original_started=1.)
         harness._run_unreviewed_draft.assert_called_once_with(5, '/private', failure_mode='controller-death')
+
+
+class RuntimeInventoryContractTests(unittest.TestCase):
+    def test_inventory_is_fixed_read_only_and_never_a_control_entry(self):
+        workflow = (Path(__file__).resolve().parents[1] /
+                    '.github/workflows/rust-runtime-safety.yml').read_text()
+        inventory = workflow.split('  semantic-runtime-inventory:\n', 1)[1].split(
+            '  semantic-observer-probe:\n', 1)[0]
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", inventory)
+        self.assertIn("github.event.pull_request.head.ref == 'codex/rust-public-enablement'", inventory)
+        self.assertIn('runs-on: ubuntu-24.04', inventory)
+        self.assertIn('timeout-minutes: 2', inventory)
+        self.assertIn('          ulimit -f 64\n', inventory)
+        self.assertIn('qualified=false', inventory)
+        self.assertIn('${{ github.event.pull_request.head.sha }}', inventory)
+        self.assertIn('"$ImageOS" "$ImageVersion"', inventory)
+        command = next(line.strip() for line in inventory.splitlines()
+                       if line.strip().startswith('/usr/bin/env -i'))
+        self.assertEqual(command, "/usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C "
+            "/usr/bin/timeout --signal=KILL 20s /usr/bin/dpkg-query --no-pager --show "
+            "--showformat='${binary:Package}\\t${Version}\\t${Architecture}\\t${db:Status-Status}\\n' "
+            "python3.12-minimal libpython3.12-minimal libpython3.12-stdlib libc6 libffi8 "
+            "libssl3t64 zlib1g libbz2-1.0 liblzma5 libexpat1 coreutils ubuntu-keyring "
+            "dpkg gpgv bash tar >> semantic-runtime-packages.txt")
+        actions = [line.strip() for line in inventory.splitlines() if 'uses:' in line]
+        self.assertEqual(actions, ['uses: actions/upload-artifact@v7'])
+        self.assertIn('if: always()', inventory)
+        self.assertIn('if-no-files-found: error', inventory)
 
 
 if __name__ == '__main__': unittest.main()

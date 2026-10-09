@@ -958,3 +958,37 @@ FD退休只接受准备时持有的完整身份；身份变化不关闭替换FD�
 准确runtime安装信任根、approvedmanifest、loadedmapping/kernel/procfs/
 singlethread/solewaiter与实际artifact核验eval仍缺失；子角色继承/退休的最终
 完整对账仍需整体审查。预算接线/mock通过不冒充完整入口安全出口或原生资格。
+
+### Runtime 来源取证前置：固定包身份清单（不是来源通过）
+
+当前 Mac 与旧 v4 raw probe 只有 Python/true 自采摘要，没有独立 distro 包字节，
+不能填 approved manifest 或解锁 loader。2026-10-09 精确 head
+`d4b09a3c105e2b354be446086c82b7cb4fda63dc` 的 safety run `37903866940`、
+probe job `113732501425` setup 日志给出 Ubuntu 24.04 image
+`20261004.327.1`；这只是该 run 的宿主身份，不锁定下一 run 或已验证 runtime。
+
+下一步范围限于 `semantic-runtime-inventory` 的系统包数据库只读取证：
+Ubuntu 24.04 x86_64、同仓准确 PR21 head，无 checkout；固定16个包名称，输出
+binary package/version/architecture/install status，不执行候选 Python、control、
+Cargo、项目代码或任何包维护脚本，不联网/安装/改配置。shell 和固定绝对路径的
+env/timeout/dpkg-query 是该 hosted runner 的平台取证基座，不由其输出给自己
+颁发可信来源 receipt。命令净 env 只有 PATH/LC_ALL，20秒 SIGKILL deadline，
+显式 --no-pager，shell文件上限 ulimit -f 64（至多64KiB），job上限2分钟；
+退出错误/输出超界使 job 失败但 always 上传已有 raw 身份与 partial 清单，
+未知/缺包不换工具、补安装或重试。此清单只列候选，不声称包含全部依赖/加载面。
+固定包名无 wildcard/用户参数，报告包含准确 PR SHA 和每次实际 ImageOS/ImageVersion。
+新增 workflow/card 的准确 diff 必须独立审查通过，才 normal commit/push 收集一次。
+
+后续获取仍须另行冻结准确版本、archive key 指纹/可信验证器、时间与来源快照。
+Ubuntu 官方说明的链是 archive key → signed InRelease → Packages hash → deb
+hash；旧版本可用 Ubuntu Snapshot 对应元数据核验。依据：
+[Ubuntu archive integrity verification](https://documentation.ubuntu.com/security/software-integrity/archive-verification/)。
+包数据库或 image 软件版本列表不是这条签名/逐文件链；不自动运行 apt install，
+不信任任意 PPA/keyring 或传入 hash。候选包来源通过后还须对实际 Python、loader、
+libc/libpython、stdlib/native扩展与实际 pyc（或证明不加载）逐项比对，包含 lazy
+imports；实际 loaded mappings、kernel/procfs 与完整入口审查不被清单豁免。
+
+独立复核另指出 true 的绑定兼容项：准备读 FD 要求无任何写位，系统
+`/usr/bin/true` 可能有 root owner 写位。不能静默放宽此规则，不能拿临时只读
+副本自动证明固定 path exec 控制；准确路径/FD各自身份、同一已验证资产字节与
+权限策略须在后续完整执行卡解决。目前规则与关闭门保持不变。
