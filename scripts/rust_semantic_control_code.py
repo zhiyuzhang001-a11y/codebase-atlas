@@ -16,14 +16,33 @@ MODULE_ORDER = tuple('rust_semantic_' + name for name in (
     'control_observer', 'outer_pipes', 'root_launch', 'source_file', 'control_code'))
 STDLIB_IMPORTS = frozenset(('__future__', 'ast', 'copy', 'ctypes', 'errno',
                           'fcntl', 'hashlib', 'math', 'os', 'platform', 're',
-                          'signal', 'stat', 'struct', 'sys', 'time'))
+                          'select', 'signal', 'stat', 'struct', 'sys', 'time'))
+# The whole-entry artifact is a separate exact contract, not an enlargement of
+# the legacy 23-module artifact. It contains only the real transitive imports.
+SUPERVISOR_ORDER = tuple('rust_semantic_' + name for name in (
+    'linux_resources', 'ptrace', 'control_budget', 'owned_journal',
+    'root_launch', 'wait_state', 'subreaper', 'control_code', 'supervisor_entry'))
+SUPERVISOR_IMPORTS = STDLIB_IMPORTS | {'array', 'json', 'socket'}
 
 
 ROOT_SOURCE = r'''
-def fixed_root(libc, true_fd, control_env):
+def fixed_root(libc, true_fd, control_env, expected_parent):
     # Trusted, unobserved bootstrap, followed by exactly two serial forks.
     # The observer is the exclusive tracer; no attach or arbitrary commands.
     try:
+        def guard_parent(parent):
+            if type(parent) is not int or not 1 < parent <= 2**31-1:
+                os._exit(126)
+            libc.prctl.restype = ctypes.c_int
+            libc.prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+            if libc.prctl(1, 9, 0, 0, 0) != 0:
+                os._exit(126)
+            observed = ctypes.c_int(0)
+            address = ctypes.cast(ctypes.pointer(observed), ctypes.c_void_p).value
+            if (libc.prctl(2, address, 0, 0, 0) != 0
+                    or observed.value != 9 or os.getppid() != parent):
+                os._exit(126)
+        guard_parent(expected_parent)  # repeat after trusted Python exec
         if set(control_env) != {'PATH', 'HOME', 'LC_ALL'}:
             os._exit(120)
         libc.ptrace.restype = ctypes.c_long
@@ -38,9 +57,11 @@ def fixed_root(libc, true_fd, control_env):
             os._exit(121)
         os.kill(os.getpid(), 19)  # Linux SIGSTOP, before any control fork.
         for mode in ('path', 'fd'):
+            creator = os.getpid()  # frozen before fork; fork clears PDEATHSIG
             child = os.fork()
             if child == 0:
                 try:
+                    guard_parent(creator)
                     if mode == 'path':
                         os.execve('/usr/bin/true', ['/usr/bin/true', 'atlas-c0-o5-path'], control_env)
                     else:
@@ -97,12 +118,27 @@ def prepare_module_bundle(sources: dict) -> tuple[bytes, dict]:
     never project input. This syntax/import-order check is not a source audit.
     Actual authenticated artifact FD loading and owner/bootstrap are absent.
     """
-    if type(sources) is not dict or set(sources) != {n + '.py' for n in MODULE_ORDER}:
+    return _prepare_bundle(sources, MODULE_ORDER, STDLIB_IMPORTS, False)
+
+
+def prepare_supervisor_bundle(sources: dict) -> tuple[bytes, dict]:
+    """Assemble the complete closed-entry bytes; never import or execute them.
+
+    Exact bytes must still be independently approved and authenticated BEFORE
+    artifact evaluation by the dedicated launcher. No receipt is authority.
+    The public execution gate remains closed inside the delivered source.
+    """
+    return _prepare_bundle(sources, SUPERVISOR_ORDER, SUPERVISOR_IMPORTS, True)
+
+
+def _prepare_bundle(sources, order, imports, whole_entry):
+    if type(sources) is not dict or set(sources) != {n + '.py' for n in order}:
         raise ValueError('complete exact fixed controller module set required')
     receipts, chunks, available, total = {}, [], set(), 0
-    for name in MODULE_ORDER:
+    for name in order:
         raw = sources[name + '.py']
-        if type(raw) is not bytes or not 0 < len(raw) <= 65536:
+        limit = 96 * 1024 if whole_entry and name == 'rust_semantic_supervisor_entry' else 65536
+        if type(raw) is not bytes or not 0 < len(raw) <= limit:
             raise ValueError('bounded exact frozen sibling bytes required')
         total += len(raw)
         if total > 192 * 1024:
@@ -111,15 +147,18 @@ def prepare_module_bundle(sources: dict) -> tuple[bytes, dict]:
         compile(raw, name, 'exec')  # syntax only; never execute source here
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                if any(alias.name not in STDLIB_IMPORTS for alias in node.names):
+                if any(alias.name not in imports for alias in node.names):
                     raise ValueError('unknown import cannot fall back to filesystem')
             elif isinstance(node, ast.ImportFrom):
                 if node.level or not node.module:
                     raise ValueError('relative imports outside frozen contract')
-                if node.module.startswith('scripts.'):
+                if whole_entry and node.module == 'scripts':
+                    if any(alias.name not in available for alias in node.names):
+                        raise ValueError('unprepared package sibling import')
+                elif node.module.startswith('scripts.'):
                     if node.module[8:] not in available:
                         raise ValueError('unprepared/cyclic sibling import')
-                elif node.module not in STDLIB_IMPORTS:
+                elif node.module not in imports:
                     raise ValueError('unknown import outside frozen standard library')
         receipts[name] = dict(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
         full = 'scripts.' + name
@@ -141,5 +180,6 @@ def prepare_module_bundle(sources: dict) -> tuple[bytes, dict]:
     compile(bundle, '<prepared-module-artifact>', 'exec')  # no evaluation
     return bundle, dict(qualified=False, source_authenticated=False,
                         source_policy_audited=False, delivery='owned-regular-artifact-required',
+                        contract='whole-supervisor-closed' if whole_entry else 'legacy-controller',
                         source_bytes=total, bytes=len(bundle),
                         sha256=hashlib.sha256(bundle).hexdigest(), modules=receipts)

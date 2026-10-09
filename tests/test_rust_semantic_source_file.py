@@ -10,6 +10,22 @@ from scripts.rust_semantic_source_file import SourceFile
 
 
 class SourceFileTests(unittest.TestCase):
+    def test_whole_entry_has_exact_name_bound_without_widening_other_sources(self):
+        reader = self.reader(name='rust_semantic_supervisor_entry.py')
+        self.raw = b'#' + b'x' * (78 * 1024 - 1)
+        self.file.st_size = len(self.raw)
+        reader.expected['size'] = len(self.raw)
+        reader.expected['sha256'] = hashlib.sha256(self.raw).hexdigest()
+        self.os.read.return_value = self.raw
+        self.assertEqual(reader.read(), self.raw)
+        self.os.read.assert_called_once_with(11, 96 * 1024 + 1)
+        self.assertFalse(reader.report()['source_authenticated'])
+        for name, size in (('rust_semantic_ptrace.py', 65537),
+                           ('rust_semantic_supervisor_entry.py', 96 * 1024 + 1)):
+            with self.assertRaises(ValueError):
+                self.reader(name=name, expected=dict(device=1, inode=11, uid=1000,
+                    size=size, mtime_ns=100, ctime_ns=101, sha256='a'*64))
+
     def reader(self, clock=None, **overrides):
         self.raw = b'# fixed trusted definitions\n'
         self.directory = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_dev=1,

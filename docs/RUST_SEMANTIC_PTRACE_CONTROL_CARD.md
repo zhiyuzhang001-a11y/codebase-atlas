@@ -670,10 +670,10 @@ CLI/CI 原生入口，不修改23-module artifact 集合或公开产品开关。
 模块和 mock 结果保留，但不能作为新拓扑的原生资格。准确完整代码及执行卡
 仍须一起复审，不能只修改 verifier 的布尔值后运行。
 
-固定故障实验的候选树为：可信外部 harness → 被测 guardian → controller →
+固定故障实验的候选树为：可信外部 harness → 被测 controller →
 observer/tracer → root → 两个串行 true。外部 harness 保持存活是本次实验的
 明确可信前提，不追踪其他进程、不做第二 tracer、不与正常 waiter 抢消费。
-harness 自身失败时实验 incomplete；harness 成功恢复不能改写为被测 guardian
+harness 自身失败时实验 incomplete；harness 成功恢复不能改写为被测 controller
 自身监督成功，也不放行 C0-M、metadata、编译或产品接线。各层 bootstrap 与
 等待/收养阶段必须以准确源码和原生测量闭合，不能继承旧 sole-adopter 声明。
 
@@ -720,3 +720,241 @@ fork 清除此设置，所以每条创建边都重新安装。工具必须验明
 十秒清理或 terminal 的保证，也不替代 harness 句柄和退出原证据。依据
 [PR_SET_PDEATHSIG](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)
 与 [PR_GET_PDEATHSIG](https://man7.org/linux/man-pages/man2/PR_GET_PDEATHSIG.2const.html)。
+
+2026-10-09 最小拓扑复核允许取消独立 guardian 层，其职责必须真实落到外部
+harness。原 guardian-failure 用例改为 controller-failure/外部恢复用例；正常
+controller 保持唯一 waiter/最近 subreaper，harness 只在故障阶段收养。
+当前 root launch 和两个固定 true 的 parent-death 安装代码是未提交的完整入口
+草稿部分：仅 mock/语法验证，不是原生资格。controller/observer 创建边、工具
+无特权核验、全树 barrier/恢复以及完整入口独立审查未闭合，不能执行试验。
+
+根进程 fork/exec 草稿现在强制专用启动闸门：创建前 pipe2，分别退休父读端/子写端；
+子进程先安装 parent-death 后备，再读取完整固定 permit 和 EOF，才可 exec。
+父进程持有 root pidfd 并完成恢复句柄交接确认后，只写一次 permit；失败关闭闸门，
+短写不重发，碎片/EAGAIN 等待仍共用原20秒，关闭 FD 不代表终态。
+父/子角色选择和子许可等待均在检查前锁定单次尝试；错误父身份或超时后
+不能恢复条件重选/重读。失败清理仅退休当前 fork 副本准确继承的 FD，
+不授予角色认证；关闭错误与原始拒绝分别保留，成功等待也不能再次读取许可。
+`handoff` 尚无原生 harness 实现；其 Python 返回字典不能作为准确身份、句柄
+交接或安全资格证据。父/子预算副本也尚未接到 harness 全树合计账本，不能用
+各自1 MiB充当整体上限。此接线仍仅 mock 草稿，完整入口和原生审查门保持关闭。
+
+本地句柄接收草稿采用预先创建并独立绑定的 Linux LP64 AF_UNIX SEQPACKET
+端点与 PASSCRED；每条固定消息只接收一个 fd，所有 SCM_RIGHTS 交付的 fd
+先登记为拥有，再保存 raw/ancillary/flags 并验证凭据、序号和截断标志。
+失败只退休本条新收到的 fd，保留以前的恢复句柄；不重试模糊关闭。
+它尚未创建/认证实际端点，也未验证收到的 fd 确为声明的 pidfd/lifetime，
+不发送 ACK、不发信号、不提供启动权限；未加入已冻结的执行 bundle 或 CI。
+不能把 SCM_CREDENTIALS 的 PID 当作精确进程 lifetime/source 审核，socketpair
+的 SO_PEERCRED 也不能当作 fork 后发送者的新凭据。依据
+[unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html) 与
+[recvmsg(2)](https://man7.org/linux/man-pages/man2/recvmsg.2.html)。
+
+接收草稿增加首个 pre-trace root 的只读绑定尝试：拥有带 NOFOLLOW/DIRECTORY/
+CLOEXEC 的 proc 目录，目录相对读取 stat/status，核对 fdinfo 的唯一 Pid，
+在前后两份 stat 中核对 PID/starttime/observer 父进程/session/pgrp、同账户
+四项 UID 与 TracerPid=0。前后核对持有 FD 身份，四份样本保留 raw 并计入
+共享输出账本，采样共用20秒且单次不超过0.5秒；失败保留恢复 pidfd，
+仅退休本次拥有的 proc/sample FD，模糊关闭不重试。正常 adopted 身份与
+unknown-refusal 合同不改变。这不是 ACK 或真实安全资格：procfs/端点原生
+来源、发送者精确 lifetime/source、所有创建边、全树账本/恢复、独立宿主
+监督仍未接线；测试只注入 OS/mock API，原生执行门保持关闭。pidfd 与普通
+proc 目录的差异依据 [pidfd_open(2)](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)。
+
+端点与传输草稿现在由 HandoffPair 在任何角色 fork 前创建并登记两个专用
+socketpair 对象：SOCK_CLOEXEC/NONBLOCK、PASSCRED、两端 domain/type/UID/FD
+身份核对，最终借用校验也计入0.5秒。角色选择只退休不用的继承端点，
+并不认证发送者；尝试标记在父身份/时钟检查前锁定，失败后不能恢复条件
+重新选择，但仍可清理当前 fork 副本准确拥有的端点。失败/模糊关闭不重试，
+变化或无法核验的 FD 先 detach
+Python wrapper 以消除以后析构误关外来 FD 的能力，再明确拒绝关闭外来 FD。
+参见 [Python socket.detach](https://docs.python.org/3/library/socket.html#socket.socket.detach)。
+HandoffSender 只进行一次 root SCM_RIGHTS 发送；短写、模糊发送或 EAGAIN
+直接失败。确认消息要求凭据/序号/PID/starttime/无额外 FD/无截断，raw 先保存
+再合计；错误确认中的额外 FD 先登记再一次退休，原借用 pidfd 不关闭。
+匹配确认只返回 transport_ack_matched 与 harness_authenticated=False，
+不返回 recovery_held。与 RootLaunchGate 的 mock 联动证明该结果仍拒绝
+写 permit；本模块没有 ACK 发放路径。peer lifetime/source、原生 procfs
+来源、全树预算/监督/恢复和角色 bootstrap 仍未闭合，未加入冻结 bundle，
+不能执行原生 IPC、控制、metadata 或构建，不把本次 mock 传输当成资格。
+
+2026-10-09 整体只读复核确认三个入口阻塞：创建下层角色之前的独立外部
+监督及 controller/observer 身份与继承绑定；observer/root/两个 true 的全部
+lifetime 恢复句柄、正常退休覆盖门及 controller-death/登记前死亡恢复；
+harness 实际汇总所有 raw/IPC 的唯一1 MiB账本与终态/消费/组权限退休顺序。
+传输确认、Python callback 或 fork 后独立 budget 副本均不能替代这些证明。
+后续应先直接装配同一入口的正常流和 controller-death 流，再审准确源码，
+而不是增加局部 helper 或把旧 CI 结果用于本草稿的原生执行批准。
+
+### 完整拓扑的通道接线约束（只读复核，尚未实现）
+
+现有 root 消息的 kernel sender 必须是实际 observer：`bind_root` 同时要求
+root 的父进程、session/group 为该 observer。controller 转发 root pidfd 时，
+真实 SCM_CREDENTIALS 属于 controller，不能改写消息 PID、放宽 parent 校验或
+把“转发成功”当成 observer 创建证明。此冲突已有 mock 拒绝回归；不是原生证据。
+
+最小接线保持固定拓扑：harness 在任何 fork 前创建专用 harness↔observer
+通道，controller 仅按完整入口冻结的继承清单把发送端原样传给 observer，
+并退休自身两端副本；controller 不发送 root 消息。该中间角色的身份与
+端点退休代码尚不存在，不能再调用已锁定的 HandoffPair.select_role 来假造。
+harness 先原生绑定 controller/observer 的准确 lifetime、来源和物理父关系，
+才冻结 peer=observer；observer 的准确句柄在其 session 转换前已交接，
+session/group 转换后的再次测量确认先于 root 创建。root 由 observer 直接
+发送，harness 持有并核验恢复句柄后才能发确认；确认发放仍未实现。
+两个 true 的句柄必须在首次 stop、任何 CONT 前同样交接，不能复用首 root
+的 R/S/pre-trace 绑定条件。所有创建边、终态/回收与 raw/IPC 共用 harness
+同一账本；正常 group retirement 保留全创建覆盖门。缺登记仍进入独立失败
+恢复，不据 sender 凭据、close、EOF 或 ECHILD 单项宣称清理通过。
+本节冻结接线顺序，不增加执行权限，完整入口源码及原生门继续未完成。
+
+### 同一完整入口的首份代码草稿（2026-10-09，禁止原生执行）
+
+`rust_semantic_supervisor_entry.py` 将固定 harness→controller→observer→root→
+两个串行 true 写入同一源码，而不是继续新增独立 helper。controller 在准确
+句柄交接的 ACK0 前不创建 observer；observer 先安装 parent-death 后备再退休
+继承端点，pre-session 交接与 post-setsid stopped 确认分开。observer 直接发送
+root/首次 stopped pidfd；harness 保存身份/RSS 后 ACK 才允许原 observer CONT。
+正常流将 tracee consuming summary、最后组取消及权限退休、observer consuming
+receipt、controller consuming receipt、全部输出 EOF、最终全集 census、只读组
+消失与末次共享时钟串在一起；失败流单独处理 pre-session 未取得组权限、
+controller 死亡及 terminal-only 收养，不能给 unknown live/stopped PID 权限。
+
+本草稿的公开 `run_control` **无条件拒绝**，没有 CLI/workflow/bundle 接线。
+内部未审实现不能作为获准调用的后门。源码/工具/libc/stdlib/procfs/kernel、
+实际 private cwd 和完整继承 FD 清单的来源门尚未实现；协作时钟及 harness
+独立角色不是已安装的强监督，真实阻塞/取消仍是执行阻断。初轮独立审查
+发现创建 barrier、模糊 consume 重试、bootstrap 恢复与 FD 登记/证据保留缺口；
+已修订并补纯回归，但实际角色编排、全树 raw 输出汇总与异常排空尚未获得
+原生资格。消费尝试在 syscall 前永久锁定，late/异常/None 留证据且不重试；
+消费不确定性分支只继续已持有 pidfd 的安全取消和输出排空，仍报 incomplete。
+
+stdout/stderr 专用 pre-fork 管道及 child raw-native 路由已写入草稿；测试仍仅
+ledger/AST/全 OS 注入，不读取真实 proc、不创建管道/fork、wait、ptrace 或发信号。
+不能用这些测试或旧 clean-head CI 宣称完整入口、C0-O5、C0-M 或阶段2通过。
+下一步仍是闭合来源/独立强监督/全树资源所有权，审准确整份代码与执行卡后
+才考虑受控原生运行；不授权 metadata、build、guest、部署或公开启用。
+
+### 独立 watchdog 接线草稿（2026-10-09，仍禁止原生执行）
+
+同一入口增加一个 harness 直接创建的 watchdog，固定六个子 lifetime；它只
+持有逐次原生核对的 pidfd 并进行单次取消，不 wait 控制树、不设 subreaper、
+不运行项目代码。它在 controller 创建前完成 ready；controller/observer/root/
+两个 true 的启动或 CONT 许可须先通过 harness 和 watchdog 的双持有 ACK。
+正常清理包含 watchdog 的准确消费，不能活着就声明最终 ECHILD。失败路径
+先处理控制角色和已登记 tracee 的终态，再单次取消/消费 watchdog，随后
+进行 terminal-only 未登记收养 census；没有模糊消费重试。bootstrap 纳入同一
+try/failure/finally；active 操作前核对 watchdog held terminal，死亡永久拒绝
+后续许可但不阻断 FIRST cleanup 时钟。正常活 controller 路径核验 observer
+parent=controller；失败取得 controller WNOWAIT 终态后，内核已经重亲 observer
+到 harness subreaper，即使 controller 尚未消费也核验实际收养者。不把主动恢复
+策略的“先消费 controller”门误当作内核收养发生时点。见
+[exit(2)](https://man7.org/linux/man-pages/man2/exit.2.html)。
+
+独立设计审查认可上述最小双进程监督方向，但源码审查仍有 P1：fork 后尚未
+登记的 watchdog 失败窗口没有闭合；watchdog 早期故障与 harness 的 FIRST
+期限还未实际共同冻结/通知处理；失败取消 raw 只在 watchdog 本地，退出时
+可能丢失。来源、完整继承 FD/private cwd/kernel/procfs receipts 同样未闭合。
+正常/失败路径纯 mock 回归不解决这些执行阻断，也不证明真实强监督成立。
+此段不是原生执行卡批准，不扩大原 lifetime 上限或预算，不进入 metadata/build。
+
+### watchdog 故障/创建窗口修订草稿（仍无原生批准）
+
+在同一完整入口接线 watchdog 的单次 fault/取消消息；harness active check
+只进行一次非阻塞读取，用严格重入门避免 check→receive→check 递归，普通
+ready/ACK 保存到至多8条 pending，不伪造 ACK 或无界积压。fault 包先保存原文，
+核对真实 UID/GID/PID 凭据及无FD、有限绝对期限，单向锁失败并采用
+min(本地首次期限, 收到期限, 原active期限+10)。迟到仅耗尽原预算，不开新宽限；
+双方各自 min 不代表已共同冻结，分别记录 local/received/adopted值；正常最终
+闭合还要求真实 watch-cleanup-applied 包，未收到则未证明。通知发送失败不阻断
+已持有句柄的取消；保留失败类型。watchdog 到期发送走独立有界非阻塞路径，
+不走已失效的 active check，不因模糊发送重试或推迟后续取消。每条取消结果
+单次传输，失败回收后有界排空；watchdog_evidence_complete 默认 false，只有
+正常未取消路径完整终包可置 true。失败日志缺记录或缺最终界限继续 incomplete，
+不能以空raw表示没有取消；全体收到消息仍计入同一总输出账本。
+
+执行合同有一个窄的创建失败回收例外，不再声称“harness全程仅用pidfd取消”：
+仅 harness 自身一次明确 fork 正返回，立刻保存固定 watchdog/controller PID，
+且子角色未获创建下层许可；fork 前的默认SIGCHLD/无自动回收/单线程测量和完整
+源码唯一waiter政策仍须核验。已创建但尚未消费的直接子（live或zombie）PID不复用，
+该源创建权可单次 SIGKILL；随后 P_PID WNOWAIT 核对 PID/UID/SIGCHLD/terminal，
+先永久锁 consuming 尝试，保存原返回且仅消费一次，None/异常/late不重试。
+已经取得的pidfd仍立即登记拥有，不等identity成功。创建源权不接纳未知收养或
+外来PID，不授予CONT/PGID/正常registration；独立失败receipt仍 qualified=false。
+原FIRST10秒/共享输出/固定六child范围不变，不扩大系统权限或项目执行能力。
+独立设计审查认可此窄例外方向，但准确源码/卡片仍须独立复核，不能原生执行。
+
+失败取消流另接入单次序号、role/PID/starttime、严格 sent/error/errno schema，
+全部取消尝试后仅发送一次 count/身份清单/原记录 SHA256/发送失败数终包。
+收到未知身份、缺记录、重复、乱序、摘要差异或发送失败数非零均拒绝；终包
+之后不接纳更多取消记录。终包只证明已收到的有界日志，不证明 EOF、准确
+exit124、共同 FIRST 或全树清理。当前失败恢复仍单次强制取消 watchdog，
+因此即使终包已收到，失败 evidence_complete 仍 false；不可宣称此门闭合。
+丢失 handoff ACK 的 pending 身份对账与独立 failure-retire/held-terminal→
+EOF→唯一 consume 次序仍须装配、独立复核；不得延长原 FIRST 或追认正常许可。
+
+后续同入口草稿已接 pending 身份在 send 前保存，ACK 后才正常确认双持有。
+pending 仅允许核对失败取消日志，不接纳外来身份或追认 CONT/创建许可；终包
+至少覆盖全体 confirmed，pending 未实际收到不能伪造为已持有。失去 ACK 的
+已核验身份可与真实日志对账，任何未知身份仍拒绝。
+失败退休只在每个已登记控制 lifetime 有准确 terminal 后允许，单次发送前锁
+attempted，watchdog 沿用最早 FIRST 并真实确认期限，单次取消→终包→exit124。
+harness 分别观察 WNOWAIT 终态、正确端点 EOF，再唯一 consume并核对原终态，
+末次原 deadline 检查后仅日志传输 complete 可置真；不提升全树清理/控制资格。
+发送不确定走原有单次强制取消并保持日志不完整，终包、共同期限、EOF、准确
+exit124或消费缺失均不完整。不延长原预算，无第二 waiter或模糊消费重试。
+上述新增路径仅纯注入测试；共同 FIRST 并发故障及来源/全 FD/privatecwd/kernel/
+procfs receipts 仍待证明，run_control 仍无条件关闭，不授权原生执行。
+
+共同 FIRST 的纯注入回归现覆盖父先故障/独立 watchdog 先故障两种消息顺序、
+更早期限使旧确认失效、较晚确认不得续期、缺确认保持未证明；故障的永久锁
+先于收到期限的解析/过期校验，即使晚包或非法期限抛错也不恢复启动许可。
+整个 watchdog_role 在完全注入 OS/transport/signal/clock 下验证初次故障14秒
+期限被父12秒收紧，非法较晚退休不续期、fault/cancel/end均仅一次、准确124
+失败出口。它没有创建进程/FD或发信号，不冒充共同期限的原生进程间证明。
+终包身份清单额外拒绝 float/bool冒充整数 PID/starttime。全部原生来源、完整
+继承 FD/privatecwd/kernel/procfs receipt与准确执行卡仍须闭合并独立审查。
+
+完整入口的源码交付检查发现旧23-module artifact既没有supervisor，也以单文件
+64KiB上限拒绝当前约78KiB入口。因此在原prepare_module_bundle旁加入固定
+prepare_supervisor_bundle合同：9份真实直接/传递依赖按固定顺序装配，拒绝缺项、
+多项、未知/相对/前向import；仅准确supervisor文件允许96KiB，其他仍64KiB，
+总源码192KiB/产物512KiB上限不变。旧23模块合同不扩容、不隐式采用新入口。
+同FD SourceFile读取也仅对准确supervisor文件名使用96KiB，保留前后文件/
+目录/路径身份、单次读取/关闭与原0.5秒检查。准备与测试仅syntax/AST/mock，
+从未eval产物。装配结果包含原run_control无条件关闭；9份摘要仅字节身份，
+不是clean源码来源、独立审批或工具可信证明。不新增执行权限或CLI/CI接线。
+此改动解决完整入口无法由现有受限通道交付的问题，但可信专用启动器仍须在
+任何repo import/eval前核对准确审查 manifest，并取得Python/libc/stdlib/true、
+空privatecwd/完整继承FD与kernel/procfs原生证据；当前仍未满足原生执行条件。
+
+专用单文件rust_semantic_supervisor_bootstrap草稿不导入checkout scripts。
+唯一固定输入FD为0..6：stdio、manifest、完整artifact、true、空privatecwd。
+在任何源码eval之前检查-I/-S/ignore_environment、无foreign scripts、净env/
+不变凭据，保留/proc/self/fd完整观测与fstat/flags身份；scandir FD保持打开采样，
+闭合后只允许准确一项目录FD消失，其他FD必须保持身份与精确集合。未知FD
+不关闭、不借此授信；读manifest/artifact/true均同FD前后核验、O_RDONLY/
+NONBLOCK/CLOEXEC、零初始offset/准确长度/hash与末offset，失败不重读。
+空owned0700目录实际fchdir，并核真实cwd的dev/inode与HOME，再核FD清单；
+不是只把cwd赋给字段。操作保持首次20秒期限；尚未与后续harness共用接线，
+不能另起20秒。全部OS/FD/时钟只在注入测试中调用，真实调用次数0。
+公开run与脚本__main__无条件抛错，即使传入hash或fake准备成功也不能解锁。
+这是完整启动器的准备段，**不是已经完整的安全入口**：独立runtime安装信任根、
+动态loader/libc/libpython/stdlib/native扩展/true来源、实际loaded映射/kernel/
+procfs、单线程/solewaiter、准确审批manifest，以及prep→受测字节eval→共用
+deadline→正常/死亡恢复调用与各角色FD退休仍须实现和整体另审。APPROVED
+manifest常量尚为空，任何调用者声明或本Python自身测量不得代替外部信任根。
+不授权原生控制实验、metadata/build或生产接线。
+
+专用bootstrap准备段到完整harness的调用链现有未执行接线草稿：原started值
+交给NativeHarness构造，构造前用当前clock拒绝未来/过期origin，不能另起20秒。
+runtime/来源与artifact evaluation gate仍无条件抛错；没有任何来源bool/callback/
+环境变量能解锁。gate后方仅在全mock测试中替换为fake模块，按固定模块名构造，
+再次核相同started/deadline，退休准确manifest/artifact/cwd FD3/4/6，保留stdio
+与trueFD5，再把bootstrap记录送进同一harness aggregate trace账本，调用同一个
+normal/controller-death完整入口。未实现gate时上述后方原生路径不可达。
+FD退休只接受准备时持有的完整身份；身份变化不关闭替换FD，close前永久标记，
+模糊失败不重试但其他准确owned copies仍退休。任一退休失败禁止创建控制进程；
+未传入任意FD列表或任意模块/factory。mock替换不是任何原生运行权限。
+准确runtime安装信任根、approvedmanifest、loadedmapping/kernel/procfs/
+singlethread/solewaiter与实际artifact核验eval仍缺失；子角色继承/退休的最终
+完整对账仍需整体审查。预算接线/mock通过不冒充完整入口安全出口或原生资格。

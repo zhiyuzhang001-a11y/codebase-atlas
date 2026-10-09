@@ -5,11 +5,46 @@ from pathlib import Path
 import unittest
 
 from scripts.rust_semantic_control_code import (ROOT_SOURCE, MODULE_ORDER,
+                                               SUPERVISOR_ORDER, prepare_supervisor_bundle,
                                                prepare_module_bundle, prepare_sources)
 from scripts.rust_semantic_source_file import SOURCE_NAMES
 
 
 class ControlCodeTests(unittest.TestCase):
+    def test_whole_entry_exact_actual_dependency_closure_syntax_only(self):
+        folder = Path(__file__).resolve().parents[1] / 'scripts'
+        sources = {name + '.py': (folder / (name + '.py')).read_bytes()
+                   for name in SUPERVISOR_ORDER}
+        raw, receipt = prepare_supervisor_bundle(sources)
+        self.assertEqual(receipt['contract'], 'whole-supervisor-closed')
+        self.assertEqual(len(receipt['modules']), 9)
+        self.assertIn(b'whole-entry native execution gate remains closed'.hex().encode(), raw)
+        self.assertFalse(receipt['source_authenticated'])
+        self.assertFalse(receipt['qualified'])
+        self.assertNotIn(b'sys.path', raw)
+        self.assertEqual(receipt['sha256'], hashlib.sha256(raw).hexdigest())
+        self.assertLessEqual(receipt['source_bytes'], 192 * 1024)
+        self.assertLessEqual(len(raw), 512 * 1024)
+        compile(raw, '<whole-entry-test>', 'exec')  # never evaluate
+        with self.assertRaises(ValueError): prepare_module_bundle(sources)
+
+    def test_whole_entry_rejects_unknown_missing_forward_and_oversize(self):
+        sources = {name + '.py': b'# frozen\n' for name in SUPERVISOR_ORDER}
+        for raw in (b'from scripts import evil\n', b'from scripts import *\n',
+                    b'from scripts import rust_semantic_supervisor_entry\n',
+                    b'import project_plugin\n', b'from . import x\n'):
+            bad = dict(sources)
+            bad['rust_semantic_ptrace.py'] = raw
+            with self.assertRaises(ValueError): prepare_supervisor_bundle(bad)
+        for name, size in (('rust_semantic_ptrace.py', 65537),
+                           ('rust_semantic_supervisor_entry.py', 96 * 1024 + 1)):
+            bad = dict(sources); bad[name] = b'#' + b'x' * (size - 1)
+            with self.assertRaises(ValueError): prepare_supervisor_bundle(bad)
+        bad = dict(sources); bad.pop('rust_semantic_supervisor_entry.py')
+        with self.assertRaises(ValueError): prepare_supervisor_bundle(bad)
+        bad = dict(sources, project=b'# project')
+        with self.assertRaises(ValueError): prepare_supervisor_bundle(bad)
+
     def modules(self):
         return {name + '.py': b'# measured fixed definition\n' for name in MODULE_ORDER}
 
@@ -98,7 +133,10 @@ class ControlCodeTests(unittest.TestCase):
         loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For))
         self.assertEqual(ast.literal_eval(loop.iter), ('path', 'fd'))
         self.assertEqual([arg.arg for arg in tree.body[0].args.args],
-                         ['libc', 'true_fd', 'control_env'])
+                         ['libc', 'true_fd', 'control_env', 'expected_parent'])
+        guards = [n for n in calls if isinstance(n.func, ast.Name)
+                  and n.func.id == 'guard_parent']
+        self.assertEqual([g.args[0].id for g in guards], ['expected_parent', 'creator'])
 
 
 if __name__ == '__main__':

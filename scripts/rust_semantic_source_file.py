@@ -19,19 +19,22 @@ SOURCE_NAMES = frozenset('rust_semantic_' + name + '.py' for name in (
     'adopted_identity', 'adopted_wait', 'terminal_admission', 'cleanup_policy',
     'outer_control', 'owned_journal', 'control_observer', 'outer_pipes',
     'root_launch', 'control_code', 'linux_resources', 'source_file', 'observer_wait'))
+SUPERVISOR_NAME = 'rust_semantic_supervisor_entry.py'
 
 
 class SourceFile:
     def __init__(self, name, directory_fd, directory, expected, source_sha,
                  active_deadline, *, os_api=None, clock=None):
         keys = {'device', 'inode', 'uid', 'size', 'mtime_ns', 'ctime_ns', 'sha256'}
-        if (sys.platform != 'linux' or type(name) is not str or name not in SOURCE_NAMES
+        limit = 96 * 1024 if type(name) is str and name == SUPERVISOR_NAME else 65536
+        if (sys.platform != 'linux' or type(name) is not str
+                or name not in SOURCE_NAMES | {SUPERVISOR_NAME}
                 or type(directory_fd) is not int or not 3 <= directory_fd <= 65535
                 or type(directory) is not dict or set(directory) != {'device', 'inode', 'uid'}
                 or any(type(v) is not int or v < 0 for v in directory.values())
                 or directory['inode'] == 0 or type(expected) is not dict or set(expected) != keys
                 or any(type(expected[k]) is not int or expected[k] < 0 for k in keys - {'sha256'})
-                or expected['inode'] == 0 or not 0 < expected['size'] <= 65536
+                or expected['inode'] == 0 or not 0 < expected['size'] <= limit
                 or type(expected['sha256']) is not str or len(expected['sha256']) != 64
                 or any(c not in '0123456789abcdef' for c in expected['sha256'])
                 or type(source_sha) is not str or len(source_sha) != 40
@@ -40,6 +43,7 @@ class SourceFile:
         self.os = os if os_api is None else os_api
         self.clock = time.monotonic if clock is None else clock
         self.name, self.fd = name, directory_fd
+        self.limit = limit
         self.directory, self.expected = dict(directory), dict(expected)
         self.sha, self.deadline = source_sha, active_deadline
         self.pid, self.last = self.os.getpid(), None
@@ -95,11 +99,11 @@ class SourceFile:
             self.row['before'] = self._file(self.os.fstat(owned))
             if self.os.get_inheritable(owned):
                 raise ValueError('source file CLOEXEC required')
-            raw = self.os.read(owned, 65537)  # one bounded read, no internal retry
+            raw = self.os.read(owned, self.limit + 1)  # one bounded read, no internal retry
             if type(raw) is not bytes:
                 raise ValueError('raw source bytes required')
-            self.row.update(read_bytes=len(raw), raw_hex=raw[:65536].hex(),
-                            omitted=max(0, len(raw) - 65536), sha256=hashlib.sha256(raw).hexdigest())
+            self.row.update(read_bytes=len(raw), raw_hex=raw[:self.limit].hex(),
+                            omitted=max(0, len(raw) - self.limit), sha256=hashlib.sha256(raw).hexdigest())
             if len(raw) != self.expected['size'] or self.row['sha256'] != self.expected['sha256']:
                 raise ValueError('exact frozen source size/hash required')
             raw.decode('utf-8', 'strict')
