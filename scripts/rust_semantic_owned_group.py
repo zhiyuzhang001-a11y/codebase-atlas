@@ -5,6 +5,7 @@ Caller must supply the sole wait owner's borrowed pidfd from a reviewed spawn,
 and bind while the fixed observer is stopped before it can create tracees.
 The caller must not concurrently reap, close/reuse the pidfd, or mutate handles.
 """
+import copy
 import errno
 import math
 import os
@@ -22,6 +23,7 @@ class OwnedGroup:
         self.wait, self.resources = observer_wait, resources
         self.fd = None
         self.cancel_attempted = False
+        self._cancel_phase = None
         self.records = []
         self.verifications = []
         if evidence is not None:
@@ -163,14 +165,28 @@ class OwnedGroup:
         self.cancel_attempted = True
         row = {'operation': 'cancel', 'group': self.pid, 'signal': 9}
         self.records.append(row)
-        self._verify()
         try:
+            row['phase_before'] = {'observer': self.pid,
+                                   'reap_attempted': self.wait.reap_attempted,
+                                   'reaped': self.wait.reaped}
+            self._verify()
+            # Frozen scalar receipt created ONLY after successful live identity
+            # verification and before the sole signal attempt. Failed late
+            # cancellation never obtains this chronology receipt.
+            self._cancel_phase = (self.pid, False, False, True)
+            row['verified_phase'] = self.cancel_phase_receipt()
             self.os.killpg(self.pid, 9)
-        except OSError as exc:
-            row['errno'] = exc.errno
+        except Exception as exc:
+            row.update(error=type(exc).__name__, errno=getattr(exc, 'errno', None))
             raise
         row['sent'] = True  # Not proof of terminal, tracee drain or reap.
         return True
+
+    def cancel_phase_receipt(self):
+        if self._cancel_phase is None:
+            return None
+        return dict(zip(('observer', 'reap_attempted', 'reaped', 'identity_verified'),
+                        self._cancel_phase))  # copied immutable scalar snapshot
 
     def group_absent_after_reap(self):
         if not self.wait.reaped:
@@ -203,4 +219,4 @@ class OwnedGroup:
                 'verifications': [dict(packet,
                     **{key: dict(value) for key, value in packet.items() if isinstance(value, dict)})
                     for packet in self.verifications],
-                'records': [dict(row) for row in self.records]}
+                'records': copy.deepcopy(self.records)}

@@ -106,5 +106,51 @@ class SubreaperTests(unittest.TestCase):
                    side_effect=lambda kind: 4 if kind is ctypes.c_ulong else real_sizeof(kind)):
             with self.assertRaises(ValueError): _linux_abi()
 
+    def test_cleanup_get_measures_current_state_without_setting(self):
+        adapter = self.adapter()
+        adapter.arm(self.verify, 20)
+        self.libc.prctl.values = [1, 1]
+        self.assertEqual(adapter.measure(11), {'controller': 100, 'subreaper': True})
+        self.assertEqual(adapter.measure(11), {'controller': 100, 'subreaper': True})
+        self.assertEqual([c[0] for c in self.libc.prctl.calls], [37, 36, 37, 37, 37])
+        self.assertEqual(adapter.records[-1]['phase'], 'cleanup-readonly')
+
+    def test_cleanup_missing_arm_bad_bounds_or_state_fail_closed(self):
+        with self.assertRaises(RuntimeError):
+            self.adapter().measure(11)
+        for deadline, state in ((12, 1), (11, 0), (float('nan'), 1), (True, 1)):
+            self.libc.prctl = Prctl()
+            adapter = self.adapter()
+            adapter.arm(self.verify, 20)
+            self.libc.prctl.values = [state]
+            with self.assertRaises(ValueError):
+                adapter.measure(deadline)
+            calls = len(self.libc.prctl.calls)
+            with self.assertRaises(RuntimeError):
+                adapter.measure(11)
+            self.assertEqual(len(self.libc.prctl.calls), calls)
+
+    def test_cleanup_errno_and_late_get_keep_raw_evidence(self):
+        adapter = self.adapter()
+        adapter.arm(self.verify, 20)
+        self.libc.prctl.fail_operation = 37
+        with self.assertRaises(OSError):
+            adapter.measure(11)
+        self.assertEqual(adapter.records[-1]['errno'], errno.EINVAL)
+        self.libc.prctl = Prctl()
+        adapter = self.adapter()
+        adapter.arm(self.verify, 20)
+        self.libc.prctl.values = [1]
+        original = self.libc.prctl
+        def late(*args):
+            result = original(*args)
+            self.time = 1.5
+            return result
+        self.libc.prctl = late
+        with self.assertRaises(ValueError):
+            adapter.measure(11)
+        self.assertEqual(adapter.records[-1]['output'], 1)
+        self.assertTrue(adapter.measure_failed)
+
 
 if __name__ == '__main__': unittest.main()

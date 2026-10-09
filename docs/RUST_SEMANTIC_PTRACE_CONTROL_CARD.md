@@ -492,3 +492,25 @@ session/group/tracer=0 做前后原生核验；P_PIDFD WNOWAIT siginfo 须与发
 不等于 process cleanup。借用期间不得 close；完整 owner 尚须实现这项约束。
 native/source verifier、跨进程准确 journal receipt、完整 owner/bootstrap/IPC
 接线仍未完成；本接口 mock 测试不代替 native admission、C0-O 或 metadata 门。
+
+### CleanupPolicy 原生/源码证据组合准备（未原生执行）
+
+Subreaper 新 readonly measure 在准确 dedicated controller 已成功 arm 后，
+每次最多一个 `PR_GET_CHILD_SUBREAPER=37`，不重复 SET、不 unset。历史 prepared
+不当作当前状态：GET 原始 output/result/errno 与共享时钟保留；值不是1、错误、
+超过共享10秒或0.5秒 packet/4096 record 即锁失败，未知状态不能变为资格。
+GET 语义依据 [Linux PR_GET_CHILD_SUBREAPER](https://man7.org/linux/man-pages/man2/PR_GET_CHILD_SUBREAPER.2const.html)。
+
+CleanupPolicy 在每次 census/admission 前后的调用中组合独立 receipt：固定
+controller source-policy 核验、当前 GET、fresh NativeWaitState 的 task identity/
+单线程/default SIGCHLD/无 SA_NOCLDWAIT 原生前后测量、再次 GET 和 source 核验。
+完整 composite packet 共用原 cleanup deadline 且<=0.5秒，不能给各项续预算。
+准确 observer consuming 与组取消先于消费阶段同时要求。OwnedGroup 只有在
+成功核验 held observer 尚未 reap 后、sole signal 尝试前才冻结 scalar phase
+receipt；失败/晚调用的 cancel_attempted 不生成 chronology。CleanupPolicy
+前后核对此 receipt，不能由最终 attempted/reaped bool 倒推先后；信号失败仍
+保留阶段与 errno，但不是 terminal 或回收成功。错误保留 partial native
+receipt，锁失败不重用。source hash 匹配只证明字节，不证明 sole waiter、无未来
+fork/其他 adopter/escape：完整 source verifier 仍须来自独立审查的固定bootstrap，
+不能接受项目 bool/hash 或普通调用者声明。此 verifier 和整体 bootstrap/owner/
+journal/IPC 仍缺，故仅准备接口与 mock 证据，不是 nativepolicy/C0-O执行资格。

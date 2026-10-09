@@ -33,6 +33,7 @@ class Subreaper:
         self.attempted = self.set_attempted = self.prepared = False
         self.records, self.contracts, self.errors = [], [], []
         self.last = None
+        self.measure_failed = False
         # Explicit machine-width arguments for libc's variadic prctl wrapper.
         libc.prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
         libc.prctl.restype = ctypes.c_int
@@ -108,6 +109,38 @@ class Subreaper:
         return {'qualified': False, 'outer_cleanup_complete': False,
                 'controller_pid': self.pid, 'attempted': self.attempted,
                 'set_attempted': self.set_attempted, 'prepared': self.prepared,
+                'measure_failed': self.measure_failed,
                 'records': [dict(row) for row in self.records],
                 'contracts': [dict(row) for row in self.contracts],
                 'errors': [dict(row) for row in self.errors]}
+
+    def measure(self, cleanup_deadline):
+        """Read current subreaper state; never reuse arm()'s historical result.
+
+        One GET only, no SET/unset or adoption inference. Reviewed controller
+        source must still prove no competing waiter/fork/adopter. Bound every
+        sample by the original shared cleanup deadline and a half-second cap.
+        """
+        if not self.prepared or self.measure_failed:
+            raise RuntimeError('successful owned arm and unused failure authority required')
+        try:
+            if (type(cleanup_deadline) not in {int, float}
+                    or not math.isfinite(cleanup_deadline)
+                    or not 0 < cleanup_deadline <= 2**40):
+                raise ValueError('frozen shared cleanup deadline required')
+            started = self._now(cleanup_deadline)
+            if cleanup_deadline - started > 10 or len(self.records) >= 4096:
+                raise ValueError('shared ten-second and record bounds required')
+            value = ctypes.c_int(-1)
+            row = self._call(37, ctypes.addressof(value),
+                             min(cleanup_deadline, started + .5), value)
+            row['phase'] = 'cleanup-readonly'
+            if value.value != 1:
+                raise ValueError('current subreaper state no longer set')
+            self._now(cleanup_deadline)
+            return {'controller': self.pid, 'subreaper': True}
+        except Exception as exc:
+            self.measure_failed = True
+            self.errors.append({'operation': 'cleanup-measure',
+                                'error': type(exc).__name__, 'errno': getattr(exc, 'errno', None)})
+            raise

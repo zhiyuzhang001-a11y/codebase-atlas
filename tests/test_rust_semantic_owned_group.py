@@ -69,6 +69,16 @@ class OwnedGroupTests(unittest.TestCase):
         owner = self.bind()
         self.resources.identity['state'] = 'Z'
         self.assertTrue(owner.cancel_owned_group())
+        phase = owner.cancel_phase_receipt()
+        self.assertEqual(phase, dict(observer=200, reap_attempted=False,
+                                     reaped=False, identity_verified=True))
+        phase['reaped'] = True
+        self.assertFalse(owner.cancel_phase_receipt()['reaped'])
+        report = owner.report()
+        report['records'][0]['verified_phase']['reaped'] = True
+        report['records'][0]['phase_before']['reaped'] = True
+        self.assertFalse(owner.records[0]['verified_phase']['reaped'])
+        self.assertFalse(owner.records[0]['phase_before']['reaped'])
         with self.assertRaises(RuntimeError): owner.cancel_owned_group()
         with self.assertRaises(ValueError): owner.group_absent_after_reap()
         self.wait.reaped = self.wait.reap_attempted = True
@@ -83,6 +93,17 @@ class OwnedGroupTests(unittest.TestCase):
         self.assertIn('status_hex', packet)
         owner.close()
         self.assertNotIn(8, self.os.closed)
+
+    def test_late_cancel_attempt_has_no_chronology_receipt(self):
+        owner = self.bind()
+        self.wait.reap_attempted = self.wait.reaped = True
+        with self.assertRaises(ValueError):
+            owner.cancel_owned_group()
+        self.assertTrue(owner.cancel_attempted)
+        self.assertIsNone(owner.cancel_phase_receipt())
+        self.assertTrue(owner.records[-1]['phase_before']['reaped'])
+        self.assertEqual(owner.records[-1]['error'], 'ValueError')
+        self.assertEqual(self.os.calls, [])
 
     def test_binding_requires_stopped_owned_child_session(self):
         for field, value in [('state', 'S'), ('ppid', 99), ('pgrp', 99),
@@ -106,6 +127,7 @@ class OwnedGroupTests(unittest.TestCase):
             if mutation == 'status': self.resources.status += b'Pid: 200\n'
             if mutation == 'fdinfo': self.os.info = b'Pid: -1\n'
             with self.assertRaises(ValueError): owner.cancel_owned_group()
+            self.assertIsNone(owner.cancel_phase_receipt())
             self.assertEqual(self.os.calls, [])
             self.assertEqual(owner.report()['verifications'][-1]['error'], 'ValueError')
             owner.close()
