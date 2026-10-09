@@ -562,3 +562,21 @@ overflow 留原始计数与有界前缀，锁失败。EAGAIN/EINTR 仅允许后�
 deadline，第一次 transition 失败亦退休并锁失败，不能重新领取宽限。
 专用 pipe 创建/close与实际继承端点列表、peer/source校验、整体 raw-output 计账、
 完整 outer owner 仍须接线审核；本模块仅 injected mock，不代表原生管道资格。
+
+### 专用 journal 创建所有权准备（未原生执行）
+
+OwnedJournalPipe 在明确 allocate 时只创建一次专用 pipe2(CLOEXEC|NONBLOCK)
+双端，准确读/写 access mode、同 UID/FIFO/dev/inode、非继承属性必须一致。
+所有返回的有效非负整数 FD 先登记，再检查范围/重复/标志；部分失败退休并
+一次关闭全部本次 owned FD，模糊 close 留 errno、不重试，继续其余关闭。
+持有已核验身份的 FD 若被替换，拒绝关闭外来对象。创建和最终 borrow 校验
+处于同一 rollback 范围，共用原20秒 active deadline，创建 packet<=0.5秒。
+只有创建 controller 可借用/关闭；返回 endpoint 和 expected 身份的副本可交给
+JournalPipe。parent writer 关闭接口仅供后续 reviewed spawn 继承完成后调用，
+不是 peer 身份或 child exit 的证明；本模块不启动、不变更继承、不读取 journal。
+
+全部测试注入 OS/clock/flags，不实际创建/读写/关闭管道。实际继承名单及未用
+endpoint 关闭、单 writer/source/peer 认证、SIGPIPE bootstrap、source/tool/cwd
+receipt 和完整 outer owner 仍缺；single-threaded owner 必须防止 FD 并发替换。
+qualified/source_authenticated/outer_cleanup_complete 始终 false；不授权原生控制、
+metadata 或构建，不把这些准备测试当阶段出口。
