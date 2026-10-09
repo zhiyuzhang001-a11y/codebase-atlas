@@ -204,8 +204,10 @@ class WholeEntryTests(unittest.TestCase):
         harness.ledger, harness.controller, harness.pid = self.tree, 11, 10
         harness.identity = Mock()
         kill = Mock()
-        with patch.object(entry, 'os', SimpleNamespace(killpg=kill)):
+        with patch.object(entry, 'os', SimpleNamespace(killpg=kill)), \
+                patch.object(entry, 'signal', SimpleNamespace(SIGKILL=9)):
             harness.last_group_cancel(True)
+        kill.assert_called_once_with(12, 9)
         harness.identity.assert_called_once_with(12, 32, parent=10, session=12)
         self.assertFalse(self.tree.controller_consumed)
         self.assertEqual(self.tree.group_state, 'abandoned-failed')
@@ -215,8 +217,11 @@ class WholeEntryTests(unittest.TestCase):
         harness = object.__new__(entry.NativeHarness)
         harness.ledger, harness.controller, harness.pid = self.tree, 11, 10
         harness.identity = Mock()
-        with patch.object(entry, 'os', SimpleNamespace(killpg=Mock())):
+        kill = Mock()
+        with patch.object(entry, 'os', SimpleNamespace(killpg=kill)), \
+                patch.object(entry, 'signal', SimpleNamespace(SIGKILL=9)):
             harness.last_group_cancel(False)
+        kill.assert_called_once_with(12, 9)
         harness.identity.assert_called_once_with(12, 32, parent=11, session=12)
         self.assertEqual(self.tree.group_state, 'retired-normal')
 
@@ -256,8 +261,12 @@ class WholeEntryTests(unittest.TestCase):
         harness.watch_publish_failures, harness.watch_evidence_complete = [], False
         endpoint = Mock()
         endpoint.sendmsg.side_effect = BlockingIOError(11, 'full')
-        harness.publish_watch(endpoint, dict(op='watch-fault', deadline=12, error='fault'))
+        # Inject Linux's constant namespace even on Windows; no real socket or
+        # platform signal operation is performed by this mock-only test.
+        with patch.object(entry, 'socket', SimpleNamespace(MSG_DONTWAIT=64, MSG_NOSIGNAL=16384)):
+            harness.publish_watch(endpoint, dict(op='watch-fault', deadline=12, error='fault'))
         endpoint.sendmsg.assert_called_once()
+        self.assertEqual(endpoint.sendmsg.call_args.args[2], 64 | 16384)
         self.assertFalse(harness.watch_evidence_complete)
         self.assertEqual(harness.watch_publish_failures, [dict(op='watch-fault', error='BlockingIOError')])
 
