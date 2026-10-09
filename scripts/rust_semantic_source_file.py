@@ -18,7 +18,7 @@ SOURCE_NAMES = frozenset('rust_semantic_' + name + '.py' for name in (
     'terminal_census', 'cleanup_ipc', 'wait_state', 'ptrace', 'control_budget',
     'adopted_identity', 'adopted_wait', 'terminal_admission', 'cleanup_policy',
     'outer_control', 'owned_journal', 'control_observer', 'outer_pipes',
-    'root_launch', 'control_code', 'linux_resources', 'source_file'))
+    'root_launch', 'control_code', 'linux_resources', 'source_file', 'observer_wait'))
 
 
 class SourceFile:

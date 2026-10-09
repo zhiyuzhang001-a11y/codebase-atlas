@@ -583,7 +583,8 @@ metadata 或构建，不把这些准备测试当阶段出口。
 
 ### 固定控制源码同 FD 读取准备（未原生执行）
 
-SourceFile 仅接受固定22个 controller sibling basename，不接受路径/项目文件。
+SourceFile 仅接受固定23个 controller sibling basename，不接受路径/项目文件；
+完整装配补入 terminal/adopted wait 直接依赖的 observer_wait，旧22项不是完整集合。
 caller 必须先冻结准确 clean PR commit、owned directory dev/inode/UID 和每文件
 size/mtime/ctime/hash receipt；本接口不生成或认证这些来源，不以传入 SHA 当授权。
 同 controller 从借用目录 FD 以 RDONLY/CLOEXEC/NOFOLLOW/NONBLOCK 打开一次，
@@ -599,3 +600,20 @@ size/mtime/ctime/hash receipt；本接口不生成或认证这些来源，不以
 audit 与 bootstrap/owner 仍须接线；hash 不是 solewaiter/noescape 的证明。
 qualified/source_authenticated/source_policy_audited 始终 false，不授权原生控制或
 metadata/build，不代替完整执行卡的独立复核。
+
+### 完整固定模块装配准备（未原生执行）
+
+prepare_module_bundle 冻结23个 sibling 精确集合与拓扑加载顺序；逐文件最多64KiB、
+源总量192KiB、生成 artifact 最多512KiB，UTF-8/syntax 与声明式 import 逐项检查。
+未知/relative/未装配或循环 sibling import 拒绝，不自动从目录补齐。标准库名单
+固定，但其 runtime/动态库来源仍须独立工具 receipt；AST 检查不是动态 import
+或源码安全审核。生成定义为独立空 __path__ 的 scripts package，准确 sibling
+ModuleType 先登记再载入其冻结十六进制字节；已有 scripts package 则拒绝。
+此函数仅 compile/AST，不执行生成源码、不构造 native adapter、不调用控制。
+
+生成体是需要 owned regular artifact/FD 交付的字节，明确**不是 -c 参数**；
+未接入启动器，不放宽旧 ROOT_SOURCE 的100KiB -c 门。实际 artifact 创建/同FD
+加载、继承、来源认证、固定 controller/observer entry、源策略审计和强监督接线
+仍未实现，必须连同 bootstrap 和工具/stdlib/cwd receipt 整体另审后才原生运行。
+测试只使用合成字节及当前23个准确固定源码的有界只读/AST 检查，未 eval/exec
+artifact；qualification/authentication/source-policy flags 全部 false。
