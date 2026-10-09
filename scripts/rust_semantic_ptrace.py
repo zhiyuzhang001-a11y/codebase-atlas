@@ -244,12 +244,15 @@ class FixedForkStops:
     This loop alone is intentionally not an executable or a successful gate.
     """
 
-    def __init__(self, root: int, observer: int, ops):
+    def __init__(self, root: int, observer: int, ops, *, journal_emit=None):
         if (type(root) is not int or type(observer) is not int
                 or not 0 < root <= 2**31-1 or not 0 < observer <= 2**31-1
                 or root == observer):
             raise ValueError('exact distinct owned root and observer required')
         self.root, self.observer, self.ops = root, observer, ops
+        if journal_emit is not None and not callable(journal_emit):
+            raise ValueError('reviewed first-stop journal emitter required')
+        self.journal_emit = journal_emit
         self.parents = {root: observer}
         self.admitted = {}
         self.early = {}
@@ -262,6 +265,7 @@ class FixedForkStops:
         self.child_count = 0
 
     def _sample(self, pid: int):
+        first = pid not in self.admitted
         packet = self.ops.sample(pid, self.admitted.get(pid), self.parents[pid])
         start = packet['before']['starttime']
         if (type(start) is not int or start <= 0
@@ -269,6 +273,9 @@ class FixedForkStops:
             raise ValueError('positive kernel identity and RSS required')
         self.admitted[pid] = start
         self.samples.append({'pid': pid, **packet})
+        if first and self.journal_emit is not None:
+            if self.journal_emit(pid, self.parents[pid], packet) is not True:
+                raise ValueError('first-stop journal send not confirmed')
 
     def _initial(self, pid: int):
         self.ops.configure(pid)

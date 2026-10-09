@@ -529,3 +529,20 @@ fragment 可以逐字节进入，EOF 只结束 byte transport，零/部分记录
 身份/继承/peer/source 校验；这些仍未实现。正确解码甚至 transport_complete
 不是 authenticated journal，不证明 exec/RSS、terminal 或树清理。本纯字节模块
 不创建管道、不执行项目代码、不进入 nativecontrol/Cargo/构建入口。
+
+### 首次 stopped sample 到 journal 的准备接线（未原生执行）
+
+FirstStopEmitter 接受 FixedForkStops 首次 sample 的准确 before/after 原生身份：
+PID/真实 creation parent/starttime/session/group、stopped state、正 RSS 与采样
+时钟。整个采样至发送完成<=0.5秒，共用原20秒 active deadline；未来、倒退、
+旧采样或身份变化拒绝。按固定三生命周期协议先记录本地 frame，再最多一次
+调用借用的非阻塞专用 pipe writer；short write、EAGAIN/EINTR/其他错误或发送
+后超时均锁失败，不重发。原 packet、raw frame、写入计数/errno/末次时钟保留。
+
+FixedForkStops 的可选 preparation emitter 在 configure/native sample 后、CONT
+前调用；未返回 exact True 或发送抛错不 CONT，已有 admission/sample/pending stop
+保留供原清理路径处理。后续同一 PID 的采样不重复发送。observe_fixed 仅转交
+该 emitter，不构造 native writer；省略 emitter 的旧 replay 不获得 journal 资格。
+这些测试仅 fake sample/byte collector，未运行 ptrace、fork、proc 或 pipe write。
+实际专用 pipe FD/peer/inheritance/source 校验与独立 outer owner 仍缺；注入普通
+callback 不是权限证明，不以 source_authenticated=false 的 report 宣布 C0-O/C0-M。

@@ -8,7 +8,7 @@ import math
 
 
 def observe_fixed(root, observer, ops, ptrace, *, clock, active_deadline,
-                  cleanup_deadline, bootstrap_kill):
+                  cleanup_deadline, bootstrap_kill, journal_emit=None):
     """Connect fixed stop/drain protocols using injected, owned operations.
 
 cleanup_deadline is an outer-owned callback returning its FIRST shared cleanup
@@ -22,7 +22,7 @@ All native operations are caller supplied; tests only supply inert fakes.
             or not math.isfinite(active_deadline)
             or not now < active_deadline <= now + 20):
         raise ValueError('outer-owned finite active deadline required')
-    loop = ptrace.FixedForkStops(root, observer, ops)
+    loop = ptrace.FixedForkStops(root, observer, ops, journal_emit=journal_emit)
     result = {'qualified': False, 'outer_cleanup_complete': False,
               'control_complete': False, 'errors': [], 'cleanup': None}
     try:

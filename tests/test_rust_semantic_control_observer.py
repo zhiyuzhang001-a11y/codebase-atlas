@@ -17,7 +17,7 @@ class ObserverTests(unittest.TestCase):
                 raise OSError('uncertain close')
         ops.close_handles = close
         class Stops:
-            def __init__(self, root, observer, operations):
+            def __init__(self, root, observer, operations, *, journal_emit=None):
                 self.parents, self.admitted = {root: observer}, {}
                 self.early, self.events, self.samples = {}, [], []
                 self.terminals, self.pending_stops = {}, set()
