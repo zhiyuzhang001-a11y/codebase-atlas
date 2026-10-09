@@ -617,3 +617,18 @@ ModuleType 先登记再载入其冻结十六进制字节；已有 scripts packag
 仍未实现，必须连同 bootstrap 和工具/stdlib/cwd receipt 整体另审后才原生运行。
 测试只使用合成字节及当前23个准确固定源码的有界只读/AST 检查，未 eval/exec
 artifact；qualification/authentication/source-policy flags 全部 false。
+
+### 冻结 artifact 借用 FD 读取准备（未原生执行）
+
+ArtifactFD 是独立 bootstrap 侧读取准备，不加入23个控制模块集合，不构造或
+执行 bundle。caller 仍须创建 owned regular artifact，冻结准确 clean PR/source
+manifest 与文件 receipt，并独占 open-file description，禁止其他线程/进程调整
+offset 或替换借用 FD。读取器不 open/close，也不重置 offset；仅 SEEK_CUR 0
+查询。前后同 FD 必须当前 UID、单链接 regular、所有写权限关闭、RDONLY/
+NONBLOCK/CLOEXEC，dev/inode/size/mtime/ctime 匹配；初始 offset=0，后为准确大小。
+一次最多512KiB+1 read；raw前缀512KiB、计数/省略/hash先保留再判定精确大小/hash/
+UTF8。短读、EINTR、变化或超时均失败并锁定，不内部重试；整个 packet<=0.5秒，
+沿用 shared20秒。仅返回字节，无 eval/exec/compile/launch 或借用FD关闭。
+测试全部注入，无实际 artifact 创建/读取/执行。来源认证、继承后 CLOEXEC恢复、
+固定入口和完整 owner/IPC/资源监督仍未接线，整体另审前不授权 native控制或
+metadata/build；qualified/source_authenticated/source_policy_audited 仍 false。
