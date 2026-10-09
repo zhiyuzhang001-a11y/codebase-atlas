@@ -662,3 +662,61 @@ callback 返回 True、EOF、组信号或摘要 source SHA 都不能独立证明
 summary 交付、native factory/source-policy、启动前独立强监督仍未完成。未新增
 CLI/CI 原生入口，不修改23-module artifact 集合或公开产品开关。全部资格 false；
 必须继续补齐整体入口并独立审查准确 diff 才能运行 C0-O5，不能把本差异当出口。
+
+## 完整入口故障恢复合同修订（2026-10-09，未实现、未授权执行）
+
+独立 reviewer `rust_bridge_plan_review` 复核了独立监督者及登记前死亡窗口。
+本节取代上文三角色启动树及跨阶段统一 `no_other_adopter` 的假定；历史准备
+模块和 mock 结果保留，但不能作为新拓扑的原生资格。准确完整代码及执行卡
+仍须一起复审，不能只修改 verifier 的布尔值后运行。
+
+固定故障实验的候选树为：可信外部 harness → 被测 guardian → controller →
+observer/tracer → root → 两个串行 true。外部 harness 保持存活是本次实验的
+明确可信前提，不追踪其他进程、不做第二 tracer、不与正常 waiter 抢消费。
+harness 自身失败时实验 incomplete；harness 成功恢复不能改写为被测 guardian
+自身监督成功，也不放行 C0-M、metadata、编译或产品接线。各层 bootstrap 与
+等待/收养阶段必须以准确源码和原生测量闭合，不能继承旧 sole-adopter 声明。
+
+harness 必须在创建任何下层角色前拥有独立期限、初始 containment 和取消
+能力。observer 离开初始 containment/进入新 session 前先交接准确 lifetime，
+收到确认后才转换；新 session 核验确认后才允许 root。每个首次 stopped
+lifetime 在 CONT 前完成原生身份、正 RSS、原始 journal 和 harness 恢复句柄
+交接；缺失/短写/迟到确认保持停止，不放行。所有输出、journal、握手与终态
+证据共用原合计 1 MiB；整个 bootstrap 和运行共用原20秒，第一次清理固定
+唯一10秒绝对期限，角色故障、收养或传输重试不续期。
+
+正常 group retirement 必须完成 held leader 最后一次成功组取消，且每个已
+创建、仍可能存活的 lifetime 都有准确 harness-held 恢复句柄或 consuming
+terminal 原证据；包含尚未首次 stop 的 root/child。确认退休后永久禁止旧
+PGID 信号，再准确消费 observer。组取消、EXITKILL、父进程死亡后备信号、
+early-exit stop、EOF 或关闭 FD 单独都不是 terminal/清理成功。
+
+登记前死亡是独立失败分支：现有 ControlOwner 正常路径继续拒绝未知 PID、
+partial journal 或缺失终态，不放宽正常 admission。完整入口可另设严格的
+terminal-only recovery admission；前提是相关上层角色的准确终态/消费、
+实际收养阶段、实测单线程/default SIGCHLD/无自动回收、唯一 waiter/subreaper
+及独立审查的固定源码无其他孩子/逃逸。P_ALL WNOWAIT 只发现真实 terminal；
+核对 held terminal、proc/starttime、当前 harness parent、UID/session/group，
+绑定 pidfd 后复核 P_PIDFD 同一终态，再只消费一次。未知 PID 不获得 CONT、
+运行或通用 signal 权限；未知 live/stopped child 不能套用此恢复 admission。
+
+若缺登记使正常 coverage 门无法满足，只允许单向失败转换：最后一次准确
+held-leader group cancel 成功 → ABANDON_GROUP_AUTHORITY_FOR_FAILED_RECOVERY
+→ 永久禁止 PGID signal → 精确消费角色 → terminal-only 收养回收。这是放弃
+组权限，不是完整 coverage 或正常 retirement 成功；发送成功不证明全部退出。
+该路径仍可能不能在10秒内完成全树清理，须原样记录 cleanup incomplete；
+回收部分未知 terminal 不能把原控制改判通过。取消失败不得走此发送成功分支。
+
+recovery receipt 与正常 journal/控制结果分别保存。缺 first-stop/exec/RSS 的
+lifetime 永远不计控制通过；取消后仍未终止、身份错误、模糊消费、缺证据或
+超过原10秒都 incomplete，不猜 PID、不延长预算。本节只冻结失败恢复边界，
+尚未解决或实现全部 bootstrap、FD/peer、组权限交接及原生 recovery 接线。
+
+固定 SIGKILL parent-death 后备只可补充上述监督：每次 fork 前冻结创建者 PID，
+child 在 setsid/ACK/fork/CONT/exec 前 SET_PDEATHSIG=9、GET=9 并核对 getppid；
+fork 清除此设置，所以每条创建边都重新安装。工具必须验明非 setuid/setgid、
+无 file capability、无 credential mutation；原版 true 无执行后 GET，不能把
+执行前回读写成执行后实测。父线程尚未实际终止时级联可能延迟，因此这不是
+十秒清理或 terminal 的保证，也不替代 harness 句柄和退出原证据。依据
+[PR_SET_PDEATHSIG](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)
+与 [PR_GET_PDEATHSIG](https://man7.org/linux/man-pages/man2/PR_GET_PDEATHSIG.2const.html)。
