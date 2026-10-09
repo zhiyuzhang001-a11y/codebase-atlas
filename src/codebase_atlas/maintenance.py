@@ -209,6 +209,22 @@ def _residue(config: AtlasConfig) -> list[dict[str, object]]:
 
 def inspect_installation(config: AtlasConfig, *, deep: bool = False) -> dict[str, object]:
     """Return a stable, JSON-serializable, read-only maintenance report."""
+    if config.language == "rust":
+        from .rust_project import rust_index_health
+        generation = rust_index_health(config.data_dir, config.repository, config.project)
+        freshness = index_freshness(config.data_dir, config.repository, config.project)
+        ok = bool(generation["ok"] and freshness["ok"])
+        return {
+            "schema_version": 1, "status": "healthy" if ok else "attention_required",
+            "ok": ok, "mode": "read_only", "deep_check": deep,
+            "repository": str(config.repository), "project": config.project,
+            "index": freshness, "rust_generation": generation,
+            "provider_database": {"status": "not_applicable", "ok": True,
+                                  "required": False, "reason": "rust_has_no_cbm_database"},
+            "python_registrations": {"status": "not_applicable", "ok": True},
+            "storage": _storage(config), "findings": [],
+            "remediation": [] if ok else ["refresh this Rust project's verified generation"],
+        }
     database = inspect_provider_database(config, deep=deep)
     freshness = index_freshness(config.data_dir, config.repository, config.project)
     registrations = (

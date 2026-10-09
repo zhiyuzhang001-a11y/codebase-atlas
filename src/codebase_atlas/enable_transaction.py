@@ -14,6 +14,7 @@ from .refresh_planner import manifest_path
 from .python_registration_store import registration_index_path
 from .codex_integration import PROJECT_SCOPE_BEGIN, PROJECT_SCOPE_END
 from .routing_state import routing_state_path
+from .providers.rust_syntax import rust_syntax_pointer_path
 
 
 def snapshot(path: Path):
@@ -33,6 +34,8 @@ class EnableTransaction:
             manifest_path(config.data_dir), registration_index_path(config.data_dir),
             routing_state_path(config.data_dir),
         )
+        if config.language == "rust":
+            self.paths += (rust_syntax_pointer_path(config.data_dir),)
         self.before = {path: snapshot(path) for path in self.paths}
         self.expected = dict(self.before)
         self.allowed = {

@@ -6,7 +6,7 @@ import base64
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 import hashlib
 import hmac
 import json
@@ -23,11 +23,13 @@ from .provider_transport import ProviderInitializeTimeout
 from .providers.python_callers import PythonExactCallerProvider
 from .providers.python_references import PythonExactReferenceProvider
 from .providers.python_registrations import RegistrationIndex
+from .providers.rust_analyzer import RustAnalyzerError
 
 if TYPE_CHECKING:
     from .lifecycle import CodebaseMemoryDaemon
     from .providers.cbm_impact import CodebaseMemoryImpactProvider
     from .providers.rust_analyzer import RustAnalyzerProvider
+    from .providers.rust_syntax import RustSyntaxIndex
     from .providers.serena import SerenaSemanticProvider
     from .providers.ts_tests import TypeScriptTestProvider
 
@@ -182,6 +184,7 @@ class AtlasService:
         lifecycle: CodebaseMemoryDaemon | None = None,
         registration_index: RegistrationIndex | None = None,
         rust_provider: RustAnalyzerProvider | None = None,
+        rust_syntax_index: RustSyntaxIndex | None = None,
         session_continuations: bool = False,
         indexed_language: str | None = None,
     ) -> None:
@@ -193,6 +196,17 @@ class AtlasService:
         self.lifecycle = lifecycle
         self.registration_index = registration_index
         self.rust_provider = rust_provider
+        self.rust_syntax_index = rust_syntax_index
+        if rust_syntax_index is not None:
+            document = rust_syntax_index.document
+            if self.repository is None or document["repository"] != str(self.repository):
+                raise ValueError("Rust syntax service repository mismatch")
+            if rust_provider is not None and (
+                rust_provider.generation["generation_id"] != document["generation_id"]
+                or rust_provider.generation["source_fingerprint"] != document["source_fingerprint"]
+                or rust_provider.project != document["project"]
+            ):
+                raise ValueError("Rust provider generation mismatch")
         self.session_continuations = session_continuations
         self.indexed_language = indexed_language
         self.started = False
@@ -362,15 +376,40 @@ class AtlasService:
         started: float,
     ) -> QueryResponse:
         if request.query_type not in {"definition", "references"}:
-            return self._time_budget_response(
+            return replace(self._time_budget_response(
                 request.query_type, limits, started,
                 reason="query_not_supported_for_language",
-            )
+            ), status="unsupported")
+        if self.rust_syntax_index is not None:
+            snapshot = repository_snapshot(self.repository)
+            if snapshot.kind != "git" or snapshot.fingerprint != self.rust_syntax_index.document["source_fingerprint"]:
+                # A Cargo/config change can make this index stale before the
+                # provider's request-boundary validation runs. Retire its owned
+                # session rather than leave native probes watching changed files.
+                if self._rust_started and self.rust_provider is not None:
+                    self.rust_provider.close()
+                    self._rust_started = False
+                return replace(self._time_budget_response(
+                    request.query_type, limits, started, reason="rust_generation_stale"
+                ), status="stale")
+        if request.query_type == "definition" and "source_path" not in request.parameters:
+            index = self.rust_syntax_index
+            if index is not None:
+                nodes = index.definition_candidates(
+                    request.symbol,
+                    target_path=str(request.parameters.get("target_path", "")),
+                    target_owner=str(request.parameters.get("target_owner", "")),
+                )
+                return replace(
+                    self._bounded_response(request.query_type, nodes, (), limits, started),
+                    status="syntactic_candidates",
+                    completeness={"scope_status": index.scope["status"], "fact_tier": "T1"},
+                )
         if self.rust_provider is None:
-            return self._time_budget_response(
+            return replace(self._time_budget_response(
                 request.query_type, limits, started,
                 reason="rust_provider_unavailable",
-            )
+            ), status="unavailable")
         if request.query_type == "definition":
             source_path = request.parameters.get("source_path")
             source_line = request.parameters.get("source_line")
@@ -392,20 +431,41 @@ class AtlasService:
             or not isinstance(source_column, int) or isinstance(source_column, bool)
             or source_line < 1 or source_column < 1
         ):
-            return self._time_budget_response(
+            return replace(self._time_budget_response(
                 request.query_type, limits, started,
                 reason="rust_source_position_required",
+            ), status="unavailable")
+        if (self.rust_syntax_index is not None
+                and source_path not in self.rust_syntax_index.scope["source_paths"]):
+            return replace(self._time_budget_response(
+                request.query_type, limits, started, reason="rust_source_outside_admitted_scope"
+            ), status="unavailable")
+        if request.query_type == "references" and self.rust_syntax_index is not None:
+            declarations = self.rust_syntax_index.definition_candidates(
+                request.symbol, target_path=source_path,
+                target_owner=str(request.parameters.get("target_owner", "")),
             )
+            matches = tuple(node for node in declarations if (
+                node.location.start_line == source_line
+                and node.location.start_column == source_column
+                and node.location.end_line == target_range["end_line"]
+                and (target_range.get("end_column") is None
+                     or node.location.end_column == target_range["end_column"])
+            ))
+            if len(matches) != 1:
+                return replace(self._time_budget_response(
+                    request.query_type, limits, started, reason="rust_unique_declaration_required"
+                ), status="unavailable")
         remaining_timeout = self._remaining_timeout(limits, started)
         if remaining_timeout is None or not self._ensure_rust(remaining_timeout):
-            return self._partial_time_response(
+            return replace(self._partial_time_response(
                 request.query_type, (), (), limits, started
-            )
+            ), status="exact_hits_partial_scope")
         remaining_timeout = self._remaining_timeout(limits, started)
         if remaining_timeout is None:
-            return self._partial_time_response(
+            return replace(self._partial_time_response(
                 request.query_type, (), (), limits, started
-            )
+            ), status="exact_hits_partial_scope")
         try:
             nodes = tuple(self.rust_provider.query(
                 request.query_type,
@@ -418,11 +478,23 @@ class AtlasService:
         except TimeoutError:
             self.rust_provider.close()
             self._rust_started = False
-            return self._partial_time_response(
+            return replace(self._partial_time_response(
                 request.query_type, (), (), limits, started
-            )
-        return self._bounded_response(
-            request.query_type, nodes, (), limits, started
+            ), status="exact_hits_partial_scope")
+        response = self._bounded_response(request.query_type, nodes, (), limits, started)
+        scope = getattr(self.rust_provider, "scope", {})
+        scope_status = scope.get("status", "unavailable")
+        status = (
+            "complete_exact" if scope_status == "complete_exact"
+            else "unavailable" if scope_status == "unavailable"
+            else "exact_hits_partial_scope"
+        )
+        if response.truncated:
+            status = "exact_hits_partial_scope"
+        return replace(
+            response,
+            status=status,
+            completeness={"scope_status": scope_status, "fact_tier": "T2"},
         )
 
     def query(self, request: QueryRequest) -> QueryResponse:
@@ -437,7 +509,17 @@ class AtlasService:
                 reason="target_outside_indexed_language_scope",
             )
         if self.indexed_language == "rust":
-            return self._query_rust(request, limits, started)
+            try:
+                return self._query_rust(request, limits, started)
+            except (RustAnalyzerError, ValueError, OSError):
+                # Admission/protocol/position failure is not an empty exact
+                # answer. Also close a child whose startup never completed.
+                if self.rust_provider is not None:
+                    self.rust_provider.close()
+                self._rust_started = False
+                return replace(self._time_budget_response(
+                    request.query_type, limits, started, reason="rust_runtime_or_request_unavailable"
+                ), status="unavailable")
         if request.parameters.get("relation") == "registers":
             if self.registration_index is None:
                 return self._impact_response(

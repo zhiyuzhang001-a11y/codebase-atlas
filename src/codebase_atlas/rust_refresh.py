@@ -47,6 +47,10 @@ class RustRefreshCoordinator:
         *,
         runner=None,
         phase_observer: PhaseObserver | None = None,
+        lease: ProjectRefreshLease | None = None,
+        mode: str = "rust-syntax-t1",
+        execution_preflight: Callable[[], dict[str, str]] | None = None,
+        publication_preflight: Callable[[], None] | None = None,
     ) -> None:
         if config.language != "rust":
             raise ValueError("Rust refresh coordinator requires language=rust")
@@ -58,13 +62,22 @@ class RustRefreshCoordinator:
             provider_arguments["runner"] = runner
         self.provider = RustSyntaxProvider(
             scanner, config.repository, config.data_dir, config.project,
+            execution_preflight=execution_preflight,
             **provider_arguments,
         )
-        self._lease = ProjectRefreshLease(
+        expected_lease = ProjectRefreshLease(
             config.data_dir, config.repository, config.project
         )
+        if lease is not None and (not lease.owned or lease.path != expected_lease.path
+                                  or lease.repository != expected_lease.repository
+                                  or lease.project != config.project):
+            raise ValueError("Rust refresh requires an owned exact-project lease")
+        self._lease = lease or expected_lease
+        self._borrowed_lease = lease is not None
+        self.mode = mode
         self._lock = threading.Lock()
         self._phase_observer = phase_observer
+        self._publication_preflight = publication_preflight
 
     def _observe(self, phase: str) -> None:
         if self._phase_observer is not None:
@@ -78,6 +91,12 @@ class RustRefreshCoordinator:
         ):
             raise ValueError("timeout_seconds must be between 0 and 300")
         started = monotonic()
+        deadline = started + timeout_seconds
+        def remaining():
+            budget = deadline - monotonic()
+            if budget <= 0:
+                raise TimeoutError("Rust refresh deadline exceeded before publication")
+            return budget
         if not self._lock.acquire(blocking=False):
             return {
                 "schema_version": 1,
@@ -120,7 +139,7 @@ class RustRefreshCoordinator:
                 created_at=f"generation:{generation_after}",
             )
             staged_shard = self.provider.stage(
-                provisional, timeout_seconds=timeout_seconds
+                provisional, timeout_seconds=remaining()
             )
             artifact = rust_syntax_shard_identity(staged_shard)
             provider_identity = {
@@ -173,7 +192,10 @@ class RustRefreshCoordinator:
                 staged_shard.destination,
             )
             self._observe("prepared")
-
+            remaining()
+            if self._publication_preflight is not None:
+                self._publication_preflight()
+            remaining()
             staged_shard.publish()
             recovery.advance("shard_published")
             self._observe("shard_published")
@@ -194,7 +216,7 @@ class RustRefreshCoordinator:
                 self.config.data_dir,
                 self.config.repository,
                 self.config.project,
-                "rust-syntax-t1",
+                self.mode,
                 snapshot=source_after,
             )
             self._observe("state_replaced")
@@ -262,7 +284,7 @@ class RustRefreshCoordinator:
                 staged_manifest.close()
             if staged_shard is not None:
                 staged_shard.close()
-            if lease_acquired:
+            if lease_acquired and not self._borrowed_lease:
                 self._lease.release()
             self._lock.release()
 

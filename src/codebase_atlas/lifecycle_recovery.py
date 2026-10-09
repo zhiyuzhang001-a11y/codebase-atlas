@@ -26,6 +26,7 @@ from .python_registration_store import registration_index_path
 from .refresh_planner import manifest_path
 from .routing_transaction import RoutingTransaction
 from .routing_state import routing_state_path
+from .providers.rust_syntax import rust_syntax_pointer_path
 
 
 JOURNAL_NAME = "active-lifecycle-v1.json"
@@ -48,7 +49,7 @@ def _cleanup_orphans(repository: Path) -> int:
     allowed_backups = {
         f"{label}.bak" for label in {
             "config", "codex", "rule", "skill", "lifecycle", "index",
-            "manifest", "registrations", "routing_state", "provider",
+            "manifest", "registrations", "routing_state", "provider", "rust_pointer",
         }
     }
     for candidate in root.iterdir():
@@ -197,6 +198,8 @@ class LifecycleRecoveryJournal:
             "routing_state": routing_state_path(config.data_dir),
             "provider": config.cache_dir / f"{config.project}.db",
         }
+        if config.language == "rust":
+            destinations["rust_pointer"] = rust_syntax_pointer_path(config.data_dir)
         routing_after = {
             str(plan.path): plan.after for plan in routing.plans
         } if routing is not None else {}
@@ -232,7 +235,7 @@ class LifecycleRecoveryJournal:
                     "allowed": sorted(allowed),
                     "owned": label in {
                         "lifecycle", "index", "manifest", "registrations",
-                        "routing_state", "provider"
+                        "routing_state", "provider", "rust_pointer"
                     },
                 }
             document = {
@@ -311,10 +314,13 @@ def _validate(repository: Path, value: Any, path: Path) -> dict[str, Any]:
     ):
         raise RuntimeError("lifecycle recovery location is unsafe")
     artifacts = value["artifacts"]
-    if not isinstance(artifacts, dict) or set(artifacts) != {
+    expected_labels = {
         "config", "codex", "rule", "skill", "lifecycle", "index", "manifest",
         "registrations", "routing_state", "provider",
-    }:
+    }
+    if not isinstance(artifacts, dict) or set(artifacts) not in (
+        expected_labels, expected_labels | {"rust_pointer"}
+    ):
         raise RuntimeError("lifecycle recovery artifact set is invalid")
     repository = repository.resolve()
     data_dir = Path(value["data_dir"]).resolve()
@@ -331,6 +337,8 @@ def _validate(repository: Path, value: Any, path: Path) -> dict[str, Any]:
         "routing_state": routing_state_path(data_dir),
         "provider": cache_dir / f"{value['project']}.db",
     }
+    if "rust_pointer" in artifacts:
+        expected["rust_pointer"] = rust_syntax_pointer_path(data_dir)
     if not expected["config"].is_relative_to(repository):
         raise RuntimeError("lifecycle recovery config path is unsafe")
     for label, destination in expected.items():
@@ -343,7 +351,7 @@ def _validate(repository: Path, value: Any, path: Path) -> dict[str, Any]:
             raise RuntimeError("lifecycle recovery artifact schema is invalid")
         expected_owned = label in {
             "lifecycle", "index", "manifest", "registrations", "routing_state",
-            "provider"
+            "provider", "rust_pointer"
         }
         if entry["owned"] != expected_owned:
             raise RuntimeError("lifecycle recovery ownership is invalid")

@@ -139,7 +139,11 @@ def resolve_project(start: Path | None = None) -> ProjectResolution:
             config_path,
             f"configured repository: {config.repository}",
         )
-    provider = provider_database_health(config.cache_dir, config.project)
+    if config.language == "rust":
+        from .rust_project import rust_index_health
+        provider = rust_index_health(config.data_dir, config.repository, config.project)
+    else:
+        provider = provider_database_health(config.cache_dir, config.project)
     source = index_freshness(config.data_dir, config.repository, config.project)
     incomplete_source_reasons = {
         "project_not_configured",

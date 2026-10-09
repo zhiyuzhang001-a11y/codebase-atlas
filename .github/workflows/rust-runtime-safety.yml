@@ -1,0 +1,167 @@
+name: Rust Runtime Safety (Internal)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/rust-runtime-safety.yml'
+      - 'src/codebase_atlas/**'
+      - 'tests/test_rust*.py'
+      - 'tests/test_windows*.py'
+      - 'tests/test_frontend_installation.py'
+      - 'tests/fixtures/rust-product/**'
+      - 'scripts/rust_toolchain_qualification.py'
+      - 'scripts/rust_landlock_feasibility.py'
+      - 'scripts/rust_windows_child_policy_feasibility.py'
+      - 'scripts/rust_cooperative_broker_protocol.py'
+      - 'scripts/rust_broker_command_feasibility.py'
+      - 'scripts/rust_semantic_*.py'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-runtime-inventory:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/rust-public-enablement'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      # No checkout, setup-python, installation, download, package script,
+      # candidate Python, or semantic control execution in this inventory job.
+      - name: Collect fixed distro package identities (NOT provenance verification)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf 'source_sha=%s\nimage_os=%s\nimage_version=%s\nqualified=false\n' "$ATLAS_SOURCE_SHA" "$ImageOS" "$ImageVersion" > semantic-runtime-packages.txt
+          ulimit -f 64
+          /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/timeout --signal=KILL 20s /usr/bin/dpkg-query --no-pager --show --showformat='${binary:Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n' python3.12-minimal libpython3.12-minimal libpython3.12-stdlib libc6 libffi8 libssl3t64 zlib1g libbz2-1.0 liblzma5 libexpat1 coreutils ubuntu-keyring dpkg gpgv bash tar >> semantic-runtime-packages.txt
+      - name: Preserve raw runtime inventory including missing packages
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-runtime-packages-linux-x86_64
+          path: semantic-runtime-packages.txt
+          if-no-files-found: error
+  semantic-observer-probe:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codex/rust-public-enablement'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Probe a trusted short-lived child (NOT metadata or qualification)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: /usr/bin/python3 -I -S scripts/rust_semantic_observer_probe.py --source-sha "$ATLAS_SOURCE_SHA" --output semantic-observer-probe.json
+      - name: Preserve incomplete and successful raw probe evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: semantic-observer-probe-linux-x86_64
+          path: semantic-observer-probe.json
+          if-no-files-found: error
+  safety:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-14
+            target: macos-arm64
+          - runner: windows-latest
+            target: windows-x86_64
+          - runner: windows-11-arm
+            target: windows-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install closed-gate frontend
+        run: python -m pip install .
+      - name: Confirm exact target and closed public gate
+        env:
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python -c "import os; from codebase_atlas.release_installation import current_platform_target; from codebase_atlas.languages import get_language; assert current_platform_target() == os.environ['ATLAS_EXPECTED_TARGET']; assert not get_language('rust').public_enabled"
+      - name: Run internal source/receipt/transaction and native ownership regressions
+        run: python -m unittest tests.test_rust_runtime tests.test_rust_installation tests.test_rust_acquisition tests.test_rust_preparation tests.test_rust_toolchain_installation tests.test_rust_toolchain_qualification tests.test_rust_scanner_installation tests.test_rust_scanner_acquisition tests.test_rust_refresh tests.test_rust_project tests.test_rust_analyzer tests.test_rust_owned_command tests.test_frontend_installation tests.test_windows_private_store tests.test_windows_owned_process -v
+      - name: Test I0 experiment evidence collection (NOT qualification)
+        run: python -m unittest tests.test_rust_landlock_feasibility tests.test_rust_windows_child_policy_feasibility tests.test_rust_cooperative_broker_protocol tests.test_rust_broker_command_feasibility -v
+      - name: Test pure semantic observer preparation (NOT qualification)
+        run: python -m unittest tests.test_rust_semantic_exec_decode tests.test_rust_semantic_process_replay tests.test_rust_semantic_linux_resources tests.test_rust_semantic_observer_probe -v
+      - name: Collect I0 controller-command precursor (NOT cooperative broker qualification)
+        if: runner.os != 'Windows'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_broker_command_feasibility.py --source-sha "$ATLAS_SOURCE_SHA" --target "$ATLAS_EXPECTED_TARGET" --output broker-command-i0.json
+      - name: Collect I0 controller-command precursor (Windows, NOT broker qualification)
+        if: runner.os == 'Windows'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_broker_command_feasibility.py --source-sha "$env:ATLAS_SOURCE_SHA" --target "$env:ATLAS_EXPECTED_TARGET" --output broker-command-i0.json
+      - name: Preserve I0 incomplete controller-command evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: broker-command-i0-${{ matrix.target }}
+          path: broker-command-i0.json
+          if-no-files-found: error
+      # Native Windows tests must execute on both Windows targets. Non-Windows
+      # skips are expected here and are not installed-wheel product evidence.
+      - name: Collect Linux I0 resource experiment (NOT isolation qualification)
+        if: runner.os == 'Linux'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_landlock_feasibility.py --source-sha "$ATLAS_SOURCE_SHA" --target "$ATLAS_EXPECTED_TARGET" --output landlock-i0.json
+      - name: Preserve Linux I0 incomplete resource evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: landlock-i0-${{ matrix.target }}
+          path: landlock-i0.json
+          if-no-files-found: error
+      - name: Collect Windows I0 deny-all experiment (NOT isolation qualification)
+        if: runner.os == 'Windows'
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_windows_child_policy_feasibility.py --source-sha "$env:ATLAS_SOURCE_SHA" --target "$env:ATLAS_EXPECTED_TARGET" --output windows-child-policy-i0.json
+      - name: Preserve Windows I0 incomplete deny-all evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-child-policy-i0-${{ matrix.target }}
+          path: windows-child-policy-i0.json
+          if-no-files-found: error
+      - name: Qualify real pinned official tools (phase 2 only)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_toolchain_qualification.py --source-sha "$env:ATLAS_SOURCE_SHA" --target "$env:ATLAS_EXPECTED_TARGET" --output official-tools.json --allow-network --require-clean-source
+        if: runner.os == 'Windows'
+      - name: Qualify real pinned official tools (phase 2 only, POSIX)
+        env:
+          ATLAS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ATLAS_EXPECTED_TARGET: ${{ matrix.target }}
+        run: python scripts/rust_toolchain_qualification.py --source-sha "$ATLAS_SOURCE_SHA" --target "$ATLAS_EXPECTED_TARGET" --output official-tools.json --allow-network --require-clean-source
+        if: runner.os != 'Windows'
+      - name: Preserve phase-2 raw official-tool evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: official-tools-${{ matrix.target }}
+          path: official-tools.json
+          if-no-files-found: error

@@ -93,7 +93,14 @@ def _atlas_config_targets_repository(path: Path, repository: Path) -> bool:
         value = tomllib.loads(path.read_text(encoding="utf-8"))
         project = value.get("project")
         runtime = value.get("runtime")
-        if value.get("schema_version") != 1 or not isinstance(project, dict) or not isinstance(runtime, dict):
+        schema = value.get("schema_version")
+        if isinstance(schema, bool) or schema not in {1, 2} or not isinstance(project, dict) or not isinstance(runtime, dict):
+            return False
+        if schema == 2 and (
+            project.get("language") != "rust"
+            or not isinstance(runtime.get("rust_runtime_receipt"), str)
+            or not runtime["rust_runtime_receipt"]
+        ):
             return False
         required_project = ("repository", "language", "data_dir", "cbm_project", "tsconfig")
         required_runtime = ("node", "node_bin_dir", "cbm_binary", "serena_python")

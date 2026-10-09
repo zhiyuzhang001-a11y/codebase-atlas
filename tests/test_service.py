@@ -171,6 +171,36 @@ class LanguageScopeTests(unittest.TestCase):
         self.assertEqual(provider.starts, 1)
         self.assertEqual(provider.closes, 1)
 
+    def test_rust_empty_partial_scope_is_not_complete_no_match(self):
+        provider = FakeRustProvider()
+        provider.scope = {"status": "exact_hits_partial_scope"}
+        provider.query = lambda *args, **kwargs: ()
+        with AtlasService(indexed_language="rust", rust_provider=provider) as service:
+            response = service.query(QueryRequest("definition", "run", {
+                "source_path": "src/lib.rs", "source_line": 1, "source_column": 8,
+            }))
+        self.assertEqual(response.nodes, ())
+        self.assertEqual(response.status, "exact_hits_partial_scope")
+        self.assertEqual(response.completeness["scope_status"], "exact_hits_partial_scope")
+
+    def test_rust_startup_and_protocol_errors_are_unavailable_and_cleaned_up(self):
+        from codebase_atlas.providers.rust_analyzer import RustAnalyzerError
+        for startup in (True, False):
+            with self.subTest(startup=startup):
+                provider = FakeRustProvider()
+                def fail(*args, **kwargs):
+                    raise RustAnalyzerError("broken session")
+                if startup:
+                    provider.start = fail
+                else:
+                    provider.query = fail
+                with AtlasService(indexed_language="rust", rust_provider=provider) as service:
+                    response = service.query(QueryRequest("definition", "run", {
+                        "source_path": "src/lib.rs", "source_line": 1, "source_column": 1}))
+                self.assertEqual(response.status, "unavailable")
+                self.assertFalse(response.nodes)
+                self.assertEqual(provider.closes, 1)
+
 
 class QueryContractTests(unittest.TestCase):
     def test_definition_position_is_optional_but_atomic(self) -> None:

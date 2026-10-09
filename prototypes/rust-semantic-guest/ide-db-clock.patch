@@ -1,0 +1,27 @@
+diff --git a/crates/ide-db/src/apply_change.rs b/crates/ide-db/src/apply_change.rs
+--- a/crates/ide-db/src/apply_change.rs
++++ b/crates/ide-db/src/apply_change.rs
+@@ -1,6 +1,8 @@
+ //! Applies changes to the IDE state transactionally.
+
+-use std::time::{Duration, Instant};
++use std::time::Duration;
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
++use std::time::Instant;
+
+ use profile::Bytes;
+ use salsa::Database as _;
+@@ -10,9 +12,13 @@
+ impl RootDatabase {
+     pub fn apply_change(&mut self, change: ChangeWithProcMacros) -> Duration {
+         let _p = tracing::info_span!("RootDatabase::apply_change").entered();
++        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+         let now = Instant::now();
+         self.trigger_cancellation();
++        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+         let elapsed = now.elapsed();
++        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++        let elapsed = Duration::ZERO;
+         tracing::trace!("apply_change {:?}", change);
+         change.apply(self);
+         elapsed

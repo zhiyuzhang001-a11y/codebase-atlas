@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from ..contracts import EvidenceProvenance, Node, SourceRange
 from ..rust_scope import RustScopeError, validate_rust_source_scope
+from ..rust_owned_command import run_owned
 
 
 PROVIDER_NAME = "rust-native-syntax"
@@ -389,13 +390,15 @@ class RustSyntaxProvider:
         data_dir: Path,
         project: str,
         *,
-        runner: Runner = subprocess.run,
+        runner: Runner = run_owned,
+        execution_preflight: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self.scanner = scanner.absolute()
         self.repository = repository.resolve()
         self.data_dir = data_dir.resolve()
         self.project = project
         self.runner = runner
+        self.execution_preflight = execution_preflight
 
     def stage(self, generation: dict[str, Any], *, timeout_seconds: float = 120.0) -> StagedRustSyntaxShard:
         if generation.get("repository") != str(self.repository) or generation.get("project") != self.project:
@@ -452,6 +455,8 @@ class RustSyntaxProvider:
                 stream.write(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode())
                 stream.flush()
                 os.fsync(stream.fileno())
+            environment = (self.execution_preflight() if self.execution_preflight is not None
+                           else {"PATH": os.environ.get("PATH", ""), "CARGO_NET_OFFLINE": "true"})
             completed = self.runner(
                 [str(self.scanner), str(self.repository), str(scope_path), str(output_path)],
                 check=False,
@@ -459,7 +464,7 @@ class RustSyntaxProvider:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=self.repository,
-                env={"PATH": os.environ.get("PATH", ""), "CARGO_NET_OFFLINE": "true"},
+                env=environment,
                 timeout=timeout_seconds,
             )
             if completed.returncode != 0:
@@ -575,6 +580,21 @@ class RustSyntaxIndex:
         canonical = json.dumps(fact, sort_keys=True, separators=(",", ":")).encode()
         evidence_hash = hashlib.sha256(canonical).hexdigest()
         start, end = fact["start"], fact["end"]
+        # Scanner 0.2.0 wire positions are UTF-8 byte columns. Public positions
+        # are Unicode codepoints; keep the native artifact/evidence hash intact.
+        candidate = Path(self.document["repository"]) / fact["path"]
+        try:
+            root = Path(self.document["repository"]).resolve(strict=True)
+            if candidate.resolve(strict=True) != candidate or not candidate.is_relative_to(root):
+                raise RustSyntaxError("Rust syntax source path is unsafe")
+            metadata = os.lstat(candidate)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_SOURCE_FILE_BYTES:
+                raise RustSyntaxError("Rust syntax source is unsafe or oversized")
+            lines = candidate.read_bytes().splitlines()
+            start_column = self._public_column(lines, start)
+            end_column = self._public_column(lines, end)
+        except (OSError, UnicodeError, IndexError) as exc:
+            raise RustSyntaxError("Rust syntax source coordinate is unavailable") from exc
         node_id = (
             f"rust:{self.document['generation_id']}:{fact['path']}:"
             f"{start['line']}:{start['column']}:{fact['kind']}:{evidence_hash[:16]}"
@@ -585,7 +605,7 @@ class RustSyntaxIndex:
             fact["name"],
             SourceRange(
                 fact["path"], start["line"], end["line"],
-                start["column"], end["column"],
+                start_column, end_column,
             ),
             PROVIDER_NAME,
             0.5,
@@ -605,6 +625,14 @@ class RustSyntaxIndex:
                 "syntactic_candidates",
             ),
         )
+
+    @staticmethod
+    def _public_column(lines: list[bytes], position: dict[str, int]) -> int:
+        line = lines[position["line"] - 1]
+        offset = position["column"] - 1
+        if offset > len(line):
+            raise RustSyntaxError("Rust syntax source column is outside the file")
+        return len(line[:offset].decode("utf-8")) + 1
 
     @staticmethod
     def _matches(

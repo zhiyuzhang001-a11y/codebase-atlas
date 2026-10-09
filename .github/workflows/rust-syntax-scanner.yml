@@ -7,9 +7,20 @@ on:
       - '.gitattributes'
       - .github/workflows/rust-syntax-scanner.yml
       - native/rust-syntax-scanner/**
+      # Internal qualification requires scanner manifest commit == Atlas head,
+      # even when only the Python runtime/lifecycle changes.
+      - src/codebase_atlas/**
       - scripts/build_rust_syntax_scanner.py
       - scripts/verify_rust_syntax_bundles.py
+      - scripts/rust_scanner_qualification.py
+      - scripts/rust_lifecycle_integration.py
+      - scripts/rust_lifecycle_qualification.py
+      - scripts/rust_linux_trace.py
+      - scripts/rust_toolchain_qualification.py
       - tests/test_rust_syntax_bundles.py
+      - tests/test_rust_scanner_qualification.py
+      - tests/test_rust_lifecycle_integration.py
+      - tests/test_rust_linux_trace.py
 
 permissions:
   contents: read
@@ -34,6 +45,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -46,6 +59,37 @@ jobs:
       - name: Build reproducible native bundle
         shell: bash
         run: python scripts/build_rust_syntax_scanner.py --target ${{ matrix.target }} --output dist
+      - name: Install closed-gate frontend for internal receipt qualification
+        run: python -m pip install .
+      - name: Qualify exact-source installed scanner (internal phase 2 only)
+        shell: bash
+        run: python scripts/rust_scanner_qualification.py --source-sha ${{ github.sha }} --target ${{ matrix.target }} --directory dist --output scanner-qualification.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: scanner-qualification-${{ matrix.target }}
+          path: scanner-qualification.json
+          if-no-files-found: error
+      - name: Qualify real lifecycle with execution sentinels (internal phase 2 only)
+        shell: bash
+        run: |
+          trace_args=()
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            if ! command -v strace; then
+              sudo apt-get update
+              sudo apt-get install -y strace
+            fi
+            trace_args=(--linux-native-trace-dir "$PWD/lifecycle-native")
+          fi
+          python scripts/rust_lifecycle_qualification.py --source-sha ${{ github.sha }} --target ${{ matrix.target }} --directory dist --output lifecycle-qualification.json --allow-network "${trace_args[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lifecycle-qualification-${{ matrix.target }}
+          path: |
+            lifecycle-qualification.json
+            lifecycle-native/*
+          if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: rust-syntax-${{ matrix.target }}

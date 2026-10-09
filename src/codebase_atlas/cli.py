@@ -114,6 +114,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codebase-atlas")
     parser.add_argument("--version", action="store_true")
     commands = parser.add_subparsers(dest="command")
+    scanner_prepare = commands.add_parser("rust-scanner-prepare", help="plan or explicitly acquire a scanner from an exact stable Release")
+    scanner_prepare.add_argument("--repo", type=Path, default=Path.cwd())
+    scanner_prepare.add_argument("--release-tag", required=True)
+    scanner_prepare.add_argument("--allow-network", action="store_true")
+    scanner_prepare.add_argument("--apply", action="store_true")
+    rust_prepare = commands.add_parser("rust-prepare", help="plan or explicitly prepare source-verified official Rust tools")
+    rust_prepare.add_argument("--repo", type=Path, default=Path.cwd())
+    rust_prepare.add_argument("--toolchain-root", type=Path)
+    rust_prepare.add_argument("--archive", action="append", default=[], metavar="COMPONENT=PATH")
+    rust_prepare.add_argument("--apply", action="store_true")
+    rust_prepare.add_argument("--allow-network", action="store_true")
     initialize = commands.add_parser("init", help="create a project-local Atlas configuration")
     initialize.add_argument("--repo", type=Path, default=Path.cwd())
     initialize.add_argument("--config", type=Path)
@@ -124,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     initialize.add_argument("--node-bin-dir", type=Path)
     initialize.add_argument("--tsconfig", type=Path)
     initialize.add_argument("--data-dir", type=Path)
+    initialize.add_argument("--rust-runtime-receipt", type=Path)
     setup = commands.add_parser(
         "setup", help="read-only compatibility check for required local runtimes"
     )
@@ -135,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--serena-python", type=Path)
     setup.add_argument("--node-bin-dir", type=Path)
     setup.add_argument("--tsconfig", type=Path)
+    setup.add_argument("--rust-runtime-receipt", type=Path)
     onboard = commands.add_parser("onboard", help="plan or explicitly apply a guided local onboarding flow")
     onboard.add_argument("--repo", type=Path, default=Path.cwd())
     onboard.add_argument("--config", type=Path)
@@ -145,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     onboard.add_argument("--node-bin-dir", type=Path)
     onboard.add_argument("--tsconfig", type=Path)
     onboard.add_argument("--data-dir", type=Path)
+    onboard.add_argument("--rust-runtime-receipt", type=Path)
     onboard.add_argument("--mode", choices=("fast", "moderate", "full"), default="fast")
     onboard.add_argument("--apply", action="store_true")
     codex = commands.add_parser(
@@ -385,6 +399,59 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(json.dumps({"name": "codebase-atlas", "version": __version__}))
         return 0
+    if args.command == "rust-scanner-prepare":
+        if not get_language("rust").public_enabled:
+            print(json.dumps({"schema_version": 1, "status": "blocked", "error": "Rust public enablement is closed"}))
+            return 2
+        from .rust_scanner_acquisition import acquire_scanner, fetch_scanner_release
+        try:
+            if args.apply:
+                binary = acquire_scanner(args.repo, args.release_tag, network_authorized=args.allow_network)
+                result = {"schema_version": 1, "status": "prepared", "binary": str(binary),
+                          "project_writes": [], "executes_tools": False, "project_enabled": False}
+            else:
+                release = fetch_scanner_release(args.release_tag, network_authorized=args.allow_network)
+                result = {"schema_version": 1, "status": "planned", "tag": release.tag,
+                          "commit": release.commit, "target": release.target,
+                          "archive": release.archive.name, "archive_digest": release.archive.digest,
+                          "project_writes": [], "executes_tools": False}
+        except (OSError, RuntimeError, ValueError) as exc:
+            result = {"schema_version": 1, "status": "blocked", "error": str(exc)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["status"] in {"planned", "prepared"} else 2
+    if args.command == "rust-prepare":
+        if not get_language("rust").public_enabled:
+            print(json.dumps({"schema_version": 1, "status": "blocked", "error": "Rust public enablement is closed"}))
+            return 2
+        from .rust_preparation import plan_existing_toolchain, prepare_existing_toolchain
+        from .rust_toolchain_installation import plan_toolchain_installation, install_toolchain
+        try:
+            archives = {}
+            for entry in args.archive:
+                component, separator, path = entry.partition("=")
+                if not separator or not component or not path or component in archives:
+                    raise ValueError("Rust archives require unique COMPONENT=PATH entries")
+                archives[component] = Path(path)
+            if args.allow_network and not args.apply:
+                raise ValueError("Rust network acquisition requires explicit --apply")
+            if args.toolchain_root is None:
+                if args.apply:
+                    result = install_toolchain(args.repo, archives=archives or None,
+                                               network_authorized=args.allow_network)
+                else:
+                    if archives:
+                        raise ValueError("Rust archive input without a toolchain root requires explicit --apply")
+                    result = plan_toolchain_installation(args.repo)
+            elif args.apply:
+                result = prepare_existing_toolchain(args.repo, args.toolchain_root,
+                                                    archives=archives or None,
+                                                    network_authorized=args.allow_network)
+            else:
+                result = plan_existing_toolchain(args.repo, args.toolchain_root, archives=archives or None)
+        except (OSError, RuntimeError, ValueError) as exc:
+            result = {"schema_version": 1, "status": "blocked", "error": str(exc)}
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["status"] in {"planned", "prepared"} else 2
     if args.command == "codex":
         operation = {
             "plan": codex_plan,
@@ -416,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo, config_path, args.language, args.node, args.cbm_binary,
             args.serena_python, args.node_bin_dir, args.tsconfig, args.data_dir,
             args.mode,
+            args.rust_runtime_receipt,
         ))
         if not args.apply:
             print(json.dumps(plan, ensure_ascii=False, indent=2))
@@ -455,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
             serena_python=serena_python,
             node_bin_dir=node_bin_dir,
             tsconfig=tsconfig,
+            rust_runtime_receipt=(configured.rust_runtime_receipt if candidate is not None else args.rust_runtime_receipt),
         )
         ok = required_checks_ok(checks)
         print(json.dumps({
@@ -473,6 +542,7 @@ def main(argv: list[str] | None = None) -> int:
             node_bin_dir=args.node_bin_dir,
             tsconfig=args.tsconfig,
             data_dir=args.data_dir,
+            rust_runtime_receipt=args.rust_runtime_receipt,
         )
         config.write(config_path)
         print(json.dumps({"status": "initialized", "config": str(config_path), "data_dir": str(config.data_dir)}, indent=2))
@@ -874,7 +944,12 @@ def main(argv: list[str] | None = None) -> int:
             checks = diagnose(config)
             ok = required_checks_ok(checks)
             freshness = index_freshness(config.data_dir, config.repository, config.project)
-            provider_database = provider_database_health(config.cache_dir, config.project)
+            provider_database = (
+                {"status": "not_applicable", "required": False,
+                 "reason": "Rust uses generation-bound syntax and analyzer providers, not a CBM database"}
+                if config.language == "rust"
+                else provider_database_health(config.cache_dir, config.project)
+            )
             print(json.dumps({
                 "status": "ready" if ok else "incomplete",
                 "index": freshness,
@@ -891,6 +966,19 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2))
             return 2
         config_identity, config_bytes = _config_publication_snapshot(args.config)
+        if config.language == "rust":
+            try:
+                def publication_preflight():
+                    if _config_publication_snapshot(args.config) != (config_identity, config_bytes):
+                        raise RuntimeError("Rust config changed during indexing")
+                result = _index_repository(config, args.mode, publication_preflight=publication_preflight)
+                print(json.dumps({"status": "updated" if args.command == "update" else "indexed",
+                                  "provider": result,
+                                  "index": index_freshness(config.data_dir, config.repository, config.project)}, indent=2))
+                return 0
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(json.dumps({"status": "failed", "error": str(exc)}, indent=2))
+                return 2
         if args.command == "update" and not args.force_provider:
             freshness = index_freshness(config.data_dir, config.repository, config.project)
             provider_database = provider_database_health(config.cache_dir, config.project)
@@ -1246,71 +1334,20 @@ def main(argv: list[str] | None = None) -> int:
                     args.stale_policy,
                 ), ensure_ascii=False, indent=2))
                 return 3
-        provider_layout = getattr(args, "provider_layout", "legacy-project-v0")
-        transport = (
-            CodebaseMemoryMcpTransport(
-                args.binary, args.repo, args.cache_dir,
-                exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
-                client_version=__version__,
-                managed_cache=provider_layout == SHARED_PROVIDER_LAYOUT,
+        if args.language == "rust":
+            from .rust_project import load_rust_service
+            if active_config_path is None:
+                raise SystemExit("Rust service requires an exact project configuration")
+            rust_config = AtlasConfig.load(active_config_path)
+            if rust_config != args._atlas_config:
+                raise SystemExit("Rust project configuration changed during service preparation")
+            service = load_rust_service(
+                rust_config,
+                session_continuations=args.command in {"mcp", "query-batch", "ui"},
             )
-            if args.command == "mcp"
-            else None
-        )
-        lifecycle = transport or _provider_lifecycle(
-            args.binary, args.repo, args.cache_dir, provider_layout,
-        )
-        structural = CodebaseMemoryImpactProvider(
-            args.binary,
-            args.repo,
-            args.cache_dir,
-            args.project,
-            transport=transport,
-        )
-        registration_index = None
-        if args.language == "python" and getattr(args, "data_dir", None) is not None:
-            source_fingerprint = args.index_status.get("source", {}).get(
-                "source_fingerprint"
-            )
-            if source_fingerprint:
-                try:
-                    registration_index, registration_health = load_registration_index_state(
-                        args.data_dir,
-                        args.repo,
-                        args.project,
-                        source_fingerprint,
-                    )
-                except RegistrationIndexError as exc:
-                    registration_index = None
-                    registration_health = {
-                        "status": "rebuild_required",
-                        "ok": False,
-                        "reason": str(exc),
-                    }
-            else:
-                registration_health = registration_index_health(
-                    args.data_dir, args.repo, args.project, source_fingerprint
-                )
-            args.index_status["python_registrations"] = registration_health
-        service = AtlasService(
-            repository=args.repo,
-            structural_provider=structural,
-            semantic_provider=SerenaSemanticProvider(
-                args.serena_python,
-                args.serena_runner,
-                args.repo,
-                args.serena_home,
-                args.metadata_root,
-                language=args.language,
-                node_bin_dir=args.node_bin_dir,
-            ),
-            test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
-            impact_provider=structural,
-            lifecycle=lifecycle,
-            registration_index=registration_index,
-            session_continuations=args.command in {"mcp", "query-batch", "ui"},
-            indexed_language=args.language,
-        )
+            transport = None
+        else:
+            service, transport = _legacy_service(args)
         refresh_coordinator = (
             RefreshCoordinator(
                 AtlasConfig.load(active_config_path),
@@ -1321,124 +1358,201 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "mcp" and transport is not None and active_config_path is not None
             else None
         )
-        with service:
-            if args.command == "mcp":
-                notifier = VersionNotifier(
-                    __version__, args.data_dir,
-                    enabled=args.version_check == "notify",
+        if args.command == "mcp" and args.language == "rust":
+            from .rust_mcp_refresh import RustMcpRefreshCoordinator
+            refresh_coordinator = RustMcpRefreshCoordinator(
+                rust_config, service, args.index_status, config_path=active_config_path)
+        return _run_service_command(args, service, refresh_coordinator)
+    parser.print_help()
+    return 0
+
+
+def _legacy_service(args):
+    provider_layout = getattr(args, "provider_layout", "legacy-project-v0")
+    transport = (
+        CodebaseMemoryMcpTransport(
+            args.binary, args.repo, args.cache_dir,
+            exclusive=provider_layout != SHARED_PROVIDER_LAYOUT,
+            client_version=__version__,
+            managed_cache=provider_layout == SHARED_PROVIDER_LAYOUT,
+        )
+        if args.command == "mcp"
+        else None
+    )
+    lifecycle = transport or _provider_lifecycle(
+        args.binary, args.repo, args.cache_dir, provider_layout,
+    )
+    structural = CodebaseMemoryImpactProvider(
+        args.binary,
+        args.repo,
+        args.cache_dir,
+        args.project,
+        transport=transport,
+    )
+    registration_index = None
+    if args.language == "python" and getattr(args, "data_dir", None) is not None:
+        source_fingerprint = args.index_status.get("source", {}).get(
+            "source_fingerprint"
+        )
+        if source_fingerprint:
+            try:
+                registration_index, registration_health = load_registration_index_state(
+                    args.data_dir,
+                    args.repo,
+                    args.project,
+                    source_fingerprint,
                 )
-                _run_mcp_with_graceful_termination(
-                    McpServer(
-                        service, args.index_status, args.stale_policy,
-                        instructions=(
-                            f"This server is only for repository {args.repo.resolve()}; "
-                            f"never use it for another repository. {PROJECT_RULE}"
-                        ),
-                        version_notifier=notifier,
-                        refresh_coordinator=refresh_coordinator,
-                        auto_update=args.auto_update,
-                        auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
-                        availability=lambda: operational_lifecycle_status(
-                            args.data_dir, args.repo, args.project
-                        ),
-                    )
-                )
-            elif args.command == "query":
-                source_position = (
-                    {
-                        "source_path": args.source_path,
-                        "source_line": args.source_line,
-                        "source_column": args.source_column,
-                    }
-                    if any(value is not None for value in (
-                        args.source_path, args.source_line, args.source_column
-                    ))
-                    else {}
-                )
-                target_range_values = {
-                    "start_line": args.target_start_line,
-                    "end_line": args.target_end_line,
-                    "start_column": args.target_start_column,
-                    "end_column": args.target_end_column,
+            except RegistrationIndexError as exc:
+                registration_index = None
+                registration_health = {
+                    "status": "rebuild_required",
+                    "ok": False,
+                    "reason": str(exc),
                 }
-                target_range = (
-                    {"target_range": {
-                        key: value for key, value in target_range_values.items()
-                        if value is not None
-                    }}
-                    if any(value is not None for value in target_range_values.values())
-                    else {}
-                )
-                response = service.query(
-                    QueryRequest(
-                        args.query_type,
-                        args.symbol,
-                        {
-                            "target_path": args.target_path,
-                            "target_owner": args.target_owner,
-                            "relation": args.relation,
-                            "direction": args.direction,
-                            "depth": args.depth,
-                            "max_nodes": args.max_nodes,
-                            "max_edges": args.max_edges,
-                            "timeout_ms": args.timeout_ms,
-                            **source_position,
-                            **target_range,
-                        },
-                    )
-                )
-                print(json.dumps(
-                    _response_payload(response, args.index_status, args.stale_policy),
-                    ensure_ascii=False,
-                    indent=2,
-                ))
-            elif args.command == "analyze-change":
-                print(json.dumps(
-                    analyze_change(
-                        service,
-                        args.symbol,
-                        intent=args.intent,
-                        target_path=args.target_path,
-                        target_owner=args.target_owner,
-                        direction=args.direction,
-                        depth=args.depth,
-                        max_nodes=args.max_nodes,
-                        max_edges=args.max_edges,
-                        timeout_ms=args.timeout_ms,
-                        index_status=args.index_status,
-                        stale_policy=args.stale_policy,
-                        response_mode=args.response_mode,
+        else:
+            registration_health = registration_index_health(
+                args.data_dir, args.repo, args.project, source_fingerprint
+            )
+        args.index_status["python_registrations"] = registration_health
+    service = AtlasService(
+        repository=args.repo,
+        structural_provider=structural,
+        semantic_provider=SerenaSemanticProvider(
+            args.serena_python,
+            args.serena_runner,
+            args.repo,
+            args.serena_home,
+            args.metadata_root,
+            language=args.language,
+            node_bin_dir=args.node_bin_dir,
+        ),
+        test_provider=TypeScriptTestProvider(args.node, args.analyzer, args.tsconfig),
+        impact_provider=structural,
+        lifecycle=lifecycle,
+        registration_index=registration_index,
+        session_continuations=args.command in {"mcp", "query-batch", "ui"},
+        indexed_language=args.language,
+    )
+    return service, transport
+
+
+def _run_service_command(args, service, refresh_coordinator):
+    with service:
+        if args.command == "mcp":
+            notifier = VersionNotifier(
+                __version__, args.data_dir,
+                enabled=args.version_check == "notify",
+            )
+            _run_mcp_with_graceful_termination(
+                McpServer(
+                    service, args.index_status, args.stale_policy,
+                    instructions=(
+                        f"This server is only for repository {args.repo.resolve()}; "
+                        f"never use it for another repository. {PROJECT_RULE}"
                     ),
-                    ensure_ascii=False,
-                    indent=2,
+                    version_notifier=notifier,
+                    refresh_coordinator=refresh_coordinator,
+                    auto_update=args.auto_update,
+                    auto_update_timeout_ms=int(args.auto_update_timeout * 1000),
+                    availability=lambda: operational_lifecycle_status(
+                        args.data_dir, args.repo, args.project
+                    ),
+                )
+            )
+        elif args.command == "query":
+            source_position = (
+                {
+                    "source_path": args.source_path,
+                    "source_line": args.source_line,
+                    "source_column": args.source_column,
+                }
+                if any(value is not None for value in (
+                    args.source_path, args.source_line, args.source_column
                 ))
-            elif args.command == "query-batch":
-                _run_query_batch(service, args.index_status, args.stale_policy)
-            else:
-                if not 0 <= args.port <= 65535:
-                    raise SystemExit("port must be between 0 and 65535")
-                server = LocalUiServer(
+                else {}
+            )
+            target_range_values = {
+                "start_line": args.target_start_line,
+                "end_line": args.target_end_line,
+                "start_column": args.target_start_column,
+                "end_column": args.target_end_column,
+            }
+            target_range = (
+                {"target_range": {
+                    key: value for key, value in target_range_values.items()
+                    if value is not None
+                }}
+                if any(value is not None for value in target_range_values.values())
+                else {}
+            )
+            response = service.query(
+                QueryRequest(
+                    args.query_type,
+                    args.symbol,
+                    {
+                        "target_path": args.target_path,
+                        "target_owner": args.target_owner,
+                        "relation": args.relation,
+                        "direction": args.direction,
+                        "depth": args.depth,
+                        "max_nodes": args.max_nodes,
+                        "max_edges": args.max_edges,
+                        "timeout_ms": args.timeout_ms,
+                        **source_position,
+                        **target_range,
+                    },
+                )
+            )
+            print(json.dumps(
+                _response_payload(response, args.index_status, args.stale_policy),
+                ensure_ascii=False,
+                indent=2,
+            ))
+        elif args.command == "analyze-change":
+            print(json.dumps(
+                analyze_change(
                     service,
-                    repository=str(args.repo),
-                    language=args.language,
+                    args.symbol,
+                    intent=args.intent,
+                    target_path=args.target_path,
+                    target_owner=args.target_owner,
+                    direction=args.direction,
+                    depth=args.depth,
+                    max_nodes=args.max_nodes,
+                    max_edges=args.max_edges,
+                    timeout_ms=args.timeout_ms,
                     index_status=args.index_status,
                     stale_policy=args.stale_policy,
-                    port=args.port,
-                )
-                print(json.dumps({
-                    "status": "ready", "url": server.url,
-                    "binding": server.authority, "mode": "read_only",
-                }), flush=True)
-                if not args.no_open:
-                    webbrowser.open(server.url)
-                try:
-                    server.serve_forever()
-                except KeyboardInterrupt:
-                    pass
-                finally:
-                    server.httpd.server_close()
-        return 0
-    parser.print_help()
+                    response_mode=args.response_mode,
+                ),
+                ensure_ascii=False,
+                indent=2,
+            ))
+        elif args.command == "query-batch":
+            _run_query_batch(service, args.index_status, args.stale_policy)
+        else:
+            if not 0 <= args.port <= 65535:
+                raise SystemExit("port must be between 0 and 65535")
+            server = LocalUiServer(
+                service,
+                repository=str(args.repo),
+                language=args.language,
+                index_status=args.index_status,
+                stale_policy=args.stale_policy,
+                port=args.port,
+            )
+            print(json.dumps({
+                "status": "ready", "url": server.url,
+                "binding": server.authority, "mode": "read_only",
+            }), flush=True)
+            if not args.no_open:
+                webbrowser.open(server.url)
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.httpd.server_close()
     return 0
 
 
@@ -1486,6 +1600,7 @@ def _apply_project_config(args) -> None:
         candidate = local if local.is_file() else None
     if candidate is not None:
         config = AtlasConfig.load(candidate)
+        args._atlas_config = config
         args.repo = config.repository
         args.node = config.node
         args.analyzer = config.analyzer
@@ -1504,6 +1619,7 @@ def _apply_project_config(args) -> None:
             config.repository,
             config.cache_dir,
             config.project,
+            language=config.language,
         )
         args.data_dir = config.data_dir
         args.provider_layout = config.provider_layout
@@ -1517,6 +1633,10 @@ def _apply_project_config(args) -> None:
         "serena_python": args.serena_python, "serena_home": args.serena_home,
         "metadata_root": args.metadata_root, "language": args.language,
     }
+    if args.language == "rust" and candidate is not None:
+        required = {
+            "repo": args.repo, "project": args.project, "data_dir": args.data_dir,
+        }
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise SystemExit(
@@ -1525,7 +1645,30 @@ def _apply_project_config(args) -> None:
         )
 
 
-def _index_repository(config: AtlasConfig, mode: str) -> dict[str, object]:
+def _index_repository(config: AtlasConfig, mode: str, *, refresh_lease=None, publication_preflight=None) -> dict[str, object]:
+    if config.language == "rust":
+        deadline = time.monotonic() + 120.0
+        from .rust_installation import runtime_from_receipt
+        from .rust_scanner_installation import verified_scanner
+        from .rust_refresh import RustRefreshCoordinator
+        if config.rust_runtime_receipt is None:
+            raise ValueError("Rust indexing requires a verified runtime receipt")
+        runtime = runtime_from_receipt(config.rust_runtime_receipt, repository=config.repository)
+        runtime.environment(config.repository)  # Fail closed before scanner execution.
+        scanner = verified_scanner(config.repository)
+        def preflight():
+            scanner.verify()
+            return runtime.environment(config.repository)
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError("Rust indexing deadline exceeded during preparation")
+        result = RustRefreshCoordinator(config, scanner.verify(), lease=refresh_lease,
+                                        mode=mode, execution_preflight=preflight,
+                                        publication_preflight=publication_preflight).refresh(
+                                            timeout_seconds=budget)
+        if result.get("status") != "refreshed":
+            raise RuntimeError("Rust indexing failed: " + str(result.get("reason") or result.get("status")))
+        return result | {"project": config.project}
     if config.provider_layout == SHARED_PROVIDER_LAYOUT:
         cache_dir = ensure_managed_provider_cache(config.cache_dir)
     else:
