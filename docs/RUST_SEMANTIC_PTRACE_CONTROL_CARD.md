@@ -580,3 +580,22 @@ endpoint 关闭、单 writer/source/peer 认证、SIGPIPE bootstrap、source/too
 receipt 和完整 outer owner 仍缺；single-threaded owner 必须防止 FD 并发替换。
 qualified/source_authenticated/outer_cleanup_complete 始终 false；不授权原生控制、
 metadata 或构建，不把这些准备测试当阶段出口。
+
+### 固定控制源码同 FD 读取准备（未原生执行）
+
+SourceFile 仅接受固定22个 controller sibling basename，不接受路径/项目文件。
+caller 必须先冻结准确 clean PR commit、owned directory dev/inode/UID 和每文件
+size/mtime/ctime/hash receipt；本接口不生成或认证这些来源，不以传入 SHA 当授权。
+同 controller 从借用目录 FD 以 RDONLY/CLOEXEC/NOFOLLOW/NONBLOCK 打开一次，
+核对同 UID、regular/单链接/非 group-other writable 文件；目录前后同身份。
+一次最多65537字节 read，保存最多65536字节 raw 前缀、计数/省略/hash，必须与
+冻结 size/hash 完全相符。前后同 FD stat 与不跟随 symlink 的目录相对 path stat
+核对 inode/时间/大小，拒绝替换、变化、短读、overflow、非 UTF-8。
+新 sample FD 一次关闭且尝试前退休，读错误与 close errno 分别保留，不重试；
+不关闭借用目录。最后时钟包括 close，整个 packet<=0.5秒并沿用 shared20秒。
+
+仅返回已匹配源字节，不 import/eval/exec；全部文件/时钟测试注入，没有实际
+源码读取或执行。完整 manifest 来源、精确 PR/工具/cwd receipts、固定 source-policy
+audit 与 bootstrap/owner 仍须接线；hash 不是 solewaiter/noescape 的证明。
+qualified/source_authenticated/source_policy_audited 始终 false，不授权原生控制或
+metadata/build，不代替完整执行卡的独立复核。
