@@ -546,3 +546,19 @@ FixedForkStops 的可选 preparation emitter 在 configure/native sample 后、C
 这些测试仅 fake sample/byte collector，未运行 ptrace、fork、proc 或 pipe write。
 实际专用 pipe FD/peer/inheritance/source 校验与独立 outer owner 仍缺；注入普通
 callback 不是权限证明，不以 source_authenticated=false 的 report 宣布 C0-O/C0-M。
+
+### 专用 journal 借用端点准备（未原生执行）
+
+JournalPipe 只借用 controller 已创建并冻结 device/inode/UID 的单向 Linux pipe。
+每次操作前后核对同一 FIFO、当前 UID、准确读/写 access mode、O_NONBLOCK 与
+CLOEXEC；同一 owner 必须单线程且不关闭/替换借用 FD。此校验不认证 writer peer，
+不能把项目提供的 expected inode 当 trusted receipt。未创建/关闭 FD，不变更继承。
+writer 组合 FirstStopEmitter，每个44字节 frame 本地顺序提交后只尝试一次 write；
+short/error/late 发送锁失败不重发。reader 每 tick 最多一次133字节 read，真实
+raw bytes 在 postcheck/时钟前保留并交给132字节总量的 ControlJournal；第133字节
+overflow 留原始计数与有界前缀，锁失败。EAGAIN/EINTR 仅允许后续 tick 读，未内部
+重试/续预算。partial EOF、错帧或 FD 变化拒绝；EOF 仅 byte transport，不是 exit。
+每次操作<=0.5秒、最多4096记录；reader cleanup 借用 outer FIRST共享<=10秒
+deadline，第一次 transition 失败亦退休并锁失败，不能重新领取宽限。
+专用 pipe 创建/close与实际继承端点列表、peer/source校验、整体 raw-output 计账、
+完整 outer owner 仍须接线审核；本模块仅 injected mock，不代表原生管道资格。
