@@ -473,3 +473,22 @@ subreaper、组取消先于消费且组信号退役、无后续 fork/其他 adop
 不授权打开 pidfd、消费或 signal，也没有生命周期集合完成布尔值。
 原生 admission/journal、完整 owner、source-policy/bootstrap/IPC 接线尚缺；
 该模块与 mock 测试不构成 C0-O/C0-M 或真实语义资格，不进入原生执行入口。
+
+### TerminalAdmission 准备接口（未原生执行）
+
+每个实例只尝试一次、只针对一个可信 creation/lifetime journal 里的准确
+PID/starttime/session/pgrp。此 journal 必须来自 reviewed source/controller，
+不能接收项目字段或把相同 UID/PID 当成 journal。先由 TerminalCensus 保留
+WNOWAIT terminal 且与 journal PID 一致，pending/ECHILD/未知 PID 不分配 FD。
+重新检查 native/source policy 后打开 owned CLOEXEC/NOFOLLOW proc directory，
+再次检查 policy 后创建 pidfd。sole waiter/default SIGCHLD/no auto-reap 与
+未消费 terminal 是 numeric PID 尚未复用的必要前提，不是普通 PID 查找授权。
+AdoptedIdentity 对新 held FD、准确 journal starttime、UID/真实收养父进程、
+session/group/tracer=0 做前后原生核验；P_PIDFD WNOWAIT siginfo 须与发现结果
+完全相同，再检查 policy 和 identity，末次共享时钟且 admission packet <=0.5秒。
+此处不消费、不 signal；返回的 binding 仅允许完整 reviewed owner 后续借用，
+原创建事件与 exec/RSS journal 缺失仍不能补造资格。错误保留所有已分配 FD 与
+原始 receipt，显式 close 每个 owned FD 先退休再尝试一次，close 失败不重试、
+不等于 process cleanup。借用期间不得 close；完整 owner 尚须实现这项约束。
+native/source verifier、跨进程准确 journal receipt、完整 owner/bootstrap/IPC
+接线仍未完成；本接口 mock 测试不代替 native admission、C0-O 或 metadata 门。
