@@ -265,12 +265,15 @@ explicitly migrate it instead of deleting its old cache. Treat `provider_busy`
 or `provider_startup_timeout` as transient backpressure and retry within the
 remaining task budget rather than recreating the Codex task.
 
-Long-lived batch and MCP sessions expose the state captured at session startup
-without adding Git work to every warm query. A project-scoped M30 MCP transport
-performs one bounded update before the service starts; the default/global and
-older transports remain explicit-update only. Restart the session after editing,
-or run `doctor`/`update` first. No permanent watcher or per-query Git scan is
-added.
+Batch sessions expose the state captured at startup; restart them after editing.
+MCP sessions revalidate source freshness on each query even when the published
+index generation is unchanged. These read-only Git and changed-file checks add
+latency; they do not rebuild the index or reset generation caches. With
+`--stale-policy error`, queries reject stale evidence. Refresh indexes through
+an explicit `update` or the configured automatic-update policy. No permanent
+watcher is added.
+See [the MCP freshness contract](QUERY_FRESHNESS_CONTRACT.md) for the approved
+correctness and latency requirements.
 
 Otherwise provide the runtime locations once:
 
