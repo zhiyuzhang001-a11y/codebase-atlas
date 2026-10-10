@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.27.1 — Unreleased
+
+- Revalidate MCP repository freshness before queries even when the published
+  index generation is unchanged, and reject stale or mismatched facts under
+  `--stale-policy error` without refreshing the Provider or resetting caches.
+- Prefer current-source correctness over the former no-scan latency target;
+  retain measured warm-query coverage and reduce one redundant Git startup.
+
+
 ## 0.27.0 — 2026-10-05
 
 - Add an internal Rust source-scope, native syntax, and position-based
