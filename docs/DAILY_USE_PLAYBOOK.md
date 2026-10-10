@@ -20,8 +20,14 @@ codebase-atlas doctor
 
 Configured queries default to `--stale-policy warn`. Use
 `--stale-policy error` in CI or other workflows where stale evidence must be
-rejected. Batch and MCP sessions capture state at startup to preserve warm-query
-latency; restart them after editing. They do not update the index automatically.
+rejected. Batch sessions capture state at startup; restart them after editing.
+MCP sessions revalidate repository freshness before each query, including when
+its index generation is unchanged. This adds read-only Git and changed-file
+checks; `--stale-policy error` rejects stale evidence. These checks do not rebuild
+the index. Index updates follow the configured automatic-update policy or an
+explicit `codebase-atlas update`.
+See [the MCP freshness contract](QUERY_FRESHNESS_CONTRACT.md) for the approved
+correctness and latency requirements.
 
 Use the repository configuration and ask for a definition first:
 

@@ -235,12 +235,16 @@ def _hash_path(digest: "hashlib._Hash", repository: Path, relative: str) -> None
 
 def repository_snapshot(repository: Path) -> RepositorySnapshot:
     repository = repository.resolve()
-    inside = _git(repository, "rev-parse", "--is-inside-work-tree")
-    if inside.returncode != 0 or inside.stdout.strip() != b"true":
+    # One invocation proves worktree identity and resolves HEAD. An unborn
+    # worktree still prints "true" before rev-parse fails to resolve HEAD.
+    identity = _git(repository, "rev-parse", "--is-inside-work-tree", "HEAD")
+    lines = identity.stdout.splitlines()
+    if not lines or lines[0] != b"true":
         return RepositorySnapshot("unknown", None, None, None, "repository_is_not_git")
-
-    head_result = _git(repository, "rev-parse", "HEAD")
-    head = os.fsdecode(head_result.stdout.strip()) if head_result.returncode == 0 else "unborn"
+    head = (
+        os.fsdecode(lines[1])
+        if identity.returncode == 0 and len(lines) == 2 else "unborn"
+    )
     tracked = _git(repository, "diff", "--name-only", "-z", "HEAD")
     if tracked.returncode != 0 and head != "unborn":
         return RepositorySnapshot("unknown", None, head, None, "git_diff_failed")

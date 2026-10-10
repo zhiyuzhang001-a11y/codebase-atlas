@@ -23,6 +23,7 @@ from .provider_layout import ensure_managed_provider_cache
 from .python_registration_store import (
     StagedRegistrationIndex,
     load_registration_index_state,
+    registration_index_health,
     stage_registration_index,
 )
 from .refresh_planner import (
@@ -272,6 +273,20 @@ class RefreshCoordinator:
                         self.config.data_dir, self.config.repository, self.config.project
                     )
                 self._replace_status(generation_id, reset_structural=True)
+            else:
+                # A published generation binds index artifacts, not current source.
+                # Revalidate admission even when no refresh changed the manifest.
+                current = operational_index_status(
+                    self.config.data_dir, self.config.repository,
+                    self.config.cache_dir, self.config.project,
+                )
+                if self.config.language == "python":
+                    current["python_registrations"] = registration_index_health(
+                        self.config.data_dir, self.config.repository,
+                        self.config.project,
+                        current.get("source", {}).get("source_fingerprint"),
+                    )
+                self.index_status.update(current)
             snapshot = dict(self.index_status)
             snapshot["coordination"] = {
                 "status": "generation_bound",
