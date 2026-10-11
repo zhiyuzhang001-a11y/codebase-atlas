@@ -1,0 +1,187 @@
+diff --git a/.agents/skills/codebase-atlas/SKILL.md b/.agents/skills/codebase-atlas/SKILL.md
+index d7d3e37..03f7e07 100644
+--- a/.agents/skills/codebase-atlas/SKILL.md
++++ b/.agents/skills/codebase-atlas/SKILL.md
+@@ -20,13 +20,15 @@ Do read-only discovery first. Do not alter account-wide MCP/editor configuration
+ 
+ ## Code navigation
+ 
+-Start with `project_status`. If it is not ready, follow its `next_action` and do not query another repository's index.
++Use direct reading for an already known local implementation; no Atlas call is needed for that task. When Atlas is useful, start with `project_status` and verify this worktree's identity and freshness. If it is not ready, explain the missing evidence and use direct source inspection; follow a suggested mutation only when the task authorizes it.
+ 
+ - For an ordinary local edit with an already known file and implementation, read the source directly.
+-- For unclear natural-language intent, use `locate_files`, inspect the returned files, then resolve an exact symbol.
+-- For a cross-file behavior or contract change, call `analyze_change` with the exact symbol and `target_path` before editing.
++- For unclear natural-language intent, use one bounded `locate_files` request with at most two candidates. Read the candidates before resolving an exact symbol; a returned location is navigation, not implementation evidence. If both are irrelevant or the query budget is exhausted, switch to ordinary search rather than repeating paraphrases.
++- For a cross-file behavior or contract change, confirm the symbol in source, then call `analyze_change` with the exact symbol and `target_path` before editing. Include `target_owner` when needed to disambiguate a member. Prefer `response_mode="compact"` for the initial brief; keep its identity, provenance, freshness, completeness and warnings visible. An ambiguous target is a gap to resolve, not a choice to guess.
+ - Use the narrower definition, caller, callee, reference, impact, or related-test tools only when the Change Brief is unnecessary or reports a specific evidence gap.
+ 
+-Treat `partial`, truncation, timeout, skipped, and not-run fields as missing evidence, not as proof that no dependency or test exists. Fill important gaps with a bounded follow-up query or direct source search. Keep source provenance and index generation in conclusions where stale or cross-worktree facts would be risky.
++Treat `partial`, truncation, timeout, skipped, and not-run fields as missing evidence, not as proof that no dependency or test exists. Fill important gaps with a bounded follow-up query or direct source search. Reuse evidence only while the repository, source state and index generation still match; after editing source, old positions and conclusions require revalidation. Related files do not imply files to modify, and related tests do not prove sufficient coverage. Report actual tests and remaining gaps.
+ 
+-Multiple agents may issue read/query calls concurrently. Give lifecycle, migration, index, and explicit refresh mutations one owning agent while other agents wait. Treat `provider_busy` and `provider_startup_timeout` as transient backpressure: retry within the remaining task budget after the owner finishes, and do not archive or recreate a task merely to recover.
++For unavailable, stale, mismatched or failed evidence, state the reason, its impact on the task and the safe next step once, then continue direct reading when possible. A read/query task does not authorize refresh, lifecycle or configuration changes. For `provider_busy` or `provider_startup_timeout`, allow at most one retry of the same request after the owning operation finishes, within the original task's remaining wait/query budget; otherwise fall back. Do not restart the budget, repeatedly rediscover the same files or ask for approval of ordinary reads.
++
++Multiple agents may issue read/query calls concurrently. Give lifecycle, migration, index, and explicit refresh mutations one owning agent while other agents wait. Do not archive or recreate a task merely to recover from transient backpressure.
+diff --git a/src/codebase_atlas/change_analysis.py b/src/codebase_atlas/change_analysis.py
+index 7341053..bf31b58 100644
+--- a/src/codebase_atlas/change_analysis.py
++++ b/src/codebase_atlas/change_analysis.py
+@@ -131,7 +131,7 @@ def _compact_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+             key: node[key]
+             for key in (
+                 "id", "kind", "name", "location", "provider", "confidence",
+-                "evidence_hash",
++                "evidence_hash", "provenance",
+             )
+             if key in node
+         }
+@@ -147,18 +147,22 @@ def _compact_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+             for key in (
+                 "source_id", "target_id", "relation",
+                 "source", "target", "kind",
+-                "provider", "confidence", "evidence_hash",
++                "provider", "confidence", "evidence_hash", "resolution",
+             )
+             if key in edge
+         }
+         for edge in result.get("edges", [])
+     ]
+-    return {
++    compact_result = {
+         "nodes": nodes,
+         "edges": edges,
+         "counts": {"nodes": len(nodes), "edges": len(edges)},
+         "truncated": bool(result.get("truncated")),
+     }
++    for key in ("status", "completeness", "truncation"):
++        if key in result:
++            compact_result[key] = result[key]
++    return compact_result
+ 
+ 
+ def _compact_brief(brief: dict[str, Any]) -> dict[str, Any]:
+diff --git a/src/codebase_atlas/mcp.py b/src/codebase_atlas/mcp.py
+index d529922..481137d 100644
+--- a/src/codebase_atlas/mcp.py
++++ b/src/codebase_atlas/mcp.py
+@@ -117,7 +117,10 @@ TOOLS = [
+         "title": "Check the active Atlas project",
+         "description": (
+             "Return the resolved repository, project identity, index freshness, "
+-            "automatic update status, and notify-only software version status."
++            "automatic update status, and notify-only software version status. "
++            "Check this worktree before Atlas queries; for an already known local "
++            "implementation, direct source reading needs no Atlas call. Unready or "
++            "mismatched evidence requires direct inspection or an authorized next action."
+         ),
+         "inputSchema": {
+             "type": "object", "properties": {}, "additionalProperties": False
+@@ -160,7 +163,10 @@ TOOLS = [
+         "description": (
+             "Return at most two repository-relative files likely to contain a free-form "
+             "implementation intent. This is heuristic and non-exhaustive; read and search "
+-            "the returned files, then use exact symbol lookup and impact analysis before editing."
++            "the returned files before resolving an exact symbol. Locations are navigation, "
++            "not implementation evidence. If both candidates are irrelevant, use ordinary "
++            "search rather than repeating paraphrases. Use exact impact analysis for a "
++            "cross-file change after source confirmation."
+         ),
+         "inputSchema": {
+             "type": "object",
+@@ -263,7 +269,11 @@ TOOLS = [
+         "title": "Build an exact change brief",
+         "description": (
+             "Resolve one exact target and return bounded implementation, relationship, "
+-            "impact, test, freshness, provenance, and completeness evidence."
++            "impact, test, freshness, provenance, and completeness evidence. Confirm the "
++            "symbol in source and provide target_path (and target_owner for ambiguity). "
++            "Prefer response_mode='compact' for the initial brief; retain its warnings "
++            "and completeness. Partial or not-run test evidence does not mean no tests "
++            "exist, and evidence from before a source edit requires revalidation."
+         ),
+         "inputSchema": {
+             "type": "object",
+diff --git a/tests/test_change_analysis.py b/tests/test_change_analysis.py
+index fd7e0d1..aebb982 100644
+--- a/tests/test_change_analysis.py
++++ b/tests/test_change_analysis.py
+@@ -1,10 +1,11 @@
+ from __future__ import annotations
+ 
++from dataclasses import replace
+ import json
+ import unittest
+ 
+ from codebase_atlas.change_analysis import _compact_result, analyze_change
+-from codebase_atlas.contracts import Node, SourceRange
++from codebase_atlas.contracts import Edge, EvidenceProvenance, Node, SourceRange
+ from codebase_atlas.service import QueryResponse
+ 
+ 
+@@ -44,6 +45,65 @@ class FakeService:
+ 
+ 
+ class ChangeAnalysisTests(unittest.TestCase):
++    def test_compact_keeps_partial_scope_and_relationship_resolution(self) -> None:
++        provenance = {
++            "repository_identity": "/repo", "generation_id": "generation-1",
++            "fact_tier": "T1", "provider": "provider",
++            "provider_version": "1", "completeness": "exact_hits_partial_scope",
++        }
++        for resolution in ("exact", "heuristic", "unresolved"):
++            with self.subTest(resolution=resolution):
++                result = {
++                    "nodes": [{"id": "target", "provenance": provenance}],
++                    "edges": [{"source_id": "caller", "target_id": "target",
++                               "resolution": resolution}],
++                    "status": "exact_hits_partial_scope",
++                    "completeness": {"complete": False, "reason": "scope_gap"},
++                    "truncated": True,
++                    "truncation": {"reasons": ["time_budget_exceeded"],
++                                   "continuation": "next-page"},
++                }
++                compact = _compact_result(result)
++                self.assertEqual(compact["nodes"][0]["provenance"], provenance)
++                self.assertEqual(compact["edges"][0]["resolution"], resolution)
++                for key in ("status", "completeness", "truncated", "truncation"):
++                    self.assertEqual(compact[key], result[key])
++
++    def test_compact_brief_preserves_provider_scope_through_serialization(self) -> None:
++        provenance = EvidenceProvenance(
++            "/repo", "generation-1", "T1", "provider", "1",
++            "exact_hits_partial_scope",
++        )
++
++        class PartialScopeService(FakeService):
++            def query(self, request):
++                result = super().query(request)
++                return replace(
++                    result,
++                    nodes=tuple(replace(node, provenance=provenance)
++                                for node in result.nodes),
++                    edges=() if request.query_type == "definition" else (
++                        Edge("caller", "target", "calls", "provider", 0.5,
++                             HASH, resolution="heuristic"),
++                    ),
++                    status="exact_hits_partial_scope",
++                    completeness={"complete": False, "reason": "scope_gap"},
++                )
++
++        full = analyze_change(PartialScopeService(), "target")
++        compact = json.loads(json.dumps(analyze_change(
++            PartialScopeService(), "target", response_mode="compact"
++        )))
++        self.assertEqual(compact["target"]["provenance"],
++                         full["target"]["provenance"])
++        for name, result in compact["evidence"].items():
++            original = full[name]
++            self.assertFalse(result["completeness"]["complete"])
++            self.assertEqual(result["status"], original["status"])
++            self.assertEqual(result["nodes"][0]["provenance"],
++                             original["nodes"][0]["provenance"])
++            self.assertEqual(result["edges"][0]["resolution"], "heuristic")
++
+     def test_compact_relationship_keeps_edge_identity_and_provenance(self) -> None:
+         compact = _compact_result({
+             "nodes": [],

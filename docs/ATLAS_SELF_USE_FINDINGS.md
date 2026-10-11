@@ -437,3 +437,93 @@ None.
   configuration writes disable newline translation, and Windows link targets
   are normalized without following them. The public matrix is the regression
   proof.
+
+### SELF-028: global Atlas guidance survived a process-only control setup
+
+- Observed task: stage-zero ordinary Codex terminal probe with
+  `--ignore-user-config`, an empty MCP map, Atlas skill disabled, and private
+  common AGENTS guidance. Exact receipts are linked from
+  [the stage-zero execution result](CODEX_EXPERIENCE_STAGE0_EXECUTION_RESULT.md).
+- Expected: the control has neither Atlas tools nor Atlas-specific guidance,
+  without editing global configuration or trust.
+- Actual evidence: the real tool catalog had no Atlas tools, but the raw
+  user instruction message included global `Codebase Atlas deployment routing`.
+  A read-only `debug prompt-input` check with `project_doc_max_bytes=0` and
+  common `developer_instructions` still included that routing. No real Atlas
+  MCP query or paired work was run in this experiment.
+- Safe fallback: stop the paired route, retain failure events and private
+  preparation, and keep global AGENTS/configuration unchanged. Do not tell the
+  model to ignore loaded guidance and call that isolation.
+- Resolution: unresolved. A supported process-only global-guidance isolation
+  mechanism or separately reviewed host/control contract is required. Validate
+  actual loaded guidance and tools in a fresh bounded probe before paired work;
+  preserve the probe/session cap and report the failed first probe separately.
+
+### SELF-029: a host capability probe assumed optional MCP resources were lists
+
+- Observed task: the bounded stage-zero Atlas A probe used the unchanged 0.26.1
+  calibration installation and its private project connection. The real host
+  called `resources/list` and `resources/templates/list`; receipts are recorded
+  in [the stage-zero execution result](CODEX_EXPERIENCE_STAGE0_EXECUTION_RESULT.md).
+- Expected: establish that generic MCP resource functions cannot provide an
+  alternate file-reading route before target-project queries. The experimental
+  gate required empty lists, without first handling a tools-only MCP server.
+- Actual evidence: both calls returned `-32601 Method not found`. The probe
+  stopped before patch, Git, `project_status` or symbol queries, and B did not
+  run. The installed 0.26.1 `McpServer.handle` advertises only tools and rejects
+  non-tool methods, including resource reads. This is an experimental capability
+  contract gap; it does not establish a current-product retrieval regression or
+  a successful target query.
+- Safe fallback: preserve the failed gate and session cost; inspect the exact
+  installed dispatcher read-only. Do not equate a failed list call with an empty
+  list, enable another server, read real private URIs, or replace real host query
+  acceptance with a direct script.
+- Resolution: the finite capability classification was independently reviewed
+  against the exact installation source and a no-service dispatcher diagnostic.
+  A revised tools-only gate keeps the original failure and is valid only while
+  that installation and sole server remain unchanged. Actual A1 target queries
+  subsequently passed their positive/negative controls, but its stderr gate
+  still blocks the full probe. No product source fix or completed stage is claimed.
+
+### SELF-030: compact change briefs discarded evidence qualification
+
+- Observed task: stage-one independent review of the candidate guidance that
+  recommends compact change briefs, against the exact stable 0.27.1 source.
+- Expected: compact evidence retains repository/generation provenance,
+  relationship resolution and each subquery's completeness and truncation.
+- Actual evidence: `_compact_result` removed node `provenance`, edge
+  `resolution`, and subquery `status`, `completeness` and `truncation`.
+  A partial-scope response and heuristic relationship lost those qualifications.
+  Two new regressions fail against the frozen baseline with missing provenance
+  and completeness; the original eight change-analysis tests did not detect it.
+- Safe fallback: use full evidence or explicitly fill missing qualification;
+  do not present a compact heuristic or partial result as exact complete facts.
+- Resolution: candidate presentation fix retains the optional fields without
+  changing queries, schemas or the full default. Direct compact regressions
+  cover exact/heuristic/unresolved edges, and a typed service-to-JSON test checks
+  partial scope through the complete brief. The candidate's 37 protocol/evidence
+  tests pass; independent stage-one re-review and real host validation remain
+  required before claiming the optimization complete.
+
+## SELF-031 — Node 在严格宿主权限下读取 OpenSSL 配置的启动失败
+
+- 观察任务：阶段二 TypeScript 开发 fixture 的 `codex sandbox -P atlas_stage2_work` 公共测试。使用既有 Node v24.19.0、root deny/minimal read，未增加系统文件权限。
+- 预期：实际加载公共测试，再将初始业务断言失败记录为失败；退出码本身不证明测试已执行。
+- 实证：原104项 G0操作中的4次 TS测试均 rc1、stdout0、stderr344bytes；新增测试加载计数检查没有匹配测试执行。最小诊断明确 `BIO_new_file: Operation not permitted`，读取 `/System/Library/OpenSSL//openssl.cnf` 被拒绝，尚未启动模型。原操作与加载失败收据永久保留。
+- 安全回退：只准备进程内 Node `--openssl-config=/dev/null`，MCP child `OPENSSL_CONF=/dev/null`；不修改全局环境或扩大 OS 文件权限。显式 `--test-reporter=tap` 使加载计数可核验，避免误用 v24 默认 spec 输出的格式。
+- 解决验证：v3 追加同 profile 非模型检查的8次公共测试实际加载计数和退出码全部匹配；527项immutable和项目健康证据待独立复核。该检查未运行模型，尚不宣称宿主开发或性能通过。本项是试验 runtime 条件问题，目前未修改 Atlas 产品源码。
+
+## SELF-032 — 私有宿主验证采集器与候选协议不一致，且退出回执不完整
+
+- 观察任务：阶段二首次 Python 只读探针，线程 `01a12b16-fd26-7f23-b53f-76c6770fcb39`。
+- 预期：合法省略 depth 的 compact 查询与既有状态/definition 字段可被严格识别；监督结束时记录明确的自有进程收尾证据。
+- 实际证据：CLI rc0、无 stderr，但采集七处 unresolved，漏识别 coordination/schema_version、误判省略 depth；wrapper 最终退出回执缺失。后续只读精确 PID 核查仅证明两进程不存在，退出码未知。这是私有验证工具缺口，未证明产品查询失败。
+- 安全降级：旧样本永久 measurement_invalid；停止后续模型启动，不补评分、不停止共享 Provider；候选协议通过准确源码检查确认。
+- 前瞻修复及检查：版本化严格字段适配，depth 仅采用服务端已声明默认2；注册并核验自有 PID/argv/启动身份；post-Popen finally 清理、协调 TERM/KILL 等待、有界管道收集。39 项采集、10 项真实合成进程及17项控制器检查通过。独立修复审查和新有限执行卡待完成，阶段二出口未通过。
+
+MAINSELF-032 追加前瞻证据（2026-10-11）：第三次私有 TS 探针日志含9个唯一结束事件而无启动事件，旧控制器误以启动/结束集合必须相同判定不闭合；该历史样本保持 invalid。新版本以完整请求/结果映射和核心未解决项验证未来闭环。纯候选源码调用还发现私有定位适配器漏识别已有 heuristic/non_exhaustive/matched_terms/budget/required_next_action；严格补齐已有来源字段，不修改产品定位行为、不将导航候选算作读取。24项控制器、42项采集和7项实际来源契约检查通过；真实普通任务验证尚待执行，阶段出口仍未闭合。
+
+
+## 2026-10-11 体验优化收尾状态（SELF-028 至 SELF-032）
+
+以上条目保留发现时点；最终状态见[完整收尾](CODEX_EXPERIENCE_CLOSEOUT.md)。SELF-028 的原控制指引隔离失败保留，后续仅采用独立审查的有限控制合同，未证明通用指引移除。SELF-029 的tools-only分类只解决实验能力合同，不改变产品协议。SELF-030 的compact字段保真修复在私有候选中通过37项回归和独立复核，C7提供有限TS真实查询证据；未合并、安装或发布，Python真实资格及整体体验未通过。SELF-031进程内OpenSSL参数让公共测试真实加载，未扩大权限。SELF-032采集/收尾适配只对未来生效，四份历史无效记录仍无效；最后三场采集有效，仍不能替代阶段二全部场景验收。项目已按用户决定暂停，不继续开发或补实验。
