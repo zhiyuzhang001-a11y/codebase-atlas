@@ -1,0 +1,81 @@
+{
+  "rows": [
+    {
+      "receipt": "20261011-atlas-WORK-DEV-A-atlas.launch-result.json",
+      "thread_id": "01a12a7a-7713-7a23-993e-50ba37918754",
+      "observer_frontend_seconds": 29.01318,
+      "official_turn_completed_usage": {
+        "input_tokens": 102382,
+        "cached_input_tokens": 83584,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 348,
+        "reasoning_output_tokens": 0
+      },
+      "exit_code": 0,
+      "timed_out": false,
+      "stderr_complete_empty": true
+    },
+    {
+      "receipt": "20261011-atlas-WORK-DEV-B-atlas.launch-result.json",
+      "thread_id": "01a12a85-e10c-7c61-8c00-b5923a718794",
+      "observer_frontend_seconds": 62.822615,
+      "official_turn_completed_usage": {
+        "input_tokens": 229035,
+        "cached_input_tokens": 199552,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 783,
+        "reasoning_output_tokens": 16
+      },
+      "exit_code": 0,
+      "timed_out": false,
+      "stderr_complete_empty": true
+    },
+    {
+      "receipt": "20261011-atlas-WORK-DEV-B-control.launch-result.json",
+      "thread_id": "01a12a8a-3aac-7473-b542-b443b17e9c03",
+      "observer_frontend_seconds": 45.50248,
+      "official_turn_completed_usage": {
+        "input_tokens": 142118,
+        "cached_input_tokens": 123904,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 677,
+        "reasoning_output_tokens": 35
+      },
+      "exit_code": 0,
+      "timed_out": false,
+      "stderr_complete_empty": true
+    },
+    {
+      "receipt": "20261011-public-scorer-attempt2.launch-result.json",
+      "thread_id": "01a12a9f-eceb-7441-ad46-24d3c70776fc",
+      "observer_frontend_seconds": 272.202822,
+      "official_turn_completed_usage": {
+        "input_tokens": 2574005,
+        "cached_input_tokens": 2497152,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 7748,
+        "reasoning_output_tokens": 367
+      },
+      "exit_code": 0,
+      "timed_out": false,
+      "stderr_complete_empty": true
+    }
+  ],
+  "old_Acontrol_usage": "unknown; lost supervisor stdout not inferred",
+  "first_scorer_launch_attempt": {
+    "seconds": 0.043269,
+    "model_thread_count": 0,
+    "official_usage": "not_emitted; do not infer tokens",
+    "permanent_failed": true
+  },
+  "session_counts": {
+    "probes": 9,
+    "work": 4,
+    "scorer_launch_attempts": 2,
+    "actual_fresh_scoring_model_sessions": 1
+  },
+  "manual_preparation_supervision_restore_hours": "unknown; observer command timestamps do not reconstruct complete human work",
+  "fee_estimate": "not_provided; no inferred dollars",
+  "bounds": "Observed short synthetic work does not estimate real-repository work complexity. Scorer4sample with52reads took272.202822s; formal scoring needs separately budgeted bounded batches before run.",
+  "scope": "stage-zero public calibration only; these are not aggregate project costs or efficiency comparisons"
+}

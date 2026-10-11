@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "source_docs": [
+    {
+      "file": "docs/CODEX_EXPERIENCE_AND_WORKFLOW_MASTER_PLAN.md",
+      "private_source_sha256": "1ba5b1f362e34d11b9783d1deb6bdf6b58467b47c2b656442c7428cdf746413d",
+      "published_sha256": "2a00effe896c1e1b6fdb511420388c94d8d9754965998765afe8d7c9f839dfd3",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained; Rust-only historical relative link pinned to original commit on GitHub"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_AND_WORKFLOW_PLAN_REVIEW.md",
+      "private_source_sha256": "39918117eba4963def04289fff15a46489b4eb7c3d753af7bdbf9d3f82165225",
+      "published_sha256": "0cc2cabd246f19424a8d559c35c55310c1444c5b24aa9aa16e443ad2173e8844",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_STAGE0_EXECUTION_CARD.md",
+      "private_source_sha256": "6ea355c1a00286f48800865385f3defdcd7101c6b2234acefa6f4c3be1db44d4",
+      "published_sha256": "40d5657f7c26424b97f3bfcaac259b3efe7e204881676ed7f055999e89fc0d4a",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_STAGE0_EXECUTION_RESULT.md",
+      "private_source_sha256": "cfad5392ad997d1ea550ee0ccdc46f787353ee15377f604b4461f8bc9c1253f1",
+      "published_sha256": "68cf61438694fd9d316d401bf6dd8c9741cb0e0ed1994eb07bc3ed6b92fbdc6e",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_STAGE0_G0_RESULT.md",
+      "private_source_sha256": "6979e17a3f521aedf9698a5cc4eb182ffb58316f529c356b07938b56d608232a",
+      "published_sha256": "2114c3f0906e7fc1ec855bbbcaa53eceb8a072c55fdc53db17cb78ab5eb45716",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_STAGE0_GAP_CLOSURE.md",
+      "private_source_sha256": "e717c34d20fd37cfb661709a581f04ebe7653180e6080bed0ee9fa479d58edeb",
+      "published_sha256": "b80127375973e6e405784d112df2aa2074d9abddb20cabc0e66df241312ed82d",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_STAGE0_REPORT.md",
+      "private_source_sha256": "946c6446ceee3ea70cfdd1de06f0aa1565231832121b868232c557040ac398fe",
+      "published_sha256": "4a8a9fca2c3b5d1667599834422293cd15e4d8fe8c7cfe5ce2be2956449cee48",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    },
+    {
+      "file": "docs/CODEX_EXPERIENCE_STAGE0_SAFE_PROBE_RESULT.md",
+      "private_source_sha256": "37224e5d9c4cd1374fca9f859b4469d6de8fc6221508113f1d7ca0e5311df7e5",
+      "published_sha256": "dd1c53cbf78c4bfac0f66acbedd0c12b5f9c5186d342c4a1429077f4c6179cd6",
+      "transformation": "archive banner and machine-local path placeholders; historical outcomes retained"
+    }
+  ],
+  "private_evidence_policy": "Bodies of private traces, config/auth, reasoning, hidden truth and anonymous mapping are not published. Private filenames and SHA256 are provenance references, not downloadable evidence. Published hashes identify curated outputs; they do not make unavailable private inputs independently reproducible.",
+  "path_placeholders": "Machine-local absolute paths are replaced, not runnable commands.",
+  "archived_patch_policy": "Documentation attachment only, not applied to source; based on dd6c00eec85f834ead52ed59d01ef3a2cefe666c."
+}
