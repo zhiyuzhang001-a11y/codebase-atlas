@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -19,6 +21,8 @@ from urllib.request import url2pathname
 
 from ..contracts import EvidenceProvenance, Node, SourceRange, repository_path
 from ..index_state import repository_snapshot
+from ..rust_runtime import RustToolchainRuntime, RustRuntimeError
+from ..rust_owned_command import run_owned
 from ..rust_scope import (
     RustScopeError,
     validate_rust_build_context,
@@ -31,6 +35,7 @@ PROVIDER_VERSION = "1.98.0"
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 MAX_STDERR_BYTES = 1024 * 1024
 DEFAULT_READINESS_SECONDS = 60.0
+CLEANUP_GRACE_SECONDS = 10.0
 VersionRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -106,8 +111,9 @@ class RustAnalyzerProvider:
         generation: dict[str, Any],
         *,
         arguments: tuple[str, ...] = (),
-        version_runner: VersionRunner = subprocess.run,
+        version_runner: VersionRunner = run_owned,
         readiness_seconds: float = DEFAULT_READINESS_SECONDS,
+        runtime: RustToolchainRuntime | None = None,
     ) -> None:
         try:
             self.analyzer = analyzer.resolve(strict=True)
@@ -118,6 +124,11 @@ class RustAnalyzerProvider:
         self.generation = dict(generation)
         self.version_runner = version_runner
         self.arguments = tuple(arguments)
+        self.runtime = runtime
+        if runtime is not None and (
+            arguments or self.analyzer != runtime.analyzer.path.absolute()
+        ):
+            raise RustAnalyzerError("Rust analyzer differs from verified runtime")
         if not 0 < readiness_seconds <= DEFAULT_READINESS_SECONDS:
             raise ValueError("Rust analyzer readiness timeout must be between 0 and 60 seconds")
         self.readiness_seconds = readiness_seconds
@@ -153,6 +164,7 @@ class RustAnalyzerProvider:
         self._next_id = 1
         self._opened: dict[str, str] = {}
         self._semantic_ready = False
+        self._cleanup_deadline: float | None = None
 
     def _package_feature_cfgs(self) -> list[str]:
         """Derive all workspace feature cfgs from generation-bound manifests."""
@@ -183,6 +195,10 @@ class RustAnalyzerProvider:
         return bytes(self._stderr).decode("utf-8", "replace")
 
     def _environment(self) -> dict[str, str]:
+        if self.runtime is not None:
+            return self.runtime.environment(self.repository)
+        # Legacy internal qualification harness only. Normal Rust service
+        # construction must supply a receipt-verified runtime.
         environment = os.environ.copy()
         environment.update({
             "CARGO_NET_OFFLINE": "true",
@@ -227,10 +243,21 @@ class RustAnalyzerProvider:
             "jsonrpc": "2.0", "id": message.get("id"), "result": result,
         })
 
+    @contextmanager
+    def _request_ownership(self, timeout_seconds: float):
+        deadline = monotonic() + timeout_seconds
+        if not self._request_lock.acquire(timeout=max(0.0, deadline - monotonic())):
+            self._terminate()
+            raise TimeoutError("rust-analyzer request admission timed out")
+        try:
+            yield deadline
+        finally:
+            self._request_lock.release()
+
     def _request(
         self, method: str, params: dict[str, Any], timeout_seconds: float
     ) -> Any:
-        with self._request_lock:
+        with self._request_ownership(timeout_seconds) as deadline:
             process = self._process
             if process is None or process.stdin is None or process.poll() is not None:
                 raise RustAnalyzerError("rust-analyzer is not running")
@@ -240,7 +267,6 @@ class RustAnalyzerProvider:
                 "jsonrpc": "2.0", "id": request_id,
                 "method": method, "params": params,
             })
-            deadline = monotonic() + timeout_seconds
             while True:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
@@ -274,7 +300,10 @@ class RustAnalyzerProvider:
                 return message.get("result")
 
     def start(self, *, timeout_seconds: float = 30.0) -> None:
-        with self._state_lock:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Rust analyzer startup timeout must be finite and positive")
+        deadline = monotonic() + timeout_seconds
+        with self._startup_lock(deadline, maximum_wait=timeout_seconds):
             if self.running:
                 return
             try:
@@ -283,32 +312,34 @@ class RustAnalyzerProvider:
                 raise RustAnalyzerError("rust-analyzer is unavailable") from exc
             if not stat.S_ISREG(metadata.st_mode):
                 raise RustAnalyzerError("rust-analyzer binary is unsafe")
-            version = self.version_runner(
-                [str(self.analyzer), *self.arguments, "--version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=self._environment(),
-            )
+            try:
+                environment = self._environment()
+                version = self.version_runner(
+                    [str(self.analyzer), *self.arguments, "--version"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    cwd=self.repository,
+                    timeout=min(5.0, self._remaining_startup(deadline)),
+                    env=environment,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise TimeoutError("rust-analyzer version probe timed out") from exc
             if version.returncode != 0 or not version.stdout.startswith(
                 f"rust-analyzer {PROVIDER_VERSION} "
             ):
                 raise RustAnalyzerError("rust-analyzer version mismatch")
-            process = subprocess.Popen(
-                [str(self.analyzer), *self.arguments],
-                cwd=self.repository,
-                env=self._environment(),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-                start_new_session=os.name != "nt",
-                creationflags=(
-                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    if os.name == "nt" else 0
-                ),
-            )
+            environment = self._environment()
+            self._remaining_startup(deadline)
+            if os.name == "nt":
+                from ..windows_owned_process import WindowsOwnedProcess
+                process = WindowsOwnedProcess([str(self.analyzer), *self.arguments],
+                                               cwd=self.repository, env=environment)
+            else:
+                process = subprocess.Popen(
+                    [str(self.analyzer), *self.arguments], cwd=self.repository,
+                    env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, bufsize=0, start_new_session=True)
             if process.stdin is None or process.stdout is None or process.stderr is None:
                 process.kill()
                 raise RustAnalyzerError("rust-analyzer lacks stdio pipes")
@@ -346,24 +377,47 @@ class RustAnalyzerProvider:
                             "cfgs": self._cargo_cfgs,
                             "features": self.build_context["cargo_features"],
                             "noDeps": self.build_context["cargo_no_deps"],
+                            # Pinned analyzer filters general extraArgs for
+                            # metadata; its dedicated option must carry this.
+                            "metadataExtraArgs": ["--offline"],
                         },
                         "procMacro": {"enable": False},
                         "cachePriming": {"enable": False},
                         "checkOnSave": False,
                     },
-                }, timeout_seconds)
+                }, self._remaining_startup(deadline))
                 if not isinstance(result, dict) or not isinstance(
                     result.get("capabilities"), dict
                 ):
                     raise RustAnalyzerError("rust-analyzer initialize result is invalid")
                 self._notify("initialized")
-                self._wait_ready()
+                self._wait_ready(deadline=deadline)
             except BaseException:
                 self._terminate()
                 raise
 
-    def _wait_ready(self) -> None:
-        deadline = monotonic() + self.readiness_seconds
+    @staticmethod
+    def _remaining_startup(deadline: float) -> float:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("rust-analyzer startup budget exceeded")
+        return remaining
+
+    @contextmanager
+    def _startup_lock(self, deadline: float, *, maximum_wait: float):
+        # Absolute-deadline subtraction can round slightly above the original
+        # duration. Never enlarge even a very small caller's lock-wait budget.
+        remaining = min(maximum_wait, self._remaining_startup(deadline))
+        if not self._state_lock.acquire(timeout=remaining):
+            raise TimeoutError("rust-analyzer startup lock timed out")
+        try:
+            yield
+        finally:
+            self._state_lock.release()
+
+    def _wait_ready(self, *, deadline: float | None = None) -> None:
+        readiness_deadline = monotonic() + self.readiness_seconds
+        deadline = min(deadline, readiness_deadline) if deadline is not None else readiness_deadline
         while True:
             remaining = deadline - monotonic()
             if remaining <= 0:
@@ -380,7 +434,7 @@ class RustAnalyzerProvider:
                 graph = self._request(
                     "rust-analyzer/viewCrateGraph",
                     {"full": False},
-                    min(2.0, max(0.001, deadline - monotonic())),
+                    min(2.0, self._remaining_startup(deadline)),
                 )
                 if isinstance(graph, str):
                     body = graph.partition("{")[2].rpartition("}")[0].strip()
@@ -476,9 +530,17 @@ class RustAnalyzerProvider:
                 start.get("line"), start.get("character"),
                 end.get("line"), end.get("character"),
             )
-            if not all(isinstance(value, int) and value >= 0 for value in coordinates):
+            if not all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in coordinates):
                 raise RustAnalyzerError("rust-analyzer result position is invalid")
             path = self._relative_uri(uri)
+            source = self._open(path)
+            lines = source.splitlines()
+            if source.endswith("\n"):
+                lines.append("")
+            start_column = self._public_column(lines, coordinates[0], coordinates[1])
+            end_column = self._public_column(lines, coordinates[2], coordinates[3])
+            if (coordinates[2], end_column) < (coordinates[0], start_column):
+                raise RustAnalyzerError("rust-analyzer result range is reversed")
             evidence = {
                 "query_type": query_type,
                 "symbol": symbol,
@@ -490,7 +552,7 @@ class RustAnalyzerProvider:
             nodes.append(Node(
                 id=(
                     f"rust-ra:{self.generation['generation_id']}:{query_type}:"
-                    f"{path}:{coordinates[0] + 1}:{coordinates[1] + 1}:"
+                    f"{path}:{coordinates[0] + 1}:{start_column}:"
                     f"{evidence_hash[:16]}"
                 ),
                 kind="reference" if query_type == "references" else "definition",
@@ -499,8 +561,8 @@ class RustAnalyzerProvider:
                     path,
                     coordinates[0] + 1,
                     coordinates[2] + 1,
-                    coordinates[1] + 1,
-                    coordinates[3] + 1,
+                    start_column,
+                    end_column,
                 ),
                 provider=PROVIDER_NAME,
                 confidence=1.0,
@@ -516,6 +578,21 @@ class RustAnalyzerProvider:
                 ),
             ))
         return tuple(nodes)
+
+    @staticmethod
+    def _public_column(lines: list[str], line: int, utf16_column: int) -> int:
+        if line >= len(lines):
+            raise RustAnalyzerError("rust-analyzer result position is outside the file")
+        units = 0
+        for offset, character in enumerate(lines[line]):
+            if units == utf16_column:
+                return offset + 1
+            units += len(character.encode("utf-16-le")) // 2
+            if units > utf16_column:
+                raise RustAnalyzerError("rust-analyzer result splits a UTF-16 character")
+        if units == utf16_column:
+            return len(lines[line]) + 1
+        raise RustAnalyzerError("rust-analyzer result position is outside the file")
 
     def query(
         self,
@@ -539,6 +616,24 @@ class RustAnalyzerProvider:
             raise ValueError("Rust analyzer source position must be positive")
         if not isinstance(timeout_ms, int) or isinstance(timeout_ms, bool) or not 1 <= timeout_ms <= 300_000:
             raise ValueError("timeout_ms must be between 1 and 300000")
+        deadline = monotonic() + min(timeout_ms / 1000.0, self.readiness_seconds)
+        def validate_runtime() -> None:
+            # Startup validation alone cannot protect later requests on a live
+            # analyzer. Recheck at request/result boundaries; this is NOT an
+            # immutable observation window or interception of native children.
+            if self.runtime is not None:
+                try:
+                    self.runtime.environment(self.repository)
+                except RustRuntimeError:
+                    self._terminate()
+                    raise
+
+        def check_runtime() -> None:
+            validate_runtime()
+            if monotonic() >= deadline:
+                self._terminate()
+                raise TimeoutError("rust-analyzer runtime validation timed out")
+        check_runtime()
         self._assert_fresh()
         source = self._open(source_path)
         lines = source.splitlines()
@@ -553,25 +648,33 @@ class RustAnalyzerProvider:
             "textDocument": {
                 "uri": (self.repository / repository_path(source_path)).resolve().as_uri()
             },
-            "position": {"line": source_line - 1, "character": source_column - 1},
+            "position": {
+                "line": source_line - 1,
+                "character": len(lines[source_line - 1][:source_column - 1].encode("utf-16-le")) // 2,
+            },
         }
         if query_type == "references":
             params["context"] = {"includeDeclaration": True}
-        deadline = monotonic() + min(timeout_ms / 1000.0, self.readiness_seconds)
         delay = 0.05
         saw_empty = False
         while True:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 if saw_empty:
+                    # Preserve the bounded empty-stabilization result, but do
+                    # not publish it after unsafe changes during the last sleep.
+                    # This final policy check grants no new request/retry budget.
+                    validate_runtime()
                     self._semantic_ready = True
                     return ()
                 self._terminate()
                 raise TimeoutError("rust-analyzer readiness retry timed out")
             try:
-                nodes = self._nodes(
-                    self._request(method, params, remaining), query_type, symbol
-                )
+                check_runtime()
+                remaining = deadline - monotonic()
+                response = self._request(method, params, remaining)
+                check_runtime()
+                nodes = self._nodes(response, query_type, symbol)
                 if nodes or self._semantic_ready:
                     self._semantic_ready = True
                     return nodes
@@ -590,6 +693,9 @@ class RustAnalyzerProvider:
                 delay = min(delay * 2.0, 1.0)
 
     def _terminate(self) -> None:
+        deadline = self._cleanup_deadline or (monotonic() + CLEANUP_GRACE_SECONDS)
+        def budget(maximum: float) -> float:
+            return min(maximum, max(0.0, deadline - monotonic()))
         process = self._process
         self._process = None
         if process is not None and process.poll() is None:
@@ -599,18 +705,9 @@ class RustAnalyzerProvider:
                 except ProcessLookupError:
                     pass
             else:
-                # Terminating only the parent leaves analyzer-owned workers alive.
-                # Kill the tree while its parent PID still identifies that tree.
-                try:
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        check=False, capture_output=True, timeout=3,
-                    )
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
                 process.terminate()
             try:
-                process.wait(timeout=3)
+                process.wait(timeout=budget(3))
             except subprocess.TimeoutExpired:
                 if os.name != "nt":
                     try:
@@ -619,7 +716,44 @@ class RustAnalyzerProvider:
                         pass
                 else:
                     process.kill()
-                process.wait(timeout=3)
+                try:
+                    process.wait(timeout=budget(3))
+                except subprocess.TimeoutExpired:
+                    # Do not silently claim cleanup success. Close pipes and
+                    # release reader ownership before reporting an unreaped PID.
+                    cleanup_failed = True
+                else:
+                    cleanup_failed = False
+            else:
+                cleanup_failed = False
+        else:
+            cleanup_failed = False
+        # The parent can exit before its workers. Its owned POSIX session still
+        # needs cleanup even when poll()/wait() already reported parent exit.
+        group_error = None
+        if process is not None and os.name != "nt":
+            while True:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    break
+                except PermissionError as exc:
+                    # A denied signal is not proof that the group is gone.
+                    # Retry only this owned group within the existing grace;
+                    # persistent denial remains failure after pipe/thread cleanup.
+                    remaining = budget(.02)
+                    if remaining <= 0:
+                        group_error = exc
+                        break
+                    sleep(remaining)
+                else:
+                    break
+        job_error = None
+        if process is not None and hasattr(process, "close_owned_job"):
+            try:
+                process.close_owned_job(budget(CLEANUP_GRACE_SECONDS))
+            except (OSError, TimeoutError) as exc:
+                job_error = exc
         for stream in (
             process.stdin if process is not None else None,
             process.stdout if process is not None else None,
@@ -632,25 +766,35 @@ class RustAnalyzerProvider:
                     pass
         for thread in (self._reader_thread, self._stderr_thread):
             if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=1)
+                thread.join(timeout=budget(1))
         self._reader_thread = None
         self._stderr_thread = None
         self._opened = {}
         self._semantic_ready = False
+        if cleanup_failed:
+            raise RustAnalyzerError("rust-analyzer did not exit within cleanup grace")
+        if group_error is not None:
+            raise RustAnalyzerError("rust-analyzer POSIX process-group cleanup failed") from group_error
+        if job_error is not None:
+            raise RustAnalyzerError("rust-analyzer Windows Job cleanup failed") from job_error
 
     def close(self) -> None:
         process = self._process
         if process is None:
             return
+        self._cleanup_deadline = monotonic() + CLEANUP_GRACE_SECONDS
         try:
             if process.poll() is None:
-                self._request("shutdown", {}, 5.0)
+                self._request("shutdown", {}, 1.0)
                 self._notify("exit")
-                process.wait(timeout=5)
+                process.wait(timeout=min(1.0, max(0.0, self._cleanup_deadline - monotonic())))
         except (OSError, RustAnalyzerError, TimeoutError, subprocess.TimeoutExpired):
             pass
         finally:
-            self._terminate()
+            try:
+                self._terminate()
+            finally:
+                self._cleanup_deadline = None
 
     def __enter__(self) -> "RustAnalyzerProvider":
         self.start()

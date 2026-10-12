@@ -65,7 +65,7 @@ class VersionedInstallation:
     root: Path
     python: Path
     atlas_executable: Path
-    provider_binary: Path
+    provider_binary: Path | None
     provider_version: str
     wheel_sha256: str
     provider_sha256: str

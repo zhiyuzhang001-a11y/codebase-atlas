@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
@@ -10,10 +11,31 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from codebase_atlas.config import AtlasConfig, default_data_dir, diagnose
-from codebase_atlas.index_state import record_index_state
+from codebase_atlas.index_state import record_index_state, repository_snapshot
 
 
 class ConfigTests(unittest.TestCase):
+    def test_rust_discovery_does_not_require_unrelated_language_tools(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            repo = root / "repo"
+            repo.mkdir()
+            receipt = root / "verified-install/receipt.json"
+            with patch("codebase_atlas.config._which", side_effect=AssertionError("must not discover Node or CBM")):
+                config = AtlasConfig.discover(repo, language="rust", rust_runtime_receipt=receipt,
+                                              data_dir=root / "data")
+            self.assertIsNone(config.node)
+            self.assertIsNone(config.cbm_binary)
+            self.assertIsNone(config.serena_python)
+            self.assertEqual(config.rust_runtime_receipt, receipt)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+            before = repository_snapshot(repo)
+            path = repo / ".codebase-atlas.toml"
+            config.write(path)
+            self.assertIn("schema_version = 2", config.render())
+            self.assertEqual(AtlasConfig.load(path), config)
+            self.assertEqual(repository_snapshot(repo).fingerprint, before.fingerprint)
+
     def test_language_registry_validates_config_and_keeps_rust_internal(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -55,15 +55,16 @@ def default_data_dir(repository: Path) -> Path:
 class AtlasConfig:
     repository: Path
     language: str
-    node: Path
-    cbm_binary: Path
-    serena_python: Path
+    node: Path | None
+    cbm_binary: Path | None
+    serena_python: Path | None
     data_dir: Path
     project: str = ""
     node_bin_dir: Path | None = None
     tsconfig: Path | None = None
     provider_layout: str = LEGACY_PROVIDER_LAYOUT
     legacy_project: str = ""
+    rust_runtime_receipt: Path | None = None
 
     def __post_init__(self) -> None:
         get_language(self.language)
@@ -72,7 +73,15 @@ class AtlasConfig:
         # Preserve virtualenv interpreter symlinks; resolving them bypasses
         # pyvenv.cfg and silently loses the installed Serena environment.
         for name in ("node", "cbm_binary", "serena_python"):
-            object.__setattr__(self, name, getattr(self, name).absolute())
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, value.absolute())
+            elif self.language != "rust" or self.rust_runtime_receipt is None:
+                raise ValueError(f"missing runtime: {name}")
+        if self.rust_runtime_receipt is not None:
+            if self.language != "rust":
+                raise ValueError("Rust runtime receipt requires language=rust")
+            object.__setattr__(self, "rust_runtime_receipt", self.rust_runtime_receipt.absolute())
         if self.node_bin_dir is not None:
             object.__setattr__(self, "node_bin_dir", self.node_bin_dir.absolute())
         if self.tsconfig is not None:
@@ -131,10 +140,20 @@ class AtlasConfig:
         node_bin_dir: Path | None = None,
         tsconfig: Path | None = None,
         data_dir: Path | None = None,
+        rust_runtime_receipt: Path | None = None,
     ) -> "AtlasConfig":
         repo = repository.resolve()
         selected_language = language or default_language(repo, tsconfig=tsconfig)
         get_language(selected_language)
+        if selected_language == "rust":
+            if rust_runtime_receipt is None:
+                raise ValueError("missing Rust runtime: verified installation receipt required")
+            return cls(
+                repo, "rust", None, None, None,
+                (data_dir or default_data_dir(repo)).resolve(),
+                project=provider_project_identity(repo),
+                rust_runtime_receipt=rust_runtime_receipt,
+            )
         discovered_node = node or _which("node", "ATLAS_NODE")
         discovered_cbm = cbm_binary or _which("codebase-memory-mcp", "ATLAS_CBM_BINARY")
         discovered_serena = serena_python or (
@@ -164,16 +183,24 @@ class AtlasConfig:
         value = tomllib.loads(path.read_text(encoding="utf-8"))
         runtime = value["runtime"]
         project = value["project"]
+        schema = value.get("schema_version")
+        if isinstance(schema, bool) or schema not in {1, 2} or (
+            schema == 2 and (project.get("language") != "rust" or not runtime.get("rust_runtime_receipt"))
+        ):
+            raise ValueError("unsupported Atlas configuration schema")
         node_bin = runtime.get("node_bin_dir", "")
         tsconfig = project.get("tsconfig", "")
         return cls(
             Path(project["repository"]), project["language"],
-            Path(runtime["node"]), Path(runtime["cbm_binary"]),
-            Path(runtime["serena_python"]), Path(project["data_dir"]),
+            Path(runtime["node"]) if runtime.get("node") else None,
+            Path(runtime["cbm_binary"]) if runtime.get("cbm_binary") else None,
+            Path(runtime["serena_python"]) if runtime.get("serena_python") else None,
+            Path(project["data_dir"]),
             project.get("cbm_project", ""), Path(node_bin) if node_bin else None,
             Path(tsconfig) if tsconfig else None,
             project.get("provider_layout", LEGACY_PROVIDER_LAYOUT),
             project.get("legacy_cbm_project", ""),
+            Path(runtime["rust_runtime_receipt"]) if runtime.get("rust_runtime_receipt") else None,
         )
 
     def with_project(self, project: str) -> "AtlasConfig":
@@ -182,8 +209,9 @@ class AtlasConfig:
     def render(self) -> str:
         quote = lambda value: str(value).replace("\\", "\\\\").replace('"', '\\"')
         node_bin = quote(self.node_bin_dir) if self.node_bin_dir else ""
-        return (
-            "schema_version = 1\n\n[project]\n"
+        schema = 2 if self.rust_runtime_receipt is not None else 1
+        rendered = (
+            f"schema_version = {schema}\n\n[project]\n"
             f'repository = "{quote(self.repository)}"\n'
             f'language = "{self.language}"\n'
             f'data_dir = "{quote(self.data_dir)}"\n'
@@ -191,11 +219,14 @@ class AtlasConfig:
             f'provider_layout = "{self.provider_layout}"\n'
             f'legacy_cbm_project = "{quote(self.legacy_project)}"\n'
             f'tsconfig = "{quote(self.tsconfig) if self.tsconfig else ""}"\n\n[runtime]\n'
-            f'node = "{quote(self.node)}"\n'
+            f'node = "{quote(self.node) if self.node else ""}"\n'
             f'node_bin_dir = "{node_bin}"\n'
-            f'cbm_binary = "{quote(self.cbm_binary)}"\n'
-            f'serena_python = "{quote(self.serena_python)}"\n'
+            f'cbm_binary = "{quote(self.cbm_binary) if self.cbm_binary else ""}"\n'
+            f'serena_python = "{quote(self.serena_python) if self.serena_python else ""}"\n'
         )
+        if self.rust_runtime_receipt is not None:
+            rendered += f'rust_runtime_receipt = "{quote(self.rust_runtime_receipt)}"\n'
+        return rendered
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8", newline="") as stream:
@@ -278,8 +309,6 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
     from .runtime import runtime_checks
 
     freshness = index_freshness(config.data_dir, config.repository, config.project)
-    provider_database = provider_database_health(config.cache_dir, config.project)
-    shared_root = inspect_provider_root(config.shared_cache_dir)
     kwargs = {} if runner is None else {"runner": runner}
     checks = runtime_checks(
         config.repository,
@@ -289,8 +318,38 @@ def diagnose(config: AtlasConfig, *, runner=None) -> list[dict[str, object]]:
         serena_python=config.serena_python,
         node_bin_dir=config.node_bin_dir,
         tsconfig=config.tsconfig,
+        rust_runtime_receipt=config.rust_runtime_receipt,
         **kwargs,
     )
+    if config.language == "rust":
+        from .languages import get_language
+        from .rust_project import load_rust_service
+        generation_ok, detail = False, "Rust is not product-enabled"
+        if get_language("rust").public_enabled and all(
+            item["ok"] for item in checks if item.get("required", True)
+        ):
+            try:
+                service = load_rust_service(config)
+                generation_ok = True
+                detail = "exact Rust generation and checksum-verified T1 artifact agree"
+                service.close()
+            except (OSError, ValueError, RuntimeError) as exc:
+                detail = str(exc)
+        checks.extend([
+            {"name": "indexed_project", "ok": bool(config.project), "required": True,
+             "path": "", "version": "", "detail": config.project or "project identity missing",
+             "remediation": "" if config.project else "enable the exact Rust project"},
+            {"name": "index_freshness", "ok": bool(freshness["ok"]), "required": True,
+             "path": str(config.data_dir / "index-state.json"), "version": "",
+             "detail": f"{freshness['status']}: {freshness['reason']}",
+             "remediation": "" if freshness["ok"] else "refresh this Rust project's index"},
+            {"name": "rust_generation", "ok": generation_ok, "required": True,
+             "path": str(config.data_dir), "version": "", "detail": detail,
+             "remediation": "" if generation_ok else "verify or rebuild this Rust generation"},
+        ])
+        return checks
+    provider_database = provider_database_health(config.cache_dir, config.project)
+    shared_root = inspect_provider_root(config.shared_cache_dir)
     checks.extend([
         {
             "name": "indexed_project", "ok": bool(config.project), "required": True,

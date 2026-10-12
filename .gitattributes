@@ -1,4 +1,5 @@
 vendor/typescript/LICENSE.txt whitespace=-trailing-space,cr-at-eol
+LICENSE text eol=lf
 .agents/skills/codebase-atlas/SKILL.md text eol=lf
 native/rust-syntax-scanner/Cargo.toml text eol=lf
 native/rust-syntax-scanner/Cargo.lock text eol=lf

@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "toolchain": "1.98.0",
+  "release_date": "2026-08-20",
+  "manifest_url": "https://static.rust-lang.org/dist/channel-rust-1.98.0.toml",
+  "manifest_sha256": "3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a",
+  "targets": {
+    "linux-x86_64": {
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "components": {
+        "rust-analyzer-preview": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-analyzer-1.98.0-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "624e3415f1c85906a463b3bac05d6fa9e160124c42e1c2466bb5c24b7855162a",
+          "available": true
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/cargo-1.98.0-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "2f512d170d3dd23e16ababcda32ee2e6d5172d861a7af1f504e0b1e270cafab9",
+          "available": true
+        },
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustc-1.98.0-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "0e37cb339f447fc44d6d781073bacacebfdc5612f2600e4c7e84c266f5f3aced",
+          "available": true
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-std-1.98.0-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "f5022e6c95a5ad23cca2513dc8281200f585fa188de6370aa37b128a43f876a3",
+          "available": true
+        }
+      }
+    },
+    "linux-arm64": {
+      "rust_target": "aarch64-unknown-linux-gnu",
+      "components": {
+        "rust-analyzer-preview": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-analyzer-1.98.0-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "6d5a938ef325aaead263c38a9052e0f4b2bc1a444fcc3cf49c97f6a6df0896f8",
+          "available": true
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/cargo-1.98.0-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "5784379d73ac881d15a9e67eed2882cd58c747c276221c23cdf9aff37e015ff6",
+          "available": true
+        },
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustc-1.98.0-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "00590657f2356d7163ca5ef295283523974c340fa21bb94b420ce794f29b358c",
+          "available": true
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-std-1.98.0-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "a36f7ac98af20ef0ba6368aace0345efabbebaef7962eba99f47190fd256162d",
+          "available": true
+        }
+      }
+    },
+    "macos-arm64": {
+      "rust_target": "aarch64-apple-darwin",
+      "components": {
+        "rust-analyzer-preview": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-analyzer-1.98.0-aarch64-apple-darwin.tar.xz",
+          "sha256": "d705dbad8ccb574d21bfdd486ad222e7127dac13c86d3798080111be907a818d",
+          "available": true
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/cargo-1.98.0-aarch64-apple-darwin.tar.xz",
+          "sha256": "2c2a8bbf3cba4353c0ca2cf1ba8280603f3ca82ceebb538fee4a1a987147f743",
+          "available": true
+        },
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustc-1.98.0-aarch64-apple-darwin.tar.xz",
+          "sha256": "287edbc2e285b9c23ef7b085413b90cb8539909eda9c4b49f2a55ec0b52819d4",
+          "available": true
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-std-1.98.0-aarch64-apple-darwin.tar.xz",
+          "sha256": "48c05269ed36fb5f0a8438065156891fe59fcb868d90cfed9b7209540d54b2ce",
+          "available": true
+        }
+      }
+    },
+    "windows-x86_64": {
+      "rust_target": "x86_64-pc-windows-msvc",
+      "components": {
+        "rust-analyzer-preview": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-analyzer-1.98.0-x86_64-pc-windows-msvc.tar.xz",
+          "sha256": "1b0dc2c4076a3c1fe1b7e14af62b81c2226fe3fc77bebffc2fc361ec635b2865",
+          "available": true
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/cargo-1.98.0-x86_64-pc-windows-msvc.tar.xz",
+          "sha256": "c781bbfd0d0859349a14f82c04073521c036f7ada59c0fd14ef0722d035bb361",
+          "available": true
+        },
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustc-1.98.0-x86_64-pc-windows-msvc.tar.xz",
+          "sha256": "a29cdefc01c747e15270ec64878adba4b0a88afaa7f19e3abf9231106fbd381b",
+          "available": true
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-std-1.98.0-x86_64-pc-windows-msvc.tar.xz",
+          "sha256": "81d123f834111ebeaf8b1eed0e93b0b66ea4bcf4cc1d3836d9a0314d4ea94a73",
+          "available": true
+        }
+      }
+    },
+    "windows-arm64": {
+      "rust_target": "aarch64-pc-windows-msvc",
+      "components": {
+        "rust-analyzer-preview": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-analyzer-1.98.0-aarch64-pc-windows-msvc.tar.xz",
+          "sha256": "ff79cb9a67ef22d8a5d0ae36b18dba92e087130bdd02aa9981c1ab520c75285b",
+          "available": true
+        },
+        "cargo": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/cargo-1.98.0-aarch64-pc-windows-msvc.tar.xz",
+          "sha256": "6d939ba34b790d4e03cdaca6c1568d9bc14cdb7b06c29c6213c266ea70478b6b",
+          "available": true
+        },
+        "rustc": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustc-1.98.0-aarch64-pc-windows-msvc.tar.xz",
+          "sha256": "5c47ea5a6b04ac437530be856d65d3aac04e4e54c4668e632f7ed203570e4ead",
+          "available": true
+        },
+        "rust-std": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rust-std-1.98.0-aarch64-pc-windows-msvc.tar.xz",
+          "sha256": "df28cbf39697dfbfac0633814b56c1ca6f07fd32a70ab2074cb095f3871ae338",
+          "available": true
+        }
+      }
+    }
+  },
+  "rust_src": {
+    "url": "https://static.rust-lang.org/dist/2026-08-20/rust-src-1.98.0.tar.xz",
+    "sha256": "0e977492aed5ff137815bf9b4b796e8a85b80fb2367ed64e82d5c5839870f2bf",
+    "available": true
+  }
+}

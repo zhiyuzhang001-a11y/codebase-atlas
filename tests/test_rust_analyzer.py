@@ -17,9 +17,11 @@ from codebase_atlas.providers.rust_analyzer import (
     PROVIDER_VERSION,
     RustAnalyzerError,
     RustAnalyzerProvider,
+    RustAnalyzerResponseError,
     _read_lsp_frame,
 )
 from codebase_atlas.refresh_planner import build_generation_manifest
+from codebase_atlas.rust_runtime import RustRuntimeError
 
 
 def git(repository: Path, *args: str) -> None:
@@ -133,17 +135,146 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             created_at="generation:generation-1",
         )
 
-    def provider(self) -> RustAnalyzerProvider:
+    def provider(self, *, readiness_seconds: float = 1) -> RustAnalyzerProvider:
         provider = RustAnalyzerProvider(
             Path(sys.executable),
             self.repository,
             "rust-project",
             self.generation,
             arguments=(str(self.analyzer),),
-            readiness_seconds=1,
+            readiness_seconds=readiness_seconds,
         )
         self.addCleanup(provider.close)
         return provider
+
+    def test_verified_runtime_preflight_blocks_version_and_spawn(self):
+        runtime = Mock()
+        runtime.analyzer.path = Path(sys.executable).resolve()
+        runtime.environment.side_effect = RustRuntimeError("unsafe configuration")
+        version = Mock()
+        provider = RustAnalyzerProvider(
+            runtime.analyzer.path, self.repository, "rust-project", self.generation,
+            runtime=runtime, version_runner=version,
+        )
+        with patch("codebase_atlas.providers.rust_analyzer.subprocess.Popen") as spawn:
+            with self.assertRaisesRegex(RustRuntimeError, "unsafe configuration"):
+                provider.start()
+            version.assert_not_called()
+            spawn.assert_not_called()
+
+    def test_verified_runtime_rejects_extra_executable_arguments(self):
+        runtime = Mock()
+        runtime.analyzer.path = Path(sys.executable).resolve()
+        with self.assertRaisesRegex(RustAnalyzerError, "verified runtime"):
+            RustAnalyzerProvider(
+                runtime.analyzer.path, self.repository, "rust-project", self.generation,
+                runtime=runtime, arguments=(str(self.analyzer),),
+            )
+
+    def test_active_runtime_rejection_stops_session_before_query_request(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            process = provider._process
+            provider.runtime = Mock()
+            provider.runtime.environment.side_effect = RustRuntimeError("changed unsafe config")
+            with patch.object(provider, "_request") as request:
+                with self.assertRaisesRegex(RustRuntimeError, "changed unsafe config"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17)
+                request.assert_not_called()
+            self.assertFalse(provider.running)
+            self.assertIsNotNone(process.poll())
+
+    def test_runtime_change_during_response_discards_nodes_and_stops_session(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            process = provider._process
+            provider.runtime = Mock()
+            provider.runtime.environment.side_effect = [{}, {}, RustRuntimeError("changed during request")]
+            location = {"uri": (self.repository / "src/lib.rs").as_uri(),
+                        "range": {"start": {"line": 0, "character": 7},
+                                  "end": {"line": 0, "character": 10}}}
+            # This case isolates result-boundary validation, not Git snapshot
+            # latency. Slow native Windows Git must not consume the one-second
+            # query budget before the mocked response is reached. Freshness and
+            # end-to-end deadline behavior have separate regressions below.
+            with patch.object(provider, "_assert_fresh") as fresh, \
+                    patch.object(provider, "_request", return_value=[location]) as request:
+                with self.assertRaisesRegex(RustRuntimeError, "changed during request"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17)
+                fresh.assert_called_once()
+                request.assert_called_once()
+            self.assertEqual(provider.runtime.environment.call_count, 3)
+            self.assertFalse(provider.running)
+            self.assertIsNotNone(process.poll())
+
+    def test_active_runtime_validation_consumes_existing_query_deadline(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            elapsed = [0.0]
+            provider.runtime = Mock()
+            def validation(_repository):
+                elapsed[0] += .2
+                return {}
+            provider.runtime.environment.side_effect = validation
+            with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                       side_effect=lambda: elapsed[0]), patch.object(provider, "_open") as opened:
+                with self.assertRaisesRegex(TimeoutError, "runtime validation timed out"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17, timeout_ms=50)
+                opened.assert_not_called()
+            self.assertFalse(provider.running)
+
+    def test_empty_readiness_deadline_revalidates_before_return(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            process = provider._process
+            clock = [0.0]
+            provider.runtime = Mock()
+            provider.runtime.environment.side_effect = [
+                {}, {}, {}, RustRuntimeError("changed during stabilization"),
+            ]
+            def stabilization_sleep(_seconds):
+                clock[0] = .1
+            with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                       side_effect=lambda: clock[0]), patch(
+                           "codebase_atlas.providers.rust_analyzer.sleep",
+                           side_effect=stabilization_sleep), patch.object(
+                               provider, "_request", return_value=[]) as request:
+                with self.assertRaisesRegex(RustRuntimeError, "changed during stabilization"):
+                    provider.query("definition", "run", source_path="src/lib.rs",
+                                   source_line=2, source_column=17, timeout_ms=50)
+                self.assertEqual(request.call_count, 1)
+            self.assertFalse(provider._semantic_ready)
+            self.assertFalse(provider.running)
+            self.assertIsNotNone(process.poll())
+
+    def test_safe_empty_readiness_deadline_keeps_empty_result_contract(self):
+        with patch.dict(os.environ, {"FAKE_RA_LOG": str(self.log)}):
+            provider = self.provider()
+            provider.start(timeout_seconds=1)
+            clock = [0.0]
+            provider.runtime = Mock()
+            provider.runtime.environment.return_value = {}
+            def stabilization_sleep(_seconds):
+                clock[0] = .1
+            with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                       side_effect=lambda: clock[0]), patch(
+                           "codebase_atlas.providers.rust_analyzer.sleep",
+                           side_effect=stabilization_sleep), patch.object(
+                               provider, "_request", return_value=[]) as request:
+                self.assertEqual(provider.query(
+                    "definition", "run", source_path="src/lib.rs",
+                    source_line=2, source_column=17, timeout_ms=50), ())
+                self.assertEqual(request.call_count, 1)
+            self.assertEqual(provider.runtime.environment.call_count, 4)
+            self.assertTrue(provider._semantic_ready)
+            self.assertTrue(provider.running)
 
     def test_result_uri_round_trips_native_path(self) -> None:
         provider = self.provider()
@@ -155,6 +286,104 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             provider._relative_uri("file://foreign.invalid/src/lib.rs")
         with self.assertRaisesRegex(RustAnalyzerError, "unavailable"):
             provider._relative_uri((self.repository / "src/missing.rs").as_uri())
+
+    def test_start_uses_one_deadline_for_version_initialize_and_readiness(self) -> None:
+        clock = [0.0]
+        initialize_budgets = []
+
+        def version_runner(*args, **kwargs):
+            self.assertLessEqual(kwargs["timeout"], 1.0)
+            clock[0] = 0.4
+            return subprocess.CompletedProcess(args[0], 0, "rust-analyzer 1.98.0 (fake)", "")
+
+        def request(method, params, timeout_seconds):
+            if method == "initialize":
+                initialize_budgets.append(timeout_seconds)
+                clock[0] = 1.1
+                return {"capabilities": {}}
+            self.fail("readiness must not run after the shared deadline")
+
+        provider = self.provider()
+        provider.version_runner = version_runner
+        process = Mock()
+        process.poll.return_value = None
+        with patch("codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: clock[0]), \
+                patch("codebase_atlas.providers.rust_analyzer.subprocess.Popen", return_value=process), \
+                patch("codebase_atlas.windows_owned_process.WindowsOwnedProcess", return_value=process), \
+                patch("codebase_atlas.providers.rust_analyzer.threading.Thread"), \
+                patch.object(provider, "_request", side_effect=request), \
+                patch.object(provider, "_notify"), \
+                patch.object(provider, "_terminate") as terminate:
+            with self.assertRaises(TimeoutError):
+                provider.start(timeout_seconds=1.0)
+            self.assertAlmostEqual(initialize_budgets[0], 0.6)
+            terminate.assert_called_once()
+        provider._process = None
+
+    def test_version_timeout_is_a_timeout_not_an_uncaught_subprocess_error(self) -> None:
+        provider = self.provider()
+        provider.version_runner = Mock(side_effect=subprocess.TimeoutExpired("rust-analyzer", 0.1))
+        with self.assertRaises(TimeoutError), patch(
+            "codebase_atlas.providers.rust_analyzer.subprocess.Popen"
+        ) as spawn:
+            provider.start(timeout_seconds=0.1)
+        spawn.assert_not_called()
+
+    def test_startup_lock_contention_cannot_wait_outside_request_budget(self):
+        provider = self.provider()
+        provider._state_lock = Mock()
+        provider._state_lock.acquire.return_value = False
+        provider.version_runner = Mock()
+        with self.assertRaises(TimeoutError):
+            provider.start(timeout_seconds=0.01)
+        self.assertLessEqual(provider._state_lock.acquire.call_args.kwargs["timeout"], 0.01)
+        provider._state_lock.release.assert_not_called()
+        provider.version_runner.assert_not_called()
+
+    def test_startup_lock_budget_does_not_round_up_at_large_monotonic_epoch(self):
+        provider = self.provider()
+        provider._state_lock = Mock()
+        provider._state_lock.acquire.return_value = False
+        provider.version_runner = Mock()
+        with patch("codebase_atlas.providers.rust_analyzer.monotonic", return_value=10000.0):
+            with self.assertRaises(TimeoutError):
+                provider.start(timeout_seconds=0.01)
+        self.assertLessEqual(provider._state_lock.acquire.call_args.kwargs["timeout"], 0.01)
+        provider._state_lock.release.assert_not_called()
+        provider.version_runner.assert_not_called()
+
+    def test_unicode_positions_convert_public_codepoints_to_lsp_utf16(self) -> None:
+        provider = self.provider()
+        source = 'pub fn call() { let _ = "🦀"; run(); }'
+        column = source.index("run") + 1
+        requests = []
+
+        def request(method, params, timeout):
+            requests.append(params["position"])
+            return []
+
+        provider._semantic_ready = True
+        with patch.object(provider, "_assert_fresh"), patch.object(provider, "_open", return_value=source), \
+                patch.object(provider, "_request", side_effect=request):
+            provider.query("definition", "run", source_path="src/lib.rs",
+                           source_line=1, source_column=column)
+        self.assertEqual(requests, [{"line": 0, "character": column}])
+
+    def test_unicode_result_range_converts_utf16_and_rejects_split_surrogate(self) -> None:
+        provider = self.provider()
+        source = 'let _ = "🦀"; run();'
+        start = len(source[:source.index("run")].encode("utf-16-le")) // 2
+        raw = {"uri": (self.repository / "src/lib.rs").as_uri(), "range": {
+            "start": {"line": 0, "character": start},
+            "end": {"line": 0, "character": start + 3},
+        }}
+        with patch.object(provider, "_open", return_value=source):
+            node = provider._nodes([raw], "definition", "run")[0]
+            self.assertEqual(node.location.start_column, source.index("run") + 1)
+            self.assertEqual(node.location.end_column, source.index("run") + 4)
+            raw["range"]["start"]["character"] = source.index("🦀") + 1
+            with self.assertRaises(RustAnalyzerError):
+                provider._nodes([raw], "definition", "run")
 
     def test_lsp_reader_accumulates_fragmented_payload(self) -> None:
         class FragmentedStream(BytesIO):
@@ -172,11 +401,14 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "FAKE_RA_LOG": str(self.log), "FAKE_RA_MODE": "retry",
         }):
-            provider = self.provider()
-            provider.start(timeout_seconds=1)
+            # Positive transport/provenance integration, not a one-second speed
+            # gate. Windows shared-runner scheduling and Git freshness scans are
+            # real work; retain the strict deadline in deterministic tests below.
+            provider = self.provider(readiness_seconds=5)
+            provider.start(timeout_seconds=5)
             nodes = provider.query(
                 "definition", "run", source_path="src/lib.rs",
-                source_line=2, source_column=17, timeout_ms=1000,
+                source_line=2, source_column=17, timeout_ms=5000,
             )
             provider.close()
         self.assertEqual(len(nodes), 1)
@@ -194,9 +426,47 @@ class RustAnalyzerProviderTests(unittest.TestCase):
         self.assertFalse(options["cargo"]["buildScripts"]["enable"])
         self.assertEqual(options["cargo"]["features"], "all")
         self.assertTrue(options["cargo"]["noDeps"])
+        self.assertEqual(options["cargo"]["metadataExtraArgs"], ["--offline"])
         self.assertEqual(options["cargo"]["cfgs"], ["feature=default", "feature=fast"])
         self.assertFalse(options["procMacro"]["enable"])
         self.assertFalse(options["cachePriming"]["enable"])
+
+    def test_readiness_retry_keeps_one_second_budget_with_deterministic_clock(self):
+        for second_duration, succeeds in ((.2, True), (.4, False)):
+            with self.subTest(second_duration=second_duration):
+                provider = self.provider()
+                now, timeouts, pauses = [10000.0], [], []
+                def request(method, params, remaining):
+                    timeouts.append(remaining)
+                    now[0] += .6 if len(timeouts) == 1 else second_duration
+                    if len(timeouts) == 1:
+                        raise RustAnalyzerResponseError(-32801, "Content modified")
+                    return []
+                def pause(seconds):
+                    pauses.append(seconds)
+                    now[0] += seconds
+                with patch("codebase_atlas.providers.rust_analyzer.monotonic",
+                           side_effect=lambda: now[0]), patch(
+                        "codebase_atlas.providers.rust_analyzer.sleep", side_effect=pause), \
+                        patch.object(provider, "_assert_fresh"), patch.object(
+                        provider, "_open", return_value="pub fn run() {}\npub fn call() { run(); }"), \
+                        patch.object(provider, "_request", side_effect=request), patch.object(
+                        provider, "_nodes", return_value=(Mock(),)), patch.object(
+                        provider, "_terminate") as terminate:
+                    if succeeds:
+                        self.assertEqual(len(provider.query(
+                            "definition", "run", source_path="src/lib.rs",
+                            source_line=2, source_column=17, timeout_ms=1000)), 1)
+                        terminate.assert_not_called()
+                    else:
+                        with self.assertRaisesRegex(TimeoutError, "validation timed out"):
+                            provider.query("definition", "run", source_path="src/lib.rs",
+                                           source_line=2, source_column=17, timeout_ms=1000)
+                        terminate.assert_called_once()
+                self.assertEqual(len(timeouts), 2)
+                self.assertAlmostEqual(timeouts[0], 1.0)
+                self.assertAlmostEqual(timeouts[1], .35)
+                self.assertEqual(pauses, [.05])
 
     def test_timeout_terminates_owned_process(self) -> None:
         marker = self.root / "child-survived"
@@ -260,12 +530,114 @@ class RustAnalyzerProviderTests(unittest.TestCase):
             "codebase_atlas.providers.rust_analyzer.subprocess.run"
         ) as kill_tree:
             provider._terminate()
-        kill_tree.assert_called_once_with(
-            ["taskkill", "/PID", "12345", "/T", "/F"],
-            check=False, capture_output=True, timeout=3,
-        )
+        kill_tree.assert_not_called()
+        process.terminate.assert_called_once()
+        process.close_owned_job.assert_called_once()
+        self.assertLessEqual(process.close_owned_job.call_args.args[0], 10)
         process.wait.assert_called_once_with(timeout=3)
         self.assertIsNone(provider._process)
+
+    def test_close_and_forced_cleanup_share_ten_second_grace(self):
+        provider = self.provider()
+        process = Mock(pid=12345)
+        process.poll.return_value = None
+        provider._process = process
+        reader, stderr = Mock(), Mock()
+        provider._reader_thread, provider._stderr_thread = reader, stderr
+        elapsed = [0.0]
+        def shutdown(*_args):
+            elapsed[0] += 1.0
+            raise TimeoutError("shutdown stalled")
+        def close_job(timeout):
+            elapsed[0] += timeout
+        process.close_owned_job.side_effect = close_job
+        def wait(**kwargs):
+            elapsed[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired("analyzer", kwargs["timeout"])
+        process.wait.side_effect = wait
+        with patch("codebase_atlas.providers.rust_analyzer.os.name", "nt"), patch(
+            "codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: elapsed[0]
+        ), patch.object(
+            provider, "_request", side_effect=shutdown
+        ):
+            with self.assertRaisesRegex(RustAnalyzerError, "cleanup grace"):
+                provider.close()
+        self.assertLessEqual(elapsed[0], 10.0)
+        reader.join.assert_called_once_with(timeout=0.0)
+        stderr.join.assert_called_once_with(timeout=0.0)
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        self.assertIsNone(provider._cleanup_deadline)
+
+    def test_request_lock_admission_cannot_reset_request_deadline(self):
+        provider = self.provider()
+        provider._request_lock.acquire()
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(TimeoutError, "admission"):
+                provider._request("shutdown", {}, 0.03)
+        finally:
+            provider._request_lock.release()
+        self.assertLess(time.monotonic() - started, 0.2)
+
+    @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
+    def test_final_group_permission_error_requires_confirmed_retry(self):
+        provider = self.provider()
+        process = Mock(spec=subprocess.Popen, pid=12345)
+        process.poll.return_value = 0
+        process.stdin, process.stdout, process.stderr = Mock(), Mock(), Mock()
+        provider._process = process
+        with patch("codebase_atlas.providers.rust_analyzer.os.killpg",
+                   side_effect=[PermissionError("denied"), ProcessLookupError()]) as kill, patch(
+            "codebase_atlas.providers.rust_analyzer.sleep"
+        ) as pause:
+            provider._terminate()
+        self.assertEqual(kill.call_count, 2)
+        pause.assert_called_once()
+        self.assertIsNone(provider._process)
+        process.stdout.close.assert_called_once()
+
+    @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
+    def test_persistent_group_permission_error_fails_after_resource_cleanup(self):
+        provider = self.provider()
+        process = Mock(spec=subprocess.Popen, pid=12345)
+        process.poll.return_value = 0
+        process.stdin, process.stdout, process.stderr = Mock(), Mock(), Mock()
+        provider._process = process
+        provider._cleanup_deadline = .05
+        elapsed = [0.0]
+        def pause(seconds):
+            elapsed[0] += seconds
+        reader = Mock()
+        provider._reader_thread = reader
+        with patch("codebase_atlas.providers.rust_analyzer.os.killpg",
+                   side_effect=PermissionError("denied")), patch(
+            "codebase_atlas.providers.rust_analyzer.monotonic", side_effect=lambda: elapsed[0]
+        ), patch("codebase_atlas.providers.rust_analyzer.sleep", side_effect=pause):
+            with self.assertRaisesRegex(RustAnalyzerError, "process-group cleanup failed"):
+                provider._terminate()
+        self.assertLessEqual(elapsed[0], .05)
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        reader.join.assert_called_once_with(timeout=0.0)
+        self.assertIsNone(provider._reader_thread)
+
+    @unittest.skipIf(os.name == "nt", "POSIX owned process-group regression")
+    def test_cleanup_kills_worker_even_if_analyzer_parent_already_exited(self):
+        provider = self.provider()
+        marker = self.root / "orphan-worker-marker"
+        worker = f"import pathlib,time; time.sleep(.5); pathlib.Path({str(marker)!r}).write_text('orphan')"
+        parent = f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', {worker!r}])"
+        process = subprocess.Popen([sys.executable, "-c", parent], start_new_session=True,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        provider._process = process
+        process.wait(timeout=3)
+        self.assertIsNotNone(process.poll())
+        provider.close()
+        time.sleep(.7)
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ from .lifecycle import (
     ProjectRefreshLease,
     default_project_operation_dir,
 )
-from .languages import public_language_choices
+from .languages import public_language_choices, get_language
 from .maintenance import inspect_installation
 from .onboarding import OnboardingInputs, apply_plan, build_plan
 from .operations import operational_index_status
@@ -654,6 +654,7 @@ def _query_payload(
     *,
     executable: Path | None = None,
     runner: Any = subprocess.run,
+    source_position: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     arguments = [
             "query", "definition", symbol,
@@ -661,6 +662,9 @@ def _query_payload(
             "--target-path", target_path,
             "--stale-policy", "error",
     ]
+    if source_position is not None:
+        for key in ("source_path", "source_line", "source_column"):
+            arguments.extend(["--" + key.replace("_", "-"), str(source_position[key])])
     if executable is None:
         output = StringIO()
         with redirect_stdout(output):
@@ -689,6 +693,8 @@ def _verification_query(
     executable: Path | None = None,
     runner: Any = subprocess.run,
 ) -> dict[str, Any]:
+    if config.language == "rust":
+        return _rust_verification_query(config, config_path, executable=executable, runner=runner)
     symbol, target_path, before = _verification_candidate(config)
     positive = _query_payload(
         config, config_path, symbol, target_path,
@@ -723,6 +729,41 @@ def _verification_query(
         "cross_project_negative": "pass",
         "negative_check_scope": "nonexistent_symbol_only",
     }
+
+
+def _rust_verification_query(config, config_path, *, executable=None, runner=subprocess.run, query=None):
+    if query is None:
+        query = lambda symbol, path, position: _query_payload(
+            config, config_path, symbol, path, executable=executable, runner=runner,
+            source_position=position)
+    from .rust_project import _load_index
+    _generation, index = _load_index(config.data_dir, config.repository, config.project)
+    fact = next((fact for fact in index.facts if fact["kind"] in {"function_item", "struct_item", "enum_item"}), None)
+    if fact is None:
+        raise RuntimeError("no admitted Rust declaration is available for verification")
+    candidates = index.definition_candidates(fact["name"], target_path=fact["path"])
+    declaration = next(node for node in candidates if node.kind == fact["kind"])
+    location = declaration.location
+    before = (config.repository / location.path).read_bytes()
+    positive = query(declaration.name, location.path,
+                     {"source_path": location.path, "source_line": location.start_line,
+                      "source_column": location.start_column})
+    nodes = positive.get("nodes", [])
+    if (positive.get("status") not in {"complete_exact", "exact_hits_partial_scope"}
+            or positive.get("truncated") or positive.get("error")
+            or positive.get("completeness", {}).get("fact_tier") != "T2"
+            or not nodes or not any(node.get("location", {}).get("path") == location.path for node in nodes)):
+        raise RuntimeError("Rust verification did not return exact T2 target facts")
+    negative = query(declaration.name, "__atlas_foreign__/lib.rs",
+                     {"source_path": "__atlas_foreign__/lib.rs", "source_line": 1,
+                      "source_column": 1})
+    if negative.get("status") != "unavailable" or negative.get("nodes"):
+        raise RuntimeError("Rust verification admitted an out-of-scope source position")
+    if (config.repository / location.path).read_bytes() != before:
+        raise RuntimeError("Rust source changed during verification")
+    return {"symbol": declaration.name, "target_path": location.path, "matched_nodes": len(nodes),
+            "fact_tier": "T2", "scope_status": positive.get("completeness", {}).get("scope_status"),
+            "cross_project_negative": "pass", "negative_check_scope": "unadmitted_source_position_only"}
 
 
 def _require_complete_verification_response(payload: dict[str, Any]) -> None:
@@ -864,7 +905,9 @@ def enable_project(
             ))
             state_mutated = True
         applied, code = transaction.run(lambda: apply_plan(
-            plan, candidate, indexer=_index_repository, mode=mode
+            plan, candidate,
+            indexer=(lambda config, selected_mode: _index_repository(config, selected_mode, refresh_lease=refresh))
+            if candidate.language == "rust" else _index_repository, mode=mode
         ), indexes=True)
         if code != 0:
             raise RuntimeError(str(applied.get("error") or applied["status"]))
@@ -1113,13 +1156,18 @@ def status_project(repository: Path) -> tuple[dict[str, Any], int]:
         config.data_dir, config.repository, config.project
     )
     index = operational_index_status(
-        config.data_dir, config.repository, config.cache_dir, config.project
+        config.data_dir, config.repository, config.cache_dir, config.project, language=config.language
     )
     atlas_executable = None
     atlas_version = lifecycle.get("atlas_version")
     if isinstance(atlas_version, str) and atlas_version:
         try:
-            atlas_executable = load_versioned_installation(
+            if config.language == "rust":
+                from .frontend_installation import load_frontend_installation
+                loader = load_frontend_installation
+            else:
+                loader = load_versioned_installation
+            atlas_executable = loader(
                 atlas_version
             ).atlas_executable
         except (OSError, RuntimeError, ValueError):
@@ -1190,6 +1238,27 @@ class _VerificationTransport:
 
 
 def _owned_verification_query(config: AtlasConfig) -> dict[str, Any]:
+    if config.language == "rust":
+        from .rust_project import load_rust_service
+        from .service import QueryRequest
+        from .cli import _response_payload
+        service = load_rust_service(config)
+        process = None
+        try:
+            with service:
+                def query(symbol, path, position):
+                    nonlocal process
+                    response = service.query(QueryRequest("definition", symbol, {
+                        "target_path": path, "timeout_ms": 30000, **position}))
+                    process = service.rust_provider._process
+                    return _response_payload(response)
+                result = _rust_verification_query(config, config.repository / CONFIG_NAME, query=query)
+        finally:
+            service.close()
+        if process is None or process.poll() is None:
+            raise RuntimeError("verification Rust child cleanup not confirmed")
+        return {**result, "owned_process_cleanup": "pass", "process_id": process.pid,
+                "process_scope": "owned Rust analyzer child; no legacy Provider"}
     symbol, path, _before = _verification_candidate(config)
     transport = CodebaseMemoryMcpTransport(
         config.cbm_binary, config.repository, config.cache_dir,
@@ -1450,7 +1519,7 @@ def _external_index_update(
     runner: Any = subprocess.run,
 ) -> dict[str, Any]:
     configured = AtlasConfig.load(config_path)
-    candidate = replace(configured, cbm_binary=installation.provider_binary)
+    candidate = configured if configured.language == "rust" else replace(configured, cbm_binary=installation.provider_binary)
     with tempfile.TemporaryDirectory(
         prefix="pre-update-config-", dir=configured.data_dir
     ) as temporary:
@@ -1545,6 +1614,9 @@ def update_project(
             project_state=previous.status, index_status="preserved",
             connection_status="unchanged", latest_version=release.version,
         ), 0
+    if config.language == "rust" and installer is install_stable_release:
+        from .frontend_installation import install_frontend_release
+        installer = install_frontend_release
     installation, installation_mutated = installer(release)
     operation_lock = _project_operation_lock(root)
     if not operation_lock.acquire():
@@ -1562,7 +1634,7 @@ def update_project(
     pre_update_refresh: dict[str, Any] = {"status": "not_needed"}
     try:
         index_before = operational_index_status(
-            config.data_dir, config.repository, config.cache_dir, config.project
+            config.data_dir, config.repository, config.cache_dir, config.project, language=config.language
         )
         if index_before.get("status") == "stale":
             pre_update_refresh = _external_index_update(
@@ -1598,7 +1670,7 @@ def update_project(
         )
         if preview["status"] == "blocked":
             raise RuntimeError("project Codex MCP configuration conflicts with Atlas")
-        candidate = replace(config, cbm_binary=installation.provider_binary)
+        candidate = config if config.language == "rust" else replace(config, cbm_binary=installation.provider_binary)
         transaction.allow_config(candidate)
         transaction.run(lambda: candidate.write_verified(
             config_path, config_identity
@@ -1983,7 +2055,15 @@ def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
         print("Codex connection configured; start a new task once to load the MCP entry.")
 
 
-def _enable_runtime_installation() -> VersionedInstallation:
+def _enable_runtime_installation(language: str | None = None) -> VersionedInstallation:
+    if language == "rust":
+        from .frontend_installation import install_frontend_release, load_frontend_installation
+        try:
+            release = fetch_stable_release()
+        except (OSError, MacOSIntelFrozenError):
+            return load_frontend_installation(__version__)
+        installation, _created = install_frontend_release(release)
+        return installation
     try:
         release = fetch_stable_release()
     except (OSError, MacOSIntelFrozenError):
@@ -2062,14 +2142,22 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(routing_bundle(), separators=(",", ":")))
             return 0
         if args.command == "enable":
-            installation = _enable_runtime_installation()
+            _root, resolution = _repository_root(args.repo)
+            language = args.language or (AtlasConfig.load(resolution.config).language if resolution.config else None)
+            if language == "rust" and not get_language("rust").public_enabled:
+                payload = _result("enable", "blocked", _root, mutates=False,
+                                  project_state="not_enabled", index_status="unknown",
+                                  connection_status="unchanged", reason_code="language_not_product_enabled")
+                _emit(payload, as_json=args.json)
+                return 2
+            installation = _enable_runtime_installation("rust") if language == "rust" else _enable_runtime_installation()
             if not _same_executable(Path(sys.executable), installation.python):
                 completed = subprocess.run(
                     [str(installation.python), *_delegated_enable_arguments(args)],
                     check=False,
                 )
                 return completed.returncode
-            if args.cbm_binary is None:
+            if args.cbm_binary is None and language != "rust":
                 args.cbm_binary = installation.provider_binary
             payload, code = enable_project(
                 args.repo, config_path=args.config, language=args.language,

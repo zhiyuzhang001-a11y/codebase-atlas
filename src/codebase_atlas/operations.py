@@ -16,8 +16,19 @@ def operational_index_status(
     repository: Path,
     cache_dir: Path,
     project: str,
+    *, language: str | None = None,
 ) -> dict[str, Any]:
     source = index_freshness(data_dir, repository, project)
+    if language == "rust":
+        from .rust_project import rust_index_health
+        generation = rust_index_health(data_dir, repository, project)
+        return {
+            "status": source["status"] if generation["ok"] else "rebuild_required",
+            "ok": bool(source["ok"] and generation["ok"]),
+            "reason": source["reason"] if generation["ok"] else generation["reason"],
+            "source": source, "rust_generation": generation,
+            "provider_database": {"status": "not_applicable", "required": False},
+        }
     provider = provider_database_health(cache_dir, project)
     if not provider["ok"]:
         return {
