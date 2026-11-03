@@ -2,17 +2,30 @@
 
 Local, explainable code intelligence built from proven provider components plus narrowly scoped gap providers.
 
-Version: **0.27.0**. This release adds an internal, generation-bound Rust
-T0/T1/T2 implementation and qualifies its native scanner on five platforms.
-Rust remains experimental and excluded from public language choices; the public
-product continues to support Python and TypeScript/JavaScript. Existing Provider
-isolation, recovery, and the macOS Intel freeze remain unchanged.
+Atlas helps a coding agent find a definition, trace its callers, and inspect
+change impact with source locations and an explicit freshness status. The public
+product supports Python and TypeScript/JavaScript.
 
-Codebase Memory supplies broad structural graph facts, Serena supplies exact
-definitions and references, and this repository owns normalized contracts,
-exact TS/JS relation and test mapping, identity-safe impact traversal, exact
-Python import/re-export reference and caller supplementation, provenance policy,
-query budgets, index freshness, and product interfaces.
+- [Try the offline graph example](docs/portfolio/impact-example.md) to see how
+  same-name functions stay distinct and how a depth limit changes the results.
+- [Install the stable release](#deploy-with-codex) using the project-scoped
+  deployment workflow. The latest stable release is [v0.27.1](https://github.com/zhiyuzhang001-a11y/codebase-atlas/releases/tag/v0.27.1).
+
+```mermaid
+flowchart LR
+  R[Local repository] --> M[Codebase Memory structural graph]
+  R --> S[Serena definitions and references]
+  R --> G[Atlas language-specific analysis]
+  M --> A[Atlas evidence and query service]
+  S --> A
+  G --> A
+  A --> C[CLI, JSON lines, MCP, local browser]
+```
+
+Atlas owns result normalization, identity-safe traversal, source provenance,
+query budgets and freshness checks. The internal Rust scanner remains
+experimental and is excluded from public language choices. Platform and recall
+limits are listed in [support and compatibility](SUPPORT.md).
 
 ## Current scope
 
