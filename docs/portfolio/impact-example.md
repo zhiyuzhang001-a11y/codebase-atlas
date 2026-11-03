@@ -21,7 +21,8 @@ import runpy
 
 fixture = runpy.run_path("tests/test_graph.py")
 node, calls = fixture["node"], fixture["calls"]
-graph = fixture["EvidenceGraph"](
+evidence_graph = fixture["EvidenceGraph"]
+graph = evidence_graph(
     [node("text.format", "format", 5), node("json.format", "format", 10),
      node("render_text", "render_text", 14), node("render_json", "render_json", 19),
      node("test_text", "test_render_text", 4), node("test_json", "test_render_json", 8)],
@@ -30,15 +31,15 @@ graph = fixture["EvidenceGraph"](
 )
 for depth in (1, 2):
     hits = graph.impact(("text.format", "json.format"), direction="upstream", max_depth=depth)
-    print(depth, ", ".join(f"{hit.node.id} ({hit.depth} hops)" for hit in hits))
+    print(depth, ", ".join(f"{hit.node.id} ({hit.depth})" for hit in hits))
 PY
 ```
 
-Observed output:
+Observed output lists each node ID with its hop count in parentheses.
 
 ```text
-1 render_text (1 hops), render_json (1 hops)
-2 render_text (1 hops), render_json (1 hops), test_text (2 hops), test_json (2 hops)
+1 render_text (1), render_json (1)
+2 render_text (1), render_json (1), test_text (2), test_json (2)
 ```
 
 For the related identity, cycle and heuristic-edge regression checks, run:
